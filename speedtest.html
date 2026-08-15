@@ -1,0 +1,1277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Speed Test</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0a0a0a;
+    color: #e0e0e0;
+    padding: 16px;
+    max-width: 480px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .subtitle { font-size: 12px; color: #888; margin-bottom: 20px; }
+
+  button {
+    width: 100%;
+    padding: 16px;
+    font-size: 16px;
+    font-weight: 600;
+    border: none;
+    border-radius: 8px;
+    background: #2563eb;
+    color: white;
+    cursor: pointer;
+  }
+  button:disabled { background: #333; color: #666; }
+  button:active:not(:disabled) { background: #1d4ed8; }
+
+  .phase {
+    font-size: 13px;
+    color: #aaa;
+    text-align: center;
+    margin: 12px 0;
+    min-height: 18px;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-top: 16px;
+  }
+  .card {
+    background: #161616;
+    border: 1px solid #2a2a2a;
+    border-radius: 8px;
+    padding: 12px;
+  }
+  .card-label {
+    font-size: 11px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .card-value {
+    font-size: 24px;
+    font-weight: 700;
+    margin-top: 4px;
+  }
+  .card-unit { font-size: 12px; color: #888; font-weight: 400; }
+
+  .quality-badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    margin-top: 14px;
+  }
+  .q-good { background: #14532d; color: #4ade80; }
+  .q-fair { background: #713f12; color: #fbbf24; }
+  .q-poor { background: #7f1d1d; color: #f87171; }
+
+  .stability-block {
+    background: #161616;
+    border: 1px solid #2a2a2a;
+    border-radius: 8px;
+    padding: 12px;
+    margin-top: 14px;
+  }
+  .stability-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  .stability-label {
+    font-size: 11px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .stability-composite {
+    font-size: 20px;
+    font-weight: 700;
+  }
+  .stability-composite.s-good { color: #4ade80; }
+  .stability-composite.s-fair { color: #fbbf24; }
+  .stability-composite.s-poor { color: #f87171; }
+  .stability-inputs {
+    display: flex;
+    gap: 14px;
+    margin-top: 8px;
+    font-size: 11px;
+    color: #aaa;
+  }
+  .stability-caveat {
+    font-size: 10px;
+    color: #808080;
+    margin-top: 8px;
+    line-height: 1.4;
+  }
+
+  .log {
+    margin-top: 20px;
+    font-size: 11px;
+    color: #808080;
+    font-family: monospace;
+    white-space: pre-wrap;
+    max-height: 160px;
+    overflow-y: auto;
+    background: #111;
+    padding: 8px;
+    border-radius: 6px;
+    display: none;
+  }
+  .log.visible { display: block; }
+
+  .toggle-log {
+    font-size: 11px;
+    color: #808080;
+    text-align: center;
+    margin-top: 10px;
+    text-decoration: underline;
+  }
+
+  .protocol-note {
+    font-size: 10px;
+    color: #808080;
+    margin-top: 20px;
+    line-height: 1.4;
+    white-space: pre-line;
+  }
+
+  select {
+    width: 100%;
+    padding: 12px;
+    font-size: 15px;
+    background: #161616;
+    color: #e0e0e0;
+    border: 1px solid #2a2a2a;
+    border-radius: 8px;
+    margin-bottom: 10px;
+  }
+
+  .elapsed {
+    font-size: 13px;
+    color: #4ade80;
+    text-align: center;
+    margin: 8px 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .drop-events {
+    margin-top: 16px;
+  }
+  .drop-events-title {
+    font-size: 11px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+  }
+  .drop-event {
+    font-size: 12px;
+    color: #f87171;
+    background: #1a0e0e;
+    border: 1px solid #3f1d1d;
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+  }
+  .drop-event.ongoing {
+    color: #fbbf24;
+    background: #1a1608;
+    border-color: #3f2f1d;
+  }
+  .no-drops {
+    font-size: 12px;
+    color: #4ade80;
+  }
+
+  .history-block {
+    margin-top: 16px;
+  }
+  .history-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 6px;
+  }
+  .history-title {
+    font-size: 11px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .history-clear {
+    font-size: 11px;
+    color: #808080;
+    text-decoration: underline;
+  }
+  .history-row {
+    font-size: 12px;
+    background: #161616;
+    border: 1px solid #2a2a2a;
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .history-row-date {
+    color: #ccc;
+  }
+  .history-row-meta {
+    color: #888;
+    font-size: 11px;
+  }
+  .history-row-score {
+    font-weight: 700;
+    font-size: 14px;
+  }
+  .history-row-score.s-good { color: #4ade80; }
+  .history-row-score.s-fair { color: #fbbf24; }
+  .history-row-score.s-poor { color: #f87171; }
+
+  .chart-block {
+    margin-top: 16px;
+  }
+  .chart-title {
+    font-size: 11px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+  }
+  .chart-canvas {
+    width: 100%;
+    height: 100px;
+    background: #111;
+    border: 1px solid #2a2a2a;
+    border-radius: 6px;
+    display: block;
+  }
+  .chart-canvas-tall {
+    height: 150px;
+  }
+</style>
+</head>
+<body>
+
+<h1>Speed Test</h1>
+<div class="subtitle">Continuous monitor · latency, jitter, request loss, throughput, drop detection</div>
+
+<select id="durationSelect">
+  <option value="60">1 minute</option>
+  <option value="300" selected>5 minutes</option>
+  <option value="900">15 minutes</option>
+  <option value="1800">30 minutes</option>
+  <option value="3600">60 minutes</option>
+  <option value="0">Until stopped</option>
+</select>
+
+<button id="startBtn">Start Monitoring</button>
+<div class="elapsed" id="elapsed"></div>
+<div class="phase" id="phase"></div>
+<div class="toggle-log" id="clearBtn">clear saved session</div>
+
+<div class="grid">
+  <div class="card">
+    <div class="card-label">Latency</div>
+    <div class="card-value" id="valLatency">—<span class="card-unit"> ms</span></div>
+  </div>
+  <div class="card">
+    <div class="card-label">Jitter</div>
+    <div class="card-value" id="valJitter">—<span class="card-unit"> ms</span></div>
+  </div>
+  <div class="card">
+    <div class="card-label">Request Loss</div>
+    <div class="card-value" id="valLoss">—<span class="card-unit"> %</span></div>
+  </div>
+  <div class="card">
+    <div class="card-label">Download</div>
+    <div class="card-value" id="valDown">—<span class="card-unit"> Mbps</span></div>
+  </div>
+  <div class="card">
+    <div class="card-label">Upload</div>
+    <div class="card-value" id="valUp">—<span class="card-unit"> Mbps</span></div>
+  </div>
+  <div class="card">
+    <div class="card-label">Connection</div>
+    <div class="card-value" id="valConnType" style="font-size:16px;">—</div>
+  </div>
+</div>
+
+<div id="qualityWrap"></div>
+
+<div class="stability-block" id="stabilityBlock" style="display:none;">
+  <div class="stability-header">
+    <span class="stability-label">Stability Score</span>
+    <span class="stability-composite" id="stabilityComposite">—</span>
+  </div>
+  <div class="stability-inputs" id="stabilityInputs"></div>
+  <div class="stability-caveat">Not a standard metric — a transparent composite of uptime, jitter, and loss (weights: 50/30/20). Shown with its inputs so you can judge it yourself, not as an authoritative score.</div>
+</div>
+
+<div class="history-block">
+  <div class="history-header">
+    <span class="history-title">Session History</span>
+    <span class="history-clear" id="historyClearBtn">clear history</span>
+  </div>
+  <div id="historyTable"><span class="no-drops">no completed sessions yet</span></div>
+</div>
+
+<div class="drop-events">
+  <div class="drop-events-title">Connection Drop Events</div>
+  <div id="dropEventsList"><span class="no-drops">none detected yet</span></div>
+</div>
+
+<div class="chart-block">
+  <div class="chart-title">Download — best passing tier (Mbps)</div>
+  <canvas id="chartDown" class="chart-canvas"></canvas>
+</div>
+<div class="chart-block">
+  <div class="chart-title">Upload (Mbps)</div>
+  <canvas id="chartUp" class="chart-canvas"></canvas>
+</div>
+<div class="chart-block">
+  <div class="chart-title">Request Loss (%)</div>
+  <canvas id="chartLoss" class="chart-canvas"></canvas>
+</div>
+<div class="chart-block">
+  <div class="chart-title">Size Sweep — green=passed, red=failed, one column per check</div>
+  <canvas id="chartSweep" class="chart-canvas chart-canvas-tall"></canvas>
+</div>
+
+<div class="toggle-log" id="toggleLog">show probe log</div>
+<div class="log" id="log"></div>
+
+<div class="protocol-note" id="protocolNote"></div>
+
+<script>
+(function() {
+  'use strict';
+
+  // ---- Protocol constants (also rendered live in the protocol panel below) ----
+  const TRACE_URL = 'https://speed.cloudflare.com/cdn-cgi/trace';
+  const DOWN_URL = 'https://speed.cloudflare.com/__down?bytes=';
+  const UP_URL = 'https://speed.cloudflare.com/__up';
+
+  const PING_INTERVAL_MS = 3000;      // one lightweight probe every 3s, continuously
+  const PROBE_TIMEOUT_MS = 2000;      // a probe that doesn't respond in 2s counts as failed
+  const DROP_THRESHOLD_CONSECUTIVE = 2; // 2+ consecutive failed probes = a drop event begins
+  const THROUGHPUT_INTERVAL_MS = 60_000; // spot-check once per 60s, not continuously
+
+  // Download is a SEQUENTIAL size sweep, not one fixed-size request. Purpose:
+  // distinguish "general link badness" (roughly proportional failure across all
+  // sizes) from "requests above some size are being dropped" (a sharp pass/fail
+  // cutoff at a specific size). Every size gets the SAME fixed timeout — scaling
+  // timeout to size would let a merely-slow large transfer pass by being given
+  // more benefit of the doubt, which would weaken exactly the cutoff signal this
+  // is built to detect. Runs strictly one size at a time, never in parallel —
+  // concurrent requests on a constrained link would compete with each other and
+  // contaminate the result.
+  const DOWNLOAD_SWEEP_SIZES = [4_000, 16_000, 64_000, 256_000, 1_000_000, 5_000_000];
+  const SWEEP_TIMEOUT_MS = 10_000;
+
+  const UPLOAD_BYTES = 2_000_000;
+
+  // ---- DOM refs ----
+  const startBtn = document.getElementById('startBtn');
+  const durationSelect = document.getElementById('durationSelect');
+  const phaseEl = document.getElementById('phase');
+  const elapsedEl = document.getElementById('elapsed');
+  const logEl = document.getElementById('log');
+  const toggleLogEl = document.getElementById('toggleLog');
+  const qualityWrap = document.getElementById('qualityWrap');
+  const dropEventsList = document.getElementById('dropEventsList');
+  const protocolNoteEl = document.getElementById('protocolNote');
+  const clearBtn = document.getElementById('clearBtn');
+  const canvasDown = document.getElementById('chartDown');
+  const canvasUp = document.getElementById('chartUp');
+  const canvasLoss = document.getElementById('chartLoss');
+  const canvasSweep = document.getElementById('chartSweep');
+  const stabilityBlock = document.getElementById('stabilityBlock');
+  const stabilityComposite = document.getElementById('stabilityComposite');
+  const stabilityInputs = document.getElementById('stabilityInputs');
+  const historyTable = document.getElementById('historyTable');
+  const historyClearBtn = document.getElementById('historyClearBtn');
+
+  const els = {
+    latency: document.getElementById('valLatency'),
+    jitter: document.getElementById('valJitter'),
+    loss: document.getElementById('valLoss'),
+    down: document.getElementById('valDown'),
+    up: document.getElementById('valUp'),
+    connType: document.getElementById('valConnType'),
+  };
+
+  // ---- Run state (all state lives here; UI reflects it, doesn't own it) ----
+  let running = false;
+  let sessionStartMs = 0;
+  let sessionDurationSec = 0; // 0 = until stopped
+  let pingTimer = null;
+  let elapsedTimer = null;
+  let throughputTimer = null;
+
+  let allRtts = [];            // every successful probe RTT this session
+  let totalProbes = 0;
+  let totalFailures = 0;
+  let consecutiveFailures = 0;
+  let currentDropStart = null; // ms timestamp, or null if not currently dropped
+  let dropEvents = [];         // {start, end, durationMs}
+  let lastDownMbps = null;
+  let lastUpMbps = null;
+
+  // Chart history: one entry per throughput interval tick. Loss is a DELTA
+  // (probes/failures since the previous tick), not the cumulative session
+  // average — a cumulative % barely moves after enough pings and makes for
+  // a flat, uninformative bar chart. probesAtLastTick/failuresAtLastTick
+  // exist only to compute that delta; they are not displayed anywhere.
+  //
+  // downHistory's mbps value is now derived from the LARGEST size in the
+  // sweep that succeeded this tick (best-available throughput), keeping the
+  // existing "Download (Mbps)" chart meaningful. sizeSweepHistory is the
+  // separate, more granular evidence trail: full per-size pass/fail/duration
+  // for every tick, which is what actually shows a size-based cutoff pattern
+  // (or its absence) if one exists.
+  const CHART_HISTORY_CAP = 120; // 120 intervals * 60s = 2 hours of bars before oldest drop off
+  let downHistory = [];  // [{ t: ms timestamp, mbps: number|null }]
+  let upHistory = [];
+  let lossHistory = [];  // [{ t: ms timestamp, lossPct: number }]
+  let sizeSweepHistory = []; // [{ t: ms timestamp, results: [{ bytes, ok, durationMs|null, error|null }] }]
+  let probesAtLastTick = 0;
+  let failuresAtLastTick = 0;
+
+  let logLines = [];
+  let isResumedRun = false;
+
+  // ---- Persistence ----
+  const STORAGE_KEY = 'speedtest_session_v1';
+
+  function saveSession() {
+    const snapshot = {
+      running,
+      sessionStartMs,
+      sessionDurationSec,
+      allRtts,
+      totalProbes,
+      totalFailures,
+      consecutiveFailures,
+      currentDropStart,
+      dropEvents,
+      lastDownMbps,
+      lastUpMbps,
+      downHistory,
+      upHistory,
+      lossHistory,
+      sizeSweepHistory,
+      probesAtLastTick,
+      failuresAtLastTick,
+      connTypeLabel: els.connType.textContent,
+      logLines,
+    };
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+    } catch (e) {
+      // storage full or unavailable (e.g. iOS private mode) — degrade silently,
+      // the running session still works, it just won't survive a reload
+    }
+    return snapshot;
+  }
+
+  // ---- Multi-session history archive ----
+  // A separate key from the live-session STORAGE_KEY: that key is a single
+  // overwritable slot for "resume where I left off", this key is an
+  // append-only (capped) list of COMPLETED sessions for cross-day comparison.
+  const HISTORY_KEY = 'speedtest_history_v1';
+  const HISTORY_CAP = 30; // sessions, not days — an "until stopped" long run and
+                           // a 2-minute test both count as one slot. ~30 covers
+                           // roughly a month of daily use before oldest evicts.
+
+  function loadHistory() {
+    let raw;
+    try {
+      raw = localStorage.getItem(HISTORY_KEY);
+    } catch (e) {
+      return [];
+    }
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function archiveCompletedSession(snapshot, endedAtMs) {
+    // Called exactly once per real session completion (manual stop, duration
+    // elapsed live, or duration elapsed while the page was closed — see the
+    // three call sites below). NOT called on every periodic saveSession() tick,
+    // which would archive one session dozens of times.
+    if (!snapshot || !snapshot.sessionStartMs) return; // nothing real to archive
+
+    const entry = { ...snapshot, endedAtMs };
+    let history = loadHistory();
+    history.push(entry);
+    if (history.length > HISTORY_CAP) {
+      history = history.slice(history.length - HISTORY_CAP); // evict oldest first
+    }
+
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+    } catch (e) {
+      // Quota exceeded or storage unavailable. This must NEVER throw up into
+      // the caller and block the live session's own state from saving — a
+      // full history is a real problem to eventually surface to the user via
+      // the table UI (e.g. "archive full, oldest sessions may not be kept"),
+      // but it is a strictly lower priority than the active session continuing
+      // to function. Silently degrade here; the live saveSession() call this
+      // is paired with is unaffected since it's a separate try/catch already.
+    }
+  }
+
+  function loadSession() {
+    let raw;
+    try {
+      raw = localStorage.getItem(STORAGE_KEY);
+    } catch (e) {
+      return null;
+    }
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function clearSession() {
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  function log(msg) {
+    const t = new Date().toLocaleTimeString();
+    logLines.push(`[${t}] ${msg}`);
+    if (logLines.length > 500) logLines.shift(); // cap memory over long sessions
+    logEl.textContent = logLines.join('\n');
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  toggleLogEl.addEventListener('click', () => {
+    logEl.classList.toggle('visible');
+    toggleLogEl.textContent = logEl.classList.contains('visible') ? 'hide probe log' : 'show probe log';
+  });
+
+  function setPhase(text) {
+    phaseEl.textContent = text;
+  }
+
+  function median(arr) {
+    const s = [...arr].sort((a, b) => a - b);
+    const mid = Math.floor(s.length / 2);
+    return s.length % 2 !== 0 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+  }
+
+  function stddev(arr) {
+    if (arr.length < 2) return 0;
+    const m = arr.reduce((a, b) => a + b, 0) / arr.length;
+    const variance = arr.reduce((a, b) => a + (b - m) ** 2, 0) / arr.length;
+    return Math.sqrt(variance);
+  }
+
+  function fetchWithTimeout(url, opts, timeoutMs) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    return fetch(url, { ...opts, signal: controller.signal, cache: 'no-store' })
+      .finally(() => clearTimeout(timer));
+  }
+
+  function formatDuration(ms) {
+    const totalSec = Math.round(ms / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return m > 0 ? `${m}m ${s}s` : `${s}s`;
+  }
+
+  function drawBarChart(canvas, points, valueKey, opts) {
+    opts = opts || {};
+    const dpr = window.devicePixelRatio || 1;
+    const cssWidth = canvas.clientWidth || 300;
+    const cssHeight = canvas.clientHeight || 100;
+
+    // match the internal pixel buffer to the CSS size * devicePixelRatio,
+    // otherwise canvas defaults to a 300x150 buffer stretched to fit, blurry
+    // on any real phone screen
+    if (canvas.width !== Math.round(cssWidth * dpr) || canvas.height !== Math.round(cssHeight * dpr)) {
+      canvas.width = Math.round(cssWidth * dpr);
+      canvas.height = Math.round(cssHeight * dpr);
+    }
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return; // canvas unavailable for some reason — skip drawing rather than
+                       // crash the caller; charts are supplementary, not load-bearing
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // draw in CSS pixel coordinates, buffer handles the scaling
+    ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+    if (!points || points.length === 0) {
+      ctx.fillStyle = '#444';
+      ctx.font = '11px -apple-system, sans-serif';
+      ctx.fillText('no data yet', 8, cssHeight / 2);
+      return;
+    }
+
+    const values = points.map(p => p[valueKey]).filter(v => v != null);
+    const maxVal = opts.fixedMax != null ? opts.fixedMax : Math.max(1, ...values);
+
+    const padding = 4;
+    const barGap = 2;
+    const plotWidth = cssWidth - padding * 2;
+    const plotHeight = cssHeight - padding * 2;
+    const barWidth = Math.max(1, (plotWidth / points.length) - barGap);
+
+    points.forEach((p, i) => {
+      const v = p[valueKey];
+      const x = padding + i * (plotWidth / points.length);
+      if (v == null) return; // a failed spot-check leaves a gap, not a zero bar — zero would misleadingly imply "measured zero throughput"
+      const barHeight = Math.max(1, (v / maxVal) * plotHeight);
+      const y = padding + (plotHeight - barHeight);
+      ctx.fillStyle = opts.colorFn ? opts.colorFn(v) : '#2563eb';
+      ctx.fillRect(x, y, barWidth, barHeight);
+    });
+  }
+
+  function lossBarColor(lossPct) {
+    // matches the GOOD/FAIR/POOR thresholds already used for the quality badge,
+    // so the chart's color language is consistent with the rest of the UI
+    if (lossPct < 1) return '#4ade80';
+    if (lossPct < 5) return '#fbbf24';
+    return '#f87171';
+  }
+
+  function renderCharts() {
+    drawBarChart(canvasDown, downHistory, 'mbps', { colorFn: () => '#2563eb' });
+    drawBarChart(canvasUp, upHistory, 'mbps', { colorFn: () => '#60a5fa' });
+    drawBarChart(canvasLoss, lossHistory, 'lossPct', { fixedMax: 100, colorFn: lossBarColor });
+    renderSweepChart();
+  }
+
+  function renderSweepChart() {
+    // Grid, not a bar chart: rows = size tiers (fixed, from DOWNLOAD_SWEEP_SIZES),
+    // columns = ticks over time. Each cell is pass (green) / fail (red) / not yet
+    // run (dark gray). This is the actual evidence visualization — a bar chart
+    // collapsing "how many sizes passed" would destroy the one thing that matters:
+    // WHICH sizes. A real size-based cutoff shows as a horizontal line where every
+    // row above some size is consistently red and every row below is consistently
+    // green, stable across many columns. A merely-bad connection shows as noisy
+    // red scattered across all rows regardless of size — visually distinct, which
+    // is the whole point of building this as a grid instead of an aggregate number.
+    const canvas = canvasSweep;
+    const dpr = window.devicePixelRatio || 1;
+    const cssWidth = canvas.clientWidth || 300;
+    const cssHeight = canvas.clientHeight || 140;
+    if (canvas.width !== Math.round(cssWidth * dpr) || canvas.height !== Math.round(cssHeight * dpr)) {
+      canvas.width = Math.round(cssWidth * dpr);
+      canvas.height = Math.round(cssHeight * dpr);
+    }
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return; // same defensive guard as drawBarChart — charts are supplementary, not load-bearing
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+    const labelWidth = 44; // reserved space for size labels on the left
+    const rowCount = DOWNLOAD_SWEEP_SIZES.length;
+    const rowHeight = cssHeight / rowCount;
+
+    // size labels
+    ctx.fillStyle = '#888';
+    ctx.font = '9px -apple-system, sans-serif';
+    ctx.textBaseline = 'middle';
+    DOWNLOAD_SWEEP_SIZES.forEach((bytes, i) => {
+      ctx.fillText(formatBytes(bytes), 2, i * rowHeight + rowHeight / 2);
+    });
+
+    if (sizeSweepHistory.length === 0) {
+      ctx.fillStyle = '#444';
+      ctx.font = '11px -apple-system, sans-serif';
+      ctx.fillText('no sweep data yet', labelWidth, cssHeight / 2);
+      return;
+    }
+
+    const plotWidth = cssWidth - labelWidth;
+    const colWidth = Math.max(1, plotWidth / sizeSweepHistory.length);
+    const cellGap = 1;
+
+    sizeSweepHistory.forEach((tick, colIdx) => {
+      const x = labelWidth + colIdx * colWidth;
+      DOWNLOAD_SWEEP_SIZES.forEach((bytes, rowIdx) => {
+        const result = tick.results.find(r => r.bytes === bytes);
+        const y = rowIdx * rowHeight;
+        ctx.fillStyle = !result ? '#222' : (result.ok ? '#4ade80' : '#f87171');
+        ctx.fillRect(x, y + cellGap, Math.max(1, colWidth - cellGap), rowHeight - cellGap * 2);
+      });
+    });
+  }
+
+  function renderHistoryTable() {
+    const history = loadHistory();
+    if (history.length === 0) {
+      historyTable.innerHTML = '<span class="no-drops">no completed sessions yet</span>';
+      return;
+    }
+
+    // newest first — someone checking in daily wants today's result on top,
+    // not scrolled past a month of older entries
+    const rows = [...history].reverse().map(entry => {
+      const endedAt = entry.endedAtMs || entry.sessionStartMs;
+      const dateStr = new Date(endedAt).toLocaleDateString();
+      const timeStr = new Date(endedAt).toLocaleTimeString();
+      const durationMs = endedAt - entry.sessionStartMs;
+
+      const avgJitter = entry.allRtts && entry.allRtts.length >= 2 ? stddev(entry.allRtts) : null;
+      const avgLossPct = entry.totalProbes > 0 ? (entry.totalFailures / entry.totalProbes) * 100 : 0;
+      const score = computeStabilityScore(
+        entry.sessionStartMs, endedAt, entry.dropEvents || [], null, avgJitter, avgLossPct
+      );
+
+      const dropCount = (entry.dropEvents || []).length;
+
+      return `<div class="history-row">
+        <div>
+          <div class="history-row-date">${dateStr} ${timeStr}</div>
+          <div class="history-row-meta">${formatDuration(durationMs)} · ${dropCount} drop${dropCount === 1 ? '' : 's'} · uptime ${score.uptimePct.toFixed(1)}%</div>
+        </div>
+        <div class="history-row-score ${stabilityScoreClass(score.composite)}">${score.composite.toFixed(1)}</div>
+      </div>`;
+    });
+
+    historyTable.innerHTML = rows.join('');
+  }
+
+  historyClearBtn.addEventListener('click', () => {
+    try {
+      localStorage.removeItem(HISTORY_KEY);
+    } catch (e) {
+      // ignore
+    }
+    renderHistoryTable();
+  });
+
+  function renderDropEvents() {
+    if (dropEvents.length === 0 && currentDropStart === null) {
+      dropEventsList.innerHTML = '<span class="no-drops">none detected yet</span>';
+      return;
+    }
+    const rows = dropEvents.map(ev => {
+      const startT = new Date(ev.start).toLocaleTimeString();
+      return `<div class="drop-event">Dropped at ${startT} — lasted ${formatDuration(ev.durationMs)}</div>`;
+    });
+    if (currentDropStart !== null) {
+      const startT = new Date(currentDropStart).toLocaleTimeString();
+      const ongoingMs = Date.now() - currentDropStart;
+      rows.push(`<div class="drop-event ongoing">Dropped at ${startT} — ongoing (${formatDuration(ongoingMs)} so far)</div>`);
+    }
+    dropEventsList.innerHTML = rows.join('');
+  }
+
+  // A drop event is defined structurally, from the consecutive-failure streak,
+  // not from a separate flag: currentDropStart is non-null iff we are inside
+  // a streak >= DROP_THRESHOLD_CONSECUTIVE. State is inferred, not stored twice.
+  function recordProbeResult(ok) {
+    totalProbes++;
+    if (ok) {
+      consecutiveFailures = 0;
+      if (currentDropStart !== null) {
+        // streak just ended — close out the drop event
+        dropEvents.push({
+          start: currentDropStart,
+          end: Date.now(),
+          durationMs: Date.now() - currentDropStart,
+        });
+        log(`connection recovered after ${formatDuration(Date.now() - currentDropStart)}`);
+        currentDropStart = null;
+      }
+    } else {
+      totalFailures++;
+      consecutiveFailures++;
+      if (consecutiveFailures >= DROP_THRESHOLD_CONSECUTIVE && currentDropStart === null) {
+        // entered a new streak past the threshold — this is where the drop "began",
+        // backdated to the first failure in the streak, not the Nth
+        currentDropStart = Date.now() - (consecutiveFailures - 1) * (PING_INTERVAL_MS);
+        log(`possible connection drop detected`);
+      }
+    }
+    renderDropEvents();
+  }
+
+  async function runSinglePing() {
+    const t0 = performance.now();
+    try {
+      await fetchWithTimeout(`${TRACE_URL}?cb=${Date.now()}`, {}, PROBE_TIMEOUT_MS);
+      const rtt = performance.now() - t0;
+      allRtts.push(rtt);
+      if (allRtts.length > 2000) allRtts.shift(); // cap memory over long sessions
+      recordProbeResult(true);
+      log(`ping ok, ${rtt.toFixed(1)}ms`);
+    } catch (e) {
+      recordProbeResult(false);
+      log(`ping FAILED (${e.name})`);
+    }
+    updateStatsDisplay();
+    saveSession();
+  }
+
+  async function timedFetch(url, opts, timeoutMs) {
+    // Wraps fetch AND the body-consuming step in the SAME abort signal and timer.
+    // fetchWithTimeout alone only bounds the initial request/headers phase — once
+    // fetch() resolves with a Response, reading its body (arrayBuffer()) is a
+    // SEPARATE async operation the original abort signal no longer covers. On a
+    // connection that drops mid-stream (confirmed happening via ping AbortErrors),
+    // that body read can hang indefinitely with nothing to catch it: no throw, no
+    // resolve, ever — which is why nothing was reaching either log() call.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const resp = await fetch(url, { ...opts, signal: controller.signal, cache: 'no-store' });
+      const buf = await resp.arrayBuffer(); // now covered by the same controller/timer
+      return buf;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function runSizeSweep() {
+    // Sequential, one size at a time — never parallel. Concurrent requests on a
+    // constrained mobile link would compete with each other for bandwidth and
+    // contaminate the exact signal this is built to isolate. Every size gets the
+    // SAME fixed SWEEP_TIMEOUT_MS: a cutoff at a specific size across many ticks
+    // is the signature of enforced size-based dropping; a roughly proportional
+    // failure rate across all sizes instead points to general link/congestion
+    // badness, not a size policy.
+    const results = [];
+    for (const bytes of DOWNLOAD_SWEEP_SIZES) {
+      const t0 = performance.now();
+      try {
+        const buf = await timedFetch(DOWN_URL + bytes, {}, SWEEP_TIMEOUT_MS);
+        const durationMs = performance.now() - t0;
+        results.push({ bytes, ok: true, durationMs, error: null });
+        log(`sweep ${formatBytes(bytes)}: ok, ${durationMs.toFixed(0)}ms`);
+      } catch (e) {
+        results.push({ bytes, ok: false, durationMs: null, error: e.name });
+        log(`sweep ${formatBytes(bytes)}: FAILED (${e.name})`);
+      }
+    }
+    return results;
+  }
+
+  function formatBytes(bytes) {
+    if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(bytes % 1_000_000 === 0 ? 0 : 1)}MB`;
+    if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(0)}KB`;
+    return `${bytes}B`;
+  }
+
+  function formatMbps(mbps) {
+    // Auto-switches unit rather than showing sub-1 tiny decimals like "0.1 Mbps",
+    // which reads as near-zero and hides real magnitude on constrained connections
+    // (e.g. a provider-limited link sitting around tens of Kbps). Mirrors
+    // formatBytes' existing pattern in this file: pick the unit the magnitude
+    // actually belongs in, not a single fixed unit for every value.
+    if (mbps >= 1) {
+      return { value: mbps.toFixed(1), unit: 'Mbps' };
+    }
+    const kbps = mbps * 1000;
+    // One decimal place across the full Kbps range — NOT just below 10 as an
+    // earlier version did. Rounding e.g. 63.5 to a bare "64" silently discards
+    // the exact precision needed to tell a real 64Kbps cap apart from a
+    // connection merely sitting close to one, which defeats the purpose of
+    // this display when it's being used as evidence of a specific threshold.
+    return { value: kbps.toFixed(1), unit: 'Kbps' };
+  }
+
+  async function runThroughputSpotCheck() {
+    setPhase('Spot-checking throughput…');
+    const tickTime = Date.now();
+
+    const sweepResults = await runSizeSweep();
+    sizeSweepHistory.push({ t: tickTime, results: sweepResults });
+    if (sizeSweepHistory.length > CHART_HISTORY_CAP) sizeSweepHistory.shift();
+
+    // downHistory's mbps reflects the LARGEST size that succeeded this tick —
+    // best-available throughput, keeping the existing "Download (Mbps)" chart
+    // meaningful now that download is a sweep rather than one fixed request.
+    const passing = sweepResults.filter(r => r.ok);
+    if (passing.length > 0) {
+      const best = passing.reduce((a, b) => (b.bytes > a.bytes ? b : a));
+      lastDownMbps = (best.bytes * 8) / (best.durationMs / 1000) / 1_000_000;
+      const downFmt = formatMbps(lastDownMbps);
+      els.down.innerHTML = `${downFmt.value}<span class="card-unit"> ${downFmt.unit}</span>`;
+    } else {
+      lastDownMbps = null; // every size in the sweep failed this tick
+      els.down.innerHTML = '—';
+    }
+    downHistory.push({ t: tickTime, mbps: lastDownMbps });
+    if (downHistory.length > CHART_HISTORY_CAP) downHistory.shift();
+
+    try {
+      const payload = new Uint8Array(UPLOAD_BYTES);
+      crypto.getRandomValues(payload.subarray(0, Math.min(65536, UPLOAD_BYTES)));
+      const t0 = performance.now();
+      await timedFetch(UP_URL, { method: 'POST', body: payload }, 15000);
+      const upDuration = (performance.now() - t0) / 1000;
+      lastUpMbps = (UPLOAD_BYTES * 8) / upDuration / 1_000_000;
+      const upFmt = formatMbps(lastUpMbps);
+      els.up.innerHTML = `${upFmt.value}<span class="card-unit"> ${upFmt.unit}</span>`;
+      log(`upload spot-check: ${lastUpMbps.toFixed(2)} Mbps`);
+    } catch (e) {
+      lastUpMbps = null;
+      log(`upload spot-check FAILED (${e.name})`);
+    }
+    upHistory.push({ t: tickTime, mbps: lastUpMbps });
+    if (upHistory.length > CHART_HISTORY_CAP) upHistory.shift();
+
+    // delta loss: pings and failures accumulated SINCE the previous tick only,
+    // not the session-wide cumulative rate — see the comment on the state
+    // declarations above for why cumulative would make a flat, uninformative chart
+    const probesThisInterval = totalProbes - probesAtLastTick;
+    const failuresThisInterval = totalFailures - failuresAtLastTick;
+    const lossPctThisInterval = probesThisInterval > 0 ? (failuresThisInterval / probesThisInterval) * 100 : 0;
+    lossHistory.push({ t: tickTime, lossPct: lossPctThisInterval });
+    if (lossHistory.length > CHART_HISTORY_CAP) lossHistory.shift();
+    probesAtLastTick = totalProbes;
+    failuresAtLastTick = totalFailures;
+
+    renderCharts();
+    saveSession();
+    if (running) setPhase(isResumedRun ? 'Monitoring… (resumed)' : 'Monitoring…');
+  }
+
+  function detectConnectionType() {
+    const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    if (!conn) return 'unknown (API unsupported)';
+    return conn.effectiveType || conn.type || 'unknown';
+  }
+
+  function classifyQuality(latency, jitter, lossRate) {
+    // Convention thresholds (not measured, not authoritative):
+    // good:  latency<50ms, jitter<20ms, loss<1%
+    // fair:  latency<150ms, jitter<50ms, loss<5%
+    // poor:  anything worse
+    if (latency == null) return { label: 'UNKNOWN', cls: 'q-poor' };
+    if (latency < 50 && jitter < 20 && lossRate < 0.01) return { label: 'GOOD', cls: 'q-good' };
+    if (latency < 150 && jitter < 50 && lossRate < 0.05) return { label: 'FAIR', cls: 'q-fair' };
+    return { label: 'POOR', cls: 'q-poor' };
+  }
+
+  function computeStabilityScore(sessionStartMs, nowMs, dropEvents, currentDropStart, avgJitterMs, avgLossPct) {
+    // NOT a standard metric — a transparent, inspectable composite the tool
+    // builds from its own already-computed numbers, shown alongside its inputs
+    // rather than as an opaque black-box figure. Weights (50/30/20) are a
+    // judgment call, not derived from any spec; anyone relying on this number
+    // should be able to see uptimePct/jitterScore/lossScore independently and
+    // decide for themselves whether the composite reflects what matters to them.
+    const sessionDurationMs = Math.max(1, nowMs - sessionStartMs);
+    let totalDropMs = dropEvents.reduce((sum, ev) => sum + ev.durationMs, 0);
+    if (currentDropStart !== null) totalDropMs += (nowMs - currentDropStart); // count an ongoing drop
+    const uptimePct = Math.max(0, Math.min(100, ((sessionDurationMs - totalDropMs) / sessionDurationMs) * 100));
+
+    const jitterScore = avgJitterMs == null ? 100 : Math.max(0, 100 - (avgJitterMs / 2));
+    const lossScore = Math.max(0, 100 - (avgLossPct * 2));
+
+    const composite = (uptimePct * 0.5) + (jitterScore * 0.3) + (lossScore * 0.2);
+
+    return {
+      composite: Math.round(composite * 10) / 10,
+      uptimePct: Math.round(uptimePct * 10) / 10,
+      jitterScore: Math.round(jitterScore * 10) / 10,
+      lossScore: Math.round(lossScore * 10) / 10,
+      totalDropMs,
+      sessionDurationMs,
+    };
+  }
+
+  function updateStatsDisplay() {
+    const latency = allRtts.length ? median(allRtts) : null;
+    const jitter = allRtts.length >= 2 ? stddev(allRtts) : null;
+    const lossRate = totalProbes > 0 ? totalFailures / totalProbes : 0;
+
+    els.latency.innerHTML = latency != null ? `${latency.toFixed(1)}<span class="card-unit"> ms</span>` : '—';
+    els.jitter.innerHTML = jitter != null ? `${jitter.toFixed(1)}<span class="card-unit"> ms</span>` : '—';
+    els.loss.innerHTML = `${(lossRate * 100).toFixed(1)}<span class="card-unit"> %</span>`;
+
+    const quality = classifyQuality(latency, jitter, lossRate);
+    qualityWrap.innerHTML = `<span class="quality-badge ${quality.cls}">${quality.label}</span>`;
+
+    renderStabilityScore(jitter, lossRate * 100);
+  }
+
+  function stabilityScoreClass(composite) {
+    // Same convention-not-standard caveat as classifyQuality — thresholds are
+    // a judgment call for visual color-coding, not a claim about what the
+    // numbers "mean" in any external sense.
+    if (composite >= 90) return 's-good';
+    if (composite >= 70) return 's-fair';
+    return 's-poor';
+  }
+
+  function renderStabilityScore(jitterMs, lossPct) {
+    if (!sessionStartMs) {
+      stabilityBlock.style.display = 'none'; // no session has ever run — nothing to score
+      return;
+    }
+    const score = computeStabilityScore(sessionStartMs, Date.now(), dropEvents, currentDropStart, jitterMs, lossPct);
+    stabilityBlock.style.display = 'block';
+    stabilityComposite.textContent = score.composite.toFixed(1);
+    stabilityComposite.className = `stability-composite ${stabilityScoreClass(score.composite)}`;
+    stabilityInputs.innerHTML = `
+      <span>Uptime: ${score.uptimePct.toFixed(1)}%</span>
+      <span>Jitter score: ${score.jitterScore.toFixed(1)}</span>
+      <span>Loss score: ${score.lossScore.toFixed(1)}</span>
+    `;
+  }
+
+  function updateElapsedDisplay() {
+    const elapsedMs = Date.now() - sessionStartMs;
+    if (sessionDurationSec > 0) {
+      const remainingMs = Math.max(0, sessionDurationSec * 1000 - elapsedMs);
+      elapsedEl.textContent = `${formatDuration(elapsedMs)} elapsed · ${formatDuration(remainingMs)} remaining`;
+    } else {
+      elapsedEl.textContent = `${formatDuration(elapsedMs)} elapsed`;
+    }
+    if (currentDropStart !== null) renderDropEvents(); // keep "ongoing" duration ticking
+  }
+
+  function renderProtocolPanel() {
+    const intervalSec = PING_INTERVAL_MS / 1000;
+    const spotCheckMin = THROUGHPUT_INTERVAL_MS / 60000;
+    protocolNoteEl.textContent =
+`Protocol (live):
+Ping: 1 HTTPS GET every ${intervalSec}s to ${TRACE_URL}, ${PROBE_TIMEOUT_MS}ms timeout.
+Latency = median RTT of successful pings. Jitter = stddev of same.
+Loss = failed pings / total pings, session-wide.
+Drop event = ${DROP_THRESHOLD_CONSECUTIVE}+ consecutive failed pings; ends on first success after.
+Throughput spot-check every ${spotCheckMin} min: sequential download SWEEP at ${DOWNLOAD_SWEEP_SIZES.map(formatBytes).join('/')}, ${SWEEP_TIMEOUT_MS/1000}s fixed timeout per size (one size at a time, never parallel — a cutoff at a specific size across many ticks suggests size-based dropping, not general link badness). Upload: POST ${(UPLOAD_BYTES/1e6).toFixed(0)}MB to __up.
+Timing via performance.now(). This measures HTTP-request-layer failure, not raw
+packet loss — browsers have no ICMP/UDP access. Quality thresholds are ITU-style
+convention, not a cited standard. Sweep results show which sizes pass/fail per
+check but do not by themselves prove carrier intent — a consistent cutoff is
+evidence toward that hypothesis, not proof of it.
+Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} failed` : 'stopped'}`;
+  }
+
+  function resetSessionState() {
+    allRtts = [];
+    totalProbes = 0;
+    totalFailures = 0;
+    consecutiveFailures = 0;
+    currentDropStart = null;
+    dropEvents = [];
+    downHistory = [];
+    upHistory = [];
+    lossHistory = [];
+    sizeSweepHistory = [];
+    probesAtLastTick = 0;
+    failuresAtLastTick = 0;
+    logLines = [];
+    logEl.textContent = '';
+    qualityWrap.innerHTML = '';
+    stabilityBlock.style.display = 'none';
+    renderDropEvents();
+    renderCharts();
+    Object.values(els).forEach(el => {
+      if (el.id !== 'valConnType') el.innerHTML = '—';
+    });
+  }
+
+  function startMonitoring() {
+    running = true;
+    isResumedRun = false;
+    sessionStartMs = Date.now();
+    sessionDurationSec = parseInt(durationSelect.value, 10);
+
+    resetSessionState();
+    els.connType.textContent = detectConnectionType();
+
+    startBtn.textContent = 'Stop Monitoring';
+    durationSelect.disabled = true;
+    setPhase('Monitoring…');
+
+    // fire one immediately, then on interval — for both ping and throughput,
+    // otherwise setInterval's delayed-first-fire means short sessions (e.g. 1min
+    // duration vs 60s throughput interval) can end before a single spot-check runs
+    runSinglePing();
+    runThroughputSpotCheck();
+    pingTimer = setInterval(runSinglePing, PING_INTERVAL_MS);
+    throughputTimer = setInterval(runThroughputSpotCheck, THROUGHPUT_INTERVAL_MS);
+    elapsedTimer = setInterval(() => {
+      updateElapsedDisplay();
+      renderProtocolPanel();
+      if (sessionDurationSec > 0 && Date.now() - sessionStartMs >= sessionDurationSec * 1000) {
+        stopMonitoring('duration reached');
+      }
+    }, 1000);
+
+    renderProtocolPanel();
+    saveSession();
+  }
+
+  function stopMonitoring(reason) {
+    running = false;
+    isResumedRun = false;
+    clearInterval(pingTimer);
+    clearInterval(throughputTimer);
+    clearInterval(elapsedTimer);
+    pingTimer = null;
+    throughputTimer = null;
+    elapsedTimer = null;
+
+    // if a drop was in progress when we stopped, close it out so it's not lost
+    if (currentDropStart !== null) {
+      dropEvents.push({
+        start: currentDropStart,
+        end: Date.now(),
+        durationMs: Date.now() - currentDropStart,
+      });
+      currentDropStart = null;
+      renderDropEvents();
+    }
+
+    startBtn.textContent = 'Start Monitoring';
+    durationSelect.disabled = false;
+    setPhase(reason === 'duration reached' ? 'Done — duration reached.' : 'Stopped.');
+    renderProtocolPanel();
+    const finalSnapshot = saveSession();
+    archiveCompletedSession(finalSnapshot, Date.now());
+    renderHistoryTable();
+  }
+
+  function restoreSession() {
+    const saved = loadSession();
+    if (!saved) {
+      renderProtocolPanel(); // nothing to restore, show protocol text at defaults
+      return;
+    }
+
+    // rehydrate every piece of state from the snapshot
+    running = saved.running;
+    sessionStartMs = saved.sessionStartMs;
+    sessionDurationSec = saved.sessionDurationSec;
+    allRtts = saved.allRtts || [];
+    totalProbes = saved.totalProbes || 0;
+    totalFailures = saved.totalFailures || 0;
+    consecutiveFailures = saved.consecutiveFailures || 0;
+    currentDropStart = saved.currentDropStart;
+    dropEvents = saved.dropEvents || [];
+    lastDownMbps = saved.lastDownMbps;
+    lastUpMbps = saved.lastUpMbps;
+    downHistory = saved.downHistory || [];
+    upHistory = saved.upHistory || [];
+    lossHistory = saved.lossHistory || [];
+    sizeSweepHistory = saved.sizeSweepHistory || [];
+    probesAtLastTick = saved.probesAtLastTick || 0;
+    failuresAtLastTick = saved.failuresAtLastTick || 0;
+    logLines = saved.logLines || [];
+
+    logEl.textContent = logLines.join('\n');
+    els.connType.textContent = saved.connTypeLabel || detectConnectionType();
+    if (lastDownMbps != null) { const f = formatMbps(lastDownMbps); els.down.innerHTML = `${f.value}<span class="card-unit"> ${f.unit}</span>`; }
+    if (lastUpMbps != null) { const f = formatMbps(lastUpMbps); els.up.innerHTML = `${f.value}<span class="card-unit"> ${f.unit}</span>`; }
+    updateStatsDisplay();
+    renderDropEvents();
+    renderCharts();
+    durationSelect.value = String(sessionDurationSec);
+
+    if (!running) {
+      // previously stopped/completed session — just display it, nothing auto-fires
+      setPhase('Restored previous session.');
+      startBtn.textContent = 'Start Monitoring';
+      durationSelect.disabled = false;
+      renderProtocolPanel();
+      return;
+    }
+
+    const elapsedMs = Date.now() - sessionStartMs;
+    const durationElapsed = sessionDurationSec > 0 && elapsedMs >= sessionDurationSec * 1000;
+
+    if (durationElapsed) {
+      // was running, but its duration fully elapsed while the page was closed —
+      // finalize rather than resume a session that's already over
+      log('session duration elapsed while page was closed — finalizing');
+      if (currentDropStart !== null) {
+        dropEvents.push({ start: currentDropStart, end: sessionStartMs + sessionDurationSec * 1000, durationMs: sessionStartMs + sessionDurationSec * 1000 - currentDropStart });
+        currentDropStart = null;
+        renderDropEvents();
+      }
+      running = false;
+      startBtn.textContent = 'Start Monitoring';
+      durationSelect.disabled = false;
+      setPhase('Done — duration reached while closed.');
+      renderProtocolPanel();
+      const finalSnapshot = saveSession();
+      const actualEndMs = sessionStartMs + sessionDurationSec * 1000; // when it
+        // genuinely ended, not Date.now() (whenever the page happened to reopen)
+      archiveCompletedSession(finalSnapshot, actualEndMs);
+      return;
+    }
+
+    // still within the intended duration (or open-ended) — resume monitoring
+    // in place: timers restart, sessionStartMs is untouched so elapsed/remaining
+    // math continues correctly across the gap
+    log('resuming session after reload');
+    isResumedRun = true;
+    startBtn.textContent = 'Stop Monitoring';
+    durationSelect.disabled = true;
+    setPhase('Monitoring… (resumed)');
+
+    runSinglePing();
+    runThroughputSpotCheck();
+    pingTimer = setInterval(runSinglePing, PING_INTERVAL_MS);
+    throughputTimer = setInterval(runThroughputSpotCheck, THROUGHPUT_INTERVAL_MS);
+    elapsedTimer = setInterval(() => {
+      updateElapsedDisplay();
+      renderProtocolPanel();
+      if (sessionDurationSec > 0 && Date.now() - sessionStartMs >= sessionDurationSec * 1000) {
+        stopMonitoring('duration reached');
+      }
+    }, 1000);
+
+    renderProtocolPanel();
+  }
+
+  clearBtn.addEventListener('click', () => {
+    if (running) stopMonitoring('manual stop');
+    clearSession();
+    resetSessionState();
+    sessionStartMs = 0; // signals "no session has run" — renderStabilityScore checks this
+    els.connType.textContent = '—';
+    setPhase('');
+    elapsedEl.textContent = '';
+    renderProtocolPanel();
+  });
+
+  startBtn.addEventListener('click', () => {
+    if (running) {
+      stopMonitoring('manual stop');
+    } else {
+      startMonitoring();
+    }
+  });
+
+  restoreSession();
+  renderHistoryTable();
+})();
+</script>
+
+</body>
+</html>
