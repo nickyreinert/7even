@@ -39,6 +39,31 @@
     min-height: 18px;
   }
 
+  .live-indicator {
+    position: relative;
+    height: 3px;
+    border-radius: 2px;
+    background: #161616;
+    overflow: hidden;
+    margin: -6px 0 12px;
+    display: none;
+  }
+  .live-indicator.active { display: block; }
+  .live-indicator-bar {
+    position: absolute;
+    top: 0;
+    left: -40%;
+    height: 100%;
+    width: 40%;
+    border-radius: 2px;
+    background: linear-gradient(90deg, transparent, #2563eb, transparent);
+    animation: live-sweep 1.3s ease-in-out infinite;
+  }
+  @keyframes live-sweep {
+    0%   { left: -40%; }
+    100% { left: 100%; }
+  }
+
   .grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -320,6 +345,7 @@
 <button id="startBtn">Start Monitoring</button>
 <div class="elapsed" id="elapsed"></div>
 <div class="phase" id="phase"></div>
+<div class="live-indicator" id="liveIndicator"><div class="live-indicator-bar"></div></div>
 <div class="toggle-log" id="clearBtn">clear saved session</div>
 
 <div class="grid">
@@ -395,6 +421,19 @@
 
 <div class="protocol-note" id="protocolNote"></div>
 
+<div class="site-footer">
+  <div class="site-footer-tools">
+    <a href="https://8.1-1-1.de" target="_blank" rel="noopener">8.1-1-1.de</a>
+    <a href="https://9.1-1-1.de" target="_blank" rel="noopener">9.1-1-1.de</a>
+  </div>
+  <div class="site-footer-institut">
+    A project by <a href="https://institut-fdh.de" target="_blank" rel="noopener">Institut für digitale Herausforderungen</a>
+  </div>
+  <div class="site-footer-coffee">
+    <a href="https://buymeacoffee.com/nickyreinert" target="_blank" rel="noopener">☕ Buy me a coffee</a>
+  </div>
+</div>
+
 <script>
 (function() {
   'use strict';
@@ -428,6 +467,7 @@
   const durationSelect = document.getElementById('durationSelect');
   const phaseEl = document.getElementById('phase');
   const elapsedEl = document.getElementById('elapsed');
+  const liveIndicator = document.getElementById('liveIndicator');
   const logEl = document.getElementById('log');
   const toggleLogEl = document.getElementById('toggleLog');
   const qualityWrap = document.getElementById('qualityWrap');
@@ -617,6 +657,10 @@
 
   function setPhase(text) {
     phaseEl.textContent = text;
+  }
+
+  function setLiveIndicator(active) {
+    liveIndicator.classList.toggle('active', active);
   }
 
   function median(arr) {
@@ -1146,6 +1190,7 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     startBtn.textContent = 'Stop Monitoring';
     durationSelect.disabled = true;
     setPhase('Monitoring…');
+    setLiveIndicator(true);
 
     // fire one immediately, then on interval — for both ping and throughput,
     // otherwise setInterval's delayed-first-fire means short sessions (e.g. 1min
@@ -1169,6 +1214,7 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
   function stopMonitoring(reason) {
     running = false;
     isResumedRun = false;
+    setLiveIndicator(false);
     clearInterval(pingTimer);
     clearInterval(throughputTimer);
     clearInterval(elapsedTimer);
@@ -1235,6 +1281,7 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     if (!running) {
       // previously stopped/completed session — just display it, nothing auto-fires
       setPhase('Restored previous session.');
+      setLiveIndicator(false);
       startBtn.textContent = 'Start Monitoring';
       durationSelect.disabled = false;
       renderProtocolPanel();
@@ -1254,6 +1301,7 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
         renderDropEvents();
       }
       running = false;
+      setLiveIndicator(false);
       startBtn.textContent = 'Start Monitoring';
       durationSelect.disabled = false;
       setPhase('Done — duration reached while closed.');
@@ -1273,6 +1321,7 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     startBtn.textContent = 'Stop Monitoring';
     durationSelect.disabled = true;
     setPhase('Monitoring… (resumed)');
+    setLiveIndicator(true);
 
     runSinglePing();
     runThroughputSpotCheck();
