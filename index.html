@@ -1514,6 +1514,7 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
   }
 
   function exportSessionData() {
+    commitAdvSettingsInputs();
     const data = buildExportData();
     const json = JSON.stringify(data, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
@@ -1543,6 +1544,17 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     input.value = value; // reflect clamped value back into the field
     saveSettings();
     renderProtocolPanel();
+  }
+
+  function commitAdvSettingsInputs() {
+    // Number inputs only fire 'change' on blur/Enter — if the user typed a
+    // new value and immediately clicked export without leaving the field,
+    // the PROBE_TIMEOUT_MS etc. variables wouldn't reflect it yet. Re-run the
+    // same commit logic against whatever's currently in the fields first, so
+    // export always reports the settings actually in effect, not stale ones.
+    handleTimeoutInputChange(advProbeTimeoutInput, TIMEOUT_BOUNDS.probe, v => { PROBE_TIMEOUT_MS = v; });
+    handleTimeoutInputChange(advSweepTimeoutInput, TIMEOUT_BOUNDS.sweep, v => { SWEEP_TIMEOUT_MS = v; });
+    handleTimeoutInputChange(advUploadTimeoutInput, TIMEOUT_BOUNDS.upload, v => { UPLOAD_TIMEOUT_MS = v; });
   }
 
   advProbeTimeoutInput.addEventListener('change', () => {
