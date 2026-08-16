@@ -688,6 +688,11 @@
       failuresAtLastTick,
       connTypeLabel: els.connType.textContent,
       logLines,
+      settings: {
+        probeTimeoutMs: PROBE_TIMEOUT_MS,
+        sweepTimeoutMs: SWEEP_TIMEOUT_MS,
+        uploadTimeoutMs: UPLOAD_TIMEOUT_MS,
+      },
     };
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
