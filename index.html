@@ -161,6 +161,13 @@
     text-align: center;
     margin-top: 10px;
     text-decoration: underline;
+    cursor: pointer;
+  }
+
+  .toggle-log-row {
+    display: flex;
+    justify-content: center;
+    gap: 16px;
   }
 
   .protocol-note {
@@ -169,6 +176,48 @@
     margin-top: 20px;
     line-height: 1.4;
     white-space: pre-line;
+  }
+
+  .adv-settings {
+    margin-top: 16px;
+    font-size: 12px;
+  }
+  .adv-settings summary {
+    cursor: pointer;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-size: 11px;
+  }
+  .adv-settings-body {
+    margin-top: 12px;
+    padding: 12px;
+    background: #161616;
+    border: 1px solid #2a2a2a;
+    border-radius: 8px;
+  }
+  .adv-settings-field {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+    color: #ccc;
+  }
+  .adv-settings-field input {
+    width: 90px;
+    background: #0a0a0a;
+    border: 1px solid #333;
+    border-radius: 4px;
+    color: #e0e0e0;
+    padding: 6px 8px;
+    font-size: 13px;
+  }
+  .adv-settings-note {
+    font-size: 10px;
+    color: #808080;
+    line-height: 1.4;
+    margin-top: 4px;
   }
 
   .site-footer {
@@ -346,7 +395,10 @@
 <div class="elapsed" id="elapsed"></div>
 <div class="phase" id="phase"></div>
 <div class="live-indicator" id="liveIndicator"><div class="live-indicator-bar"></div></div>
-<div class="toggle-log" id="clearBtn">clear saved session</div>
+<div class="toggle-log-row">
+  <div class="toggle-log" id="clearBtn">clear saved session</div>
+  <div class="toggle-log" id="exportBtn">export session data</div>
+</div>
 
 <div class="grid">
   <div class="card">
@@ -421,6 +473,26 @@
 
 <div class="protocol-note" id="protocolNote"></div>
 
+<details class="adv-settings" id="advSettings">
+  <summary>Advanced settings</summary>
+  <div class="adv-settings-body">
+    <label class="adv-settings-field">
+      <span>Ping timeout (ms)</span>
+      <input type="number" id="advProbeTimeout" min="500" max="30000" step="100">
+    </label>
+    <label class="adv-settings-field">
+      <span>Download timeout (ms)</span>
+      <input type="number" id="advSweepTimeout" min="2000" max="60000" step="500">
+    </label>
+    <label class="adv-settings-field">
+      <span>Upload timeout (ms)</span>
+      <input type="number" id="advUploadTimeout" min="2000" max="60000" step="500">
+    </label>
+    <div class="adv-settings-note">A request that doesn't complete within its timeout counts as failed (AbortError) — that's not proof the connection died, just that it didn't finish in time. Raise these on a slow or high-latency link to stop it misreading "slow" as "lost". Changes apply to the next probe/check and are saved for next time.</div>
+    <div class="toggle-log" id="advResetBtn">reset to defaults</div>
+  </div>
+</details>
+
 <div class="site-footer">
   <div class="site-footer-tools">
     <a href="https://8.1-1-1.de" target="_blank" rel="noopener">8.1-1-1.de</a>
@@ -444,7 +516,6 @@
   const UP_URL = 'https://speed.cloudflare.com/__up';
 
   const PING_INTERVAL_MS = 3000;      // one lightweight probe every 3s, continuously
-  const PROBE_TIMEOUT_MS = 2000;      // a probe that doesn't respond in 2s counts as failed
   const DROP_THRESHOLD_CONSECUTIVE = 2; // 2+ consecutive failed probes = a drop event begins
   const THROUGHPUT_INTERVAL_MS = 60_000; // spot-check once per 60s, not continuously
 
@@ -458,9 +529,64 @@
   // concurrent requests on a constrained link would compete with each other and
   // contaminate the result.
   const DOWNLOAD_SWEEP_SIZES = [4_000, 16_000, 64_000, 256_000, 1_000_000, 5_000_000];
-  const SWEEP_TIMEOUT_MS = 10_000;
 
   const UPLOAD_BYTES = 2_000_000;
+
+  // ---- Advanced settings: request timeouts (user-adjustable, persisted) ----
+  // A timeout that fires before a response completes surfaces as AbortError —
+  // that's a threshold judgment call ("didn't finish in time"), not proof the
+  // connection itself died. On a slow/high-latency link these defaults can
+  // read as "failed" when given more time they'd have succeeded, so they're
+  // exposed for raising rather than baked in.
+  const SETTINGS_KEY = 'speedtest_settings_v1';
+  const DEFAULT_PROBE_TIMEOUT_MS = 2000;   // a probe that doesn't respond in 2s counts as failed
+  const DEFAULT_SWEEP_TIMEOUT_MS = 10_000;
+  const DEFAULT_UPLOAD_TIMEOUT_MS = 15_000;
+  const TIMEOUT_BOUNDS = {
+    probe: { min: 500, max: 30_000 },
+    sweep: { min: 2_000, max: 60_000 },
+    upload: { min: 2_000, max: 60_000 },
+  };
+
+  let PROBE_TIMEOUT_MS = DEFAULT_PROBE_TIMEOUT_MS;
+  let SWEEP_TIMEOUT_MS = DEFAULT_SWEEP_TIMEOUT_MS;
+  let UPLOAD_TIMEOUT_MS = DEFAULT_UPLOAD_TIMEOUT_MS;
+
+  function clamp(n, min, max) {
+    return Math.min(max, Math.max(min, n));
+  }
+
+  function loadSettings() {
+    let raw;
+    try {
+      raw = localStorage.getItem(SETTINGS_KEY);
+    } catch (e) {
+      return;
+    }
+    if (!raw) return;
+    try {
+      const s = JSON.parse(raw);
+      if (Number.isFinite(s.probeTimeoutMs)) PROBE_TIMEOUT_MS = clamp(s.probeTimeoutMs, TIMEOUT_BOUNDS.probe.min, TIMEOUT_BOUNDS.probe.max);
+      if (Number.isFinite(s.sweepTimeoutMs)) SWEEP_TIMEOUT_MS = clamp(s.sweepTimeoutMs, TIMEOUT_BOUNDS.sweep.min, TIMEOUT_BOUNDS.sweep.max);
+      if (Number.isFinite(s.uploadTimeoutMs)) UPLOAD_TIMEOUT_MS = clamp(s.uploadTimeoutMs, TIMEOUT_BOUNDS.upload.min, TIMEOUT_BOUNDS.upload.max);
+    } catch (e) {
+      // corrupt settings — fall back to defaults already assigned above
+    }
+  }
+
+  function saveSettings() {
+    try {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+        probeTimeoutMs: PROBE_TIMEOUT_MS,
+        sweepTimeoutMs: SWEEP_TIMEOUT_MS,
+        uploadTimeoutMs: UPLOAD_TIMEOUT_MS,
+      }));
+    } catch (e) {
+      // storage full or unavailable — settings just won't persist across reloads
+    }
+  }
+
+  loadSettings();
 
   // ---- DOM refs ----
   const startBtn = document.getElementById('startBtn');
@@ -474,6 +600,11 @@
   const dropEventsList = document.getElementById('dropEventsList');
   const protocolNoteEl = document.getElementById('protocolNote');
   const clearBtn = document.getElementById('clearBtn');
+  const exportBtn = document.getElementById('exportBtn');
+  const advProbeTimeoutInput = document.getElementById('advProbeTimeout');
+  const advSweepTimeoutInput = document.getElementById('advSweepTimeout');
+  const advUploadTimeoutInput = document.getElementById('advUploadTimeout');
+  const advResetBtn = document.getElementById('advResetBtn');
   const canvasDown = document.getElementById('chartDown');
   const canvasUp = document.getElementById('chartUp');
   const canvasLoss = document.getElementById('chartLoss');
@@ -1012,7 +1143,7 @@
       const payload = new Uint8Array(UPLOAD_BYTES);
       crypto.getRandomValues(payload.subarray(0, Math.min(65536, UPLOAD_BYTES)));
       const t0 = performance.now();
-      await timedFetch(UP_URL, { method: 'POST', body: payload }, 15000);
+      await timedFetch(UP_URL, { method: 'POST', body: payload }, UPLOAD_TIMEOUT_MS);
       const upDuration = (performance.now() - t0) / 1000;
       lastUpMbps = (UPLOAD_BYTES * 8) / upDuration / 1_000_000;
       const upFmt = formatMbps(lastUpMbps);
@@ -1145,7 +1276,7 @@ Ping: 1 HTTPS GET every ${intervalSec}s to ${TRACE_URL}, ${PROBE_TIMEOUT_MS}ms t
 Latency = median RTT of successful pings. Jitter = stddev of same.
 Loss = failed pings / total pings, session-wide.
 Drop event = ${DROP_THRESHOLD_CONSECUTIVE}+ consecutive failed pings; ends on first success after.
-Throughput spot-check every ${spotCheckMin} min: sequential download SWEEP at ${DOWNLOAD_SWEEP_SIZES.map(formatBytes).join('/')}, ${SWEEP_TIMEOUT_MS/1000}s fixed timeout per size (one size at a time, never parallel — a cutoff at a specific size across many ticks suggests size-based dropping, not general link badness). Upload: POST ${(UPLOAD_BYTES/1e6).toFixed(0)}MB to __up.
+Throughput spot-check every ${spotCheckMin} min: sequential download SWEEP at ${DOWNLOAD_SWEEP_SIZES.map(formatBytes).join('/')}, ${SWEEP_TIMEOUT_MS/1000}s fixed timeout per size (one size at a time, never parallel — a cutoff at a specific size across many ticks suggests size-based dropping, not general link badness). Upload: POST ${(UPLOAD_BYTES/1e6).toFixed(0)}MB to __up, ${UPLOAD_TIMEOUT_MS/1000}s timeout.
 Timing via performance.now(). This measures HTTP-request-layer failure, not raw
 packet loss — browsers have no ICMP/UDP access. Quality thresholds are ITU-style
 convention, not a cited standard. Sweep results show which sizes pass/fail per
@@ -1338,6 +1469,103 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     renderProtocolPanel();
   }
 
+  function buildExportData() {
+    const latency = allRtts.length ? median(allRtts) : null;
+    const jitter = allRtts.length >= 2 ? stddev(allRtts) : null;
+    const lossRate = totalProbes > 0 ? totalFailures / totalProbes : 0;
+    const stability = sessionStartMs
+      ? computeStabilityScore(sessionStartMs, Date.now(), dropEvents, currentDropStart, jitter, lossRate * 100)
+      : null;
+
+    return {
+      exportedAt: new Date().toISOString(),
+      settings: {
+        probeTimeoutMs: PROBE_TIMEOUT_MS,
+        sweepTimeoutMs: SWEEP_TIMEOUT_MS,
+        uploadTimeoutMs: UPLOAD_TIMEOUT_MS,
+        pingIntervalMs: PING_INTERVAL_MS,
+        throughputIntervalMs: THROUGHPUT_INTERVAL_MS,
+      },
+      currentSession: {
+        running,
+        sessionStartMs,
+        sessionDurationSec,
+        connectionType: els.connType.textContent,
+        summary: {
+          latencyMs: latency,
+          jitterMs: jitter,
+          lossPct: lossRate * 100,
+          downloadMbps: lastDownMbps,
+          uploadMbps: lastUpMbps,
+          stability,
+        },
+        totalProbes,
+        totalFailures,
+        dropEvents,
+        allRtts,
+        downHistory,
+        upHistory,
+        lossHistory,
+        sizeSweepHistory,
+        logLines,
+      },
+      completedSessionHistory: loadHistory(),
+    };
+  }
+
+  function exportSessionData() {
+    const data = buildExportData();
+    const json = JSON.stringify(data, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `speedtest-export-${ts}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    log('exported session data');
+  }
+
+  function syncAdvSettingsInputs() {
+    advProbeTimeoutInput.value = PROBE_TIMEOUT_MS;
+    advSweepTimeoutInput.value = SWEEP_TIMEOUT_MS;
+    advUploadTimeoutInput.value = UPLOAD_TIMEOUT_MS;
+  }
+
+  function handleTimeoutInputChange(input, bounds, assign) {
+    const parsed = parseInt(input.value, 10);
+    if (!Number.isFinite(parsed)) { syncAdvSettingsInputs(); return; } // invalid — revert display
+    const value = clamp(parsed, bounds.min, bounds.max);
+    assign(value);
+    input.value = value; // reflect clamped value back into the field
+    saveSettings();
+    renderProtocolPanel();
+  }
+
+  advProbeTimeoutInput.addEventListener('change', () => {
+    handleTimeoutInputChange(advProbeTimeoutInput, TIMEOUT_BOUNDS.probe, v => { PROBE_TIMEOUT_MS = v; });
+  });
+  advSweepTimeoutInput.addEventListener('change', () => {
+    handleTimeoutInputChange(advSweepTimeoutInput, TIMEOUT_BOUNDS.sweep, v => { SWEEP_TIMEOUT_MS = v; });
+  });
+  advUploadTimeoutInput.addEventListener('change', () => {
+    handleTimeoutInputChange(advUploadTimeoutInput, TIMEOUT_BOUNDS.upload, v => { UPLOAD_TIMEOUT_MS = v; });
+  });
+
+  advResetBtn.addEventListener('click', () => {
+    PROBE_TIMEOUT_MS = DEFAULT_PROBE_TIMEOUT_MS;
+    SWEEP_TIMEOUT_MS = DEFAULT_SWEEP_TIMEOUT_MS;
+    UPLOAD_TIMEOUT_MS = DEFAULT_UPLOAD_TIMEOUT_MS;
+    saveSettings();
+    syncAdvSettingsInputs();
+    renderProtocolPanel();
+  });
+
+  exportBtn.addEventListener('click', exportSessionData);
+
   clearBtn.addEventListener('click', () => {
     if (running) stopMonitoring('manual stop');
     clearSession();
@@ -1357,6 +1585,7 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     }
   });
 
+  syncAdvSettingsInputs();
   restoreSession();
   renderHistoryTable();
 })();
