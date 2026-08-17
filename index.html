@@ -423,10 +423,11 @@
 
 <div class="chart-block">
   <div class="chart-title-row">
-    <div class="chart-title">Live Rate — during each check (Mbps)</div>
+    <div class="chart-title">Live — last 65s (ping ms bars + stream Mbps line)</div>
     <div class="chart-legend">
       <span class="chart-legend-item"><span class="chart-legend-dot" style="background:#2563eb"></span>down</span>
       <span class="chart-legend-item"><span class="chart-legend-dot" style="background:#60a5fa"></span>up</span>
+      <span class="chart-legend-item"><span class="chart-legend-dot" style="background:#a0a0a0"></span>ping</span>
     </div>
   </div>
   <canvas id="chartLiveRate" class="chart-canvas"></canvas>
@@ -529,7 +530,7 @@
       <span>Stream test timeout (ms)</span>
       <input type="number" id="advStreamTimeout" min="5000" max="60000" step="1000">
     </label>
-    <div class="adv-settings-note">A request that doesn't complete within its timeout counts as failed (AbortError) — that's not proof the connection died, just that it didn't finish in time. Raise these on a slow or high-latency link to stop it misreading "slow" as "lost". Stream test timeout covers the whole live download+upload check over WebSocket. Changes apply to the next probe/check and are saved for next time.</div>
+    <div class="adv-settings-note">A request that doesn't complete within its timeout counts as failed (AbortError) — that's not proof the connection died, just that it didn't finish in time. Raise these on a slow or high-latency link to stop it misreading "slow" as "lost". Stream test timeout applies separately to each phase of the live check: connect+download get up to this long, then upload gets its own fresh window of the same length (asymmetric uplinks are common — upload shouldn't inherit whatever time download happened to use). Changes apply to the next probe/check and are saved for next time.</div>
     <div class="toggle-log" id="advResetBtn">reset to defaults</div>
   </div>
 </details>
@@ -722,12 +723,24 @@
   let probesAtLastTick = 0;
   let failuresAtLastTick = 0;
 
-  // Intra-transfer rate samples for the CURRENT/most recent stream test only
-  // — reset at the start of each tick, not persisted (transient, live-only;
-  // downHistory/upHistory above already cover session-long trend from each
-  // tick's final number). t is ms elapsed since that test started.
+  // Combined rolling live view: ping RTT bars + streaming rate line on one
+  // shared, scrolling real-time window — not persisted (transient, live-only;
+  // downHistory/upHistory/lossHistory above already cover session-long trend
+  // from each tick's final number, this is just "what's happening right
+  // now"). t is Date.now() ms, so both feeds share one real-time axis.
+  const LIVE_WINDOW_MS = 65_000; // a bit over one throughput interval, so the
+                                  // last check's episode stays visible until
+                                  // the next one starts
   const LIVE_RATE_SAMPLE_CAP = 600;
+  const LIVE_PING_SAMPLE_CAP = 60;
   let liveRateSamples = []; // [{ t: number, mbps: number, phase: 'down'|'up' }]
+  let livePingSamples = []; // [{ t: number, rttMs: number|null }] — null = failed probe
+
+  function trimLiveWindow() {
+    const cutoff = Date.now() - LIVE_WINDOW_MS;
+    while (liveRateSamples.length && liveRateSamples[0].t < cutoff) liveRateSamples.shift();
+    while (livePingSamples.length && livePingSamples[0].t < cutoff) livePingSamples.shift();
+  }
 
   let logLines = [];
   let isResumedRun = false;
@@ -943,6 +956,8 @@
   }
 
   function renderLiveRateChart() {
+    trimLiveWindow();
+
     const canvas = canvasLiveRate;
     const dpr = window.devicePixelRatio || 1;
     const cssWidth = canvas.clientWidth || 300;
@@ -957,7 +972,7 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cssWidth, cssHeight);
 
-    if (liveRateSamples.length < 2) {
+    if (liveRateSamples.length === 0 && livePingSamples.length === 0) {
       ctx.fillStyle = '#444';
       ctx.font = '11px -apple-system, sans-serif';
       ctx.fillText('no data yet', 8, cssHeight / 2);
@@ -967,37 +982,71 @@
     const padding = 4;
     const plotWidth = cssWidth - padding * 2;
     const plotHeight = cssHeight - padding * 2;
-    const maxT = Math.max(1, liveRateSamples[liveRateSamples.length - 1].t);
-    const maxVal = Math.max(1, ...liveRateSamples.map(p => p.mbps));
+    const now = Date.now();
+    const windowStart = now - LIVE_WINDOW_MS;
+    const toX = (t) => padding + ((t - windowStart) / LIVE_WINDOW_MS) * plotWidth;
 
-    const toXY = (p) => [
-      padding + (p.t / maxT) * plotWidth,
-      padding + plotHeight - (p.mbps / maxVal) * plotHeight,
-    ];
+    // Ping RTT as a bar strip along the bottom band — a separate, smaller
+    // scale from the rate line above it (ms and Mbps aren't comparable, and
+    // ping fires continuously all session while the rate line is bursty), so
+    // they coexist without one drowning out the other or needing a shared
+    // dual-axis that's fiddly to read at this size.
+    const pingBandHeight = plotHeight * 0.32;
+    const pingBandTop = padding + plotHeight - pingBandHeight;
+    const validPings = livePingSamples.filter(p => p.rttMs != null).map(p => p.rttMs);
+    const maxPing = Math.max(20, ...validPings);
+    const barWidth = 2;
 
-    const phaseColor = { down: '#2563eb', up: '#60a5fa' };
-    ctx.lineWidth = 1.5;
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
+    livePingSamples.forEach((p) => {
+      const x = toX(p.t);
+      if (p.rttMs == null) {
+        // failed probe — short red tick at the band floor rather than a bar,
+        // so a miss reads as distinct from "measured near-zero latency"
+        ctx.fillStyle = '#f87171';
+        ctx.fillRect(x - barWidth / 2, pingBandTop + pingBandHeight - 4, barWidth, 4);
+        return;
+      }
+      const barHeight = Math.max(1, (p.rttMs / maxPing) * pingBandHeight);
+      ctx.fillStyle = 'rgba(160, 160, 160, 0.55)';
+      ctx.fillRect(x - barWidth / 2, pingBandTop + pingBandHeight - barHeight, barWidth, barHeight);
+    });
 
-    for (let i = 1; i < liveRateSamples.length; i++) {
-      const [x0, y0] = toXY(liveRateSamples[i - 1]);
-      const [x1, y1] = toXY(liveRateSamples[i]);
-      ctx.strokeStyle = phaseColor[liveRateSamples[i].phase] || '#2563eb';
-      ctx.beginPath();
-      ctx.moveTo(x0, y0);
-      ctx.lineTo(x1, y1);
-      ctx.stroke();
+    // Down/up rate line over the FULL height, its own independent scale —
+    // sparse by nature (only present during the brief window each throughput
+    // check actually runs), so gaps between checks are real gaps, not drawn
+    // as a misleading line bridging two unrelated episodes ~60s apart.
+    if (liveRateSamples.length > 0) {
+      const maxVal = Math.max(1, ...liveRateSamples.map(p => p.mbps));
+      const toY = (mbps) => padding + plotHeight - (mbps / maxVal) * plotHeight;
+      const phaseColor = { down: '#2563eb', up: '#60a5fa' };
+      const MAX_CONNECT_GAP_MS = 2000; // don't bridge separate check episodes
+
+      ctx.lineWidth = 1.5;
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+
+      for (let i = 1; i < liveRateSamples.length; i++) {
+        const prev = liveRateSamples[i - 1];
+        const cur = liveRateSamples[i];
+        if (cur.t - prev.t > MAX_CONNECT_GAP_MS) continue; // gap = new episode, don't connect
+        ctx.strokeStyle = phaseColor[cur.phase] || '#2563eb';
+        ctx.beginPath();
+        ctx.moveTo(toX(prev.t), toY(prev.mbps));
+        ctx.lineTo(toX(cur.t), toY(cur.mbps));
+        ctx.stroke();
+      }
+
+      // a moving cursor dot, but only while a check is genuinely active right
+      // now — drawing it on a sample that's tens of seconds stale would read
+      // as "still live" when it's actually just the last completed episode
+      const last = liveRateSamples[liveRateSamples.length - 1];
+      if (now - last.t < 3000) {
+        ctx.fillStyle = phaseColor[last.phase] || '#2563eb';
+        ctx.beginPath();
+        ctx.arc(toX(last.t), toY(last.mbps), 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
-
-    // a small dot at the latest sample — a "moving" cursor while a check is
-    // actively streaming, frozen at the last position once it finishes
-    const last = liveRateSamples[liveRateSamples.length - 1];
-    const [lx, ly] = toXY(last);
-    ctx.fillStyle = phaseColor[last.phase] || '#2563eb';
-    ctx.beginPath();
-    ctx.arc(lx, ly, 2.5, 0, Math.PI * 2);
-    ctx.fill();
   }
 
   function lossBarColor(lossPct) {
@@ -1173,10 +1222,14 @@
       if (allRtts.length > 2000) allRtts.shift(); // cap memory over long sessions
       recordProbeResult(true);
       log(`ping ok, ${rtt.toFixed(1)}ms`);
+      livePingSamples.push({ t: Date.now(), rttMs: rtt });
     } catch (e) {
       recordProbeResult(false);
       log(`ping FAILED (${e.name})`);
+      livePingSamples.push({ t: Date.now(), rttMs: null });
     }
+    if (livePingSamples.length > LIVE_PING_SAMPLE_CAP) livePingSamples.shift();
+    renderLiveRateChart();
     updateStatsDisplay();
     saveSession();
   }
@@ -1229,9 +1282,15 @@
   // request/response cycles. Resolves with { downMbps, upMbps } — either can
   // be null independently (e.g. connection drops mid-upload after a
   // successful download) rather than an all-or-nothing failure, matching the
-  // resilience of the two separate try/catches this replaced. Never rejects;
-  // STREAM_TIMEOUT_MS bounds the worst case (hung connection, no close/error
-  // ever firing) so callers don't need their own timeout wrapper.
+  // resilience of the two separate try/catches this replaced. Never rejects.
+  //
+  // STREAM_TIMEOUT_MS is a PER-PHASE budget, not one shared clock: connect+
+  // download gets a fresh window, then upload gets its own fresh window when
+  // it starts. Real uplinks are commonly far slower than downlink (asymmetric
+  // consumer connections), so charging upload for however long download
+  // happened to take first was cutting it off before slow-but-working links
+  // could ever finish — this is what was causing Upload to sit at "—"
+  // indefinitely on real networks despite Download succeeding.
   function runStreamTest(onDownProgress, onUpProgress) {
     return new Promise((resolve) => {
       let settled = false;
@@ -1240,27 +1299,35 @@
       let downBytes = 0;
       let downStartT = 0;
       let upStartT = 0;
+      let upBytesSent = 0;
+      let phase = 'connecting'; // 'connecting' | 'down' | 'up' — for diagnostics on failure
       let ws;
+      let phaseTimer = null;
 
-      const overallTimer = setTimeout(finish, STREAM_TIMEOUT_MS);
+      function armPhaseTimer() {
+        clearTimeout(phaseTimer);
+        phaseTimer = setTimeout(() => finish('timeout'), STREAM_TIMEOUT_MS);
+      }
 
-      function finish() {
+      function finish(reason) {
         if (settled) return;
         settled = true;
-        clearTimeout(overallTimer);
+        clearTimeout(phaseTimer);
         try { ws && ws.close(); } catch (e) { /* already closed/closing */ }
-        resolve({ downMbps, upMbps });
+        resolve({ downMbps, upMbps, reason: reason || 'ok', phase, downBytes, upBytesSent });
       }
 
       try {
         ws = new WebSocket(WS_URL);
       } catch (e) {
-        finish();
+        finish('exception');
         return;
       }
       ws.binaryType = 'arraybuffer';
+      armPhaseTimer(); // covers connect + download
 
       ws.addEventListener('open', () => {
+        phase = 'down';
         downStartT = performance.now();
         ws.send(JSON.stringify({ type: 'down_start', bytes: STREAM_DOWN_BYTES }));
       });
@@ -1294,12 +1361,12 @@
           const upDurationMs = performance.now() - upStartT;
           upMbps = msg.bytesReceived > 0 ? (msg.bytesReceived * 8) / (upDurationMs / 1000) / 1_000_000 : null;
           if (upMbps != null && onUpProgress) onUpProgress(upMbps);
-          finish();
+          finish('ok');
         }
       });
 
-      ws.addEventListener('error', finish);
-      ws.addEventListener('close', finish);
+      ws.addEventListener('error', () => finish('error'));
+      ws.addEventListener('close', () => finish('closed'));
 
       const STREAM_UP_CHUNK_SIZE = 65536;
       // Pace sends by the socket's OWN drain rate (bufferedAmount), not by how
@@ -1309,6 +1376,8 @@
 
       async function pumpUpload() {
         if (settled) return;
+        phase = 'up';
+        armPhaseTimer(); // fresh budget for upload specifically, not shared with download
         ws.send(JSON.stringify({ type: 'up_start' }));
         upStartT = performance.now();
         let sent = 0;
@@ -1324,6 +1393,7 @@
           const toSend = remaining < STREAM_UP_CHUNK_SIZE ? chunk.slice(0, remaining) : chunk;
           ws.send(toSend);
           sent += toSend.byteLength;
+          upBytesSent = sent;
           const elapsedSec = (performance.now() - upStartT) / 1000;
           if (elapsedSec > 0.05 && onUpProgress) {
             onUpProgress((sent * 8) / elapsedSec / 1_000_000);
@@ -1369,11 +1439,8 @@
     sizeSweepHistory.push({ t: tickTime, results: sweepResults });
     if (sizeSweepHistory.length > CHART_HISTORY_CAP) sizeSweepHistory.shift();
 
-    liveRateSamples = [];
-    const streamTestStartT = performance.now();
-
     function recordLiveSample(mbps, phase) {
-      liveRateSamples.push({ t: performance.now() - streamTestStartT, mbps, phase });
+      liveRateSamples.push({ t: Date.now(), mbps, phase });
       if (liveRateSamples.length > LIVE_RATE_SAMPLE_CAP) liveRateSamples.shift();
       renderLiveRateChart();
     }
@@ -1399,7 +1466,7 @@
       log(`stream download: ${lastDownMbps.toFixed(2)} Mbps`);
     } else {
       els.down.innerHTML = '—';
-      log('stream download FAILED');
+      log(`stream download FAILED (${streamResult.reason}, stalled in ${streamResult.phase} phase, ${formatBytes(streamResult.downBytes)} received)`);
     }
     downHistory.push({ t: tickTime, mbps: lastDownMbps });
     if (downHistory.length > CHART_HISTORY_CAP) downHistory.shift();
@@ -1408,9 +1475,13 @@
       const f = formatMbps(lastUpMbps);
       els.up.innerHTML = `${f.value}<span class="card-unit"> ${f.unit}</span>`;
       log(`stream upload: ${lastUpMbps.toFixed(2)} Mbps`);
-    } else {
+    } else if (streamResult.phase === 'up') {
       els.up.innerHTML = '—';
-      log('stream upload FAILED');
+      log(`stream upload FAILED (${streamResult.reason}, ${formatBytes(streamResult.upBytesSent)}/${formatBytes(STREAM_UP_BYTES)} sent)`);
+    } else {
+      // never even reached the upload phase — download itself failed first
+      els.up.innerHTML = '—';
+      log('stream upload FAILED (download never completed)');
     }
     upHistory.push({ t: tickTime, mbps: lastUpMbps });
     if (upHistory.length > CHART_HISTORY_CAP) upHistory.shift();
@@ -1538,7 +1609,7 @@ Drop event = ${DROP_THRESHOLD_CONSECUTIVE}+ consecutive failed pings; ends on fi
 Throughput spot-check every ${spotCheckMin} min, two independent checks:
 1) Download/Upload cards: continuous binary stream over one persistent
 WebSocket to ${WS_URL} — ${formatBytes(STREAM_DOWN_BYTES)} down then ${formatBytes(STREAM_UP_BYTES)} up,
-live-updating as bytes flow, ${STREAM_TIMEOUT_MS/1000}s timeout for the whole round trip.
+live-updating as bytes flow, ${STREAM_TIMEOUT_MS/1000}s timeout per phase (download and upload budgeted separately).
 2) Size Sweep chart only (diagnostic, does not feed the cards above):
 sequential HTTPS GETs at ${DOWNLOAD_SWEEP_SIZES.map(formatBytes).join('/')}, ${SWEEP_TIMEOUT_MS/1000}s timeout per size, one
 at a time — a cutoff at a specific size across many ticks suggests size-based
@@ -1563,6 +1634,7 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     lossHistory = [];
     sizeSweepHistory = [];
     liveRateSamples = [];
+    livePingSamples = [];
     probesAtLastTick = 0;
     failuresAtLastTick = 0;
     logLines = [];
@@ -1600,6 +1672,7 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     elapsedTimer = setInterval(() => {
       updateElapsedDisplay();
       renderProtocolPanel();
+      renderLiveRateChart(); // keeps the rolling window visibly scrolling even without new samples
       if (sessionDurationSec > 0 && Date.now() - sessionStartMs >= sessionDurationSec * 1000) {
         stopMonitoring('duration reached');
       }
@@ -1728,6 +1801,7 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     elapsedTimer = setInterval(() => {
       updateElapsedDisplay();
       renderProtocolPanel();
+      renderLiveRateChart(); // keeps the rolling window visibly scrolling even without new samples
       if (sessionDurationSec > 0 && Date.now() - sessionStartMs >= sessionDurationSec * 1000) {
         stopMonitoring('duration reached');
       }
