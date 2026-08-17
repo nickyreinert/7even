@@ -1778,6 +1778,13 @@
           // binary frame — part of the current download round
           if (phase !== 'down') return;
           downBytesTotal += event.data.byteLength;
+          // Bytes just arrived, so this round isn't stalled — re-arm here
+          // rather than only at round start. A 500KB round can legitimately
+          // take far longer than STREAM_TIMEOUT_MS on a very slow link while
+          // still trickling in continuously; without this, that case was
+          // indistinguishable from a genuine stall (no bytes at all) and
+          // both fired the same timeout.
+          armStallTimer();
           const nowT = performance.now();
           if (nowT - lastDownProgressT > PROGRESS_THROTTLE_MS) {
             lastDownProgressT = nowT;
@@ -1863,6 +1870,11 @@
           const toSend = remaining < ROUND_CHUNK_SIZE ? chunk.slice(0, remaining) : chunk;
           ws.send(toSend);
           sent += toSend.byteLength;
+          // Mirrors the download-side re-arm: the backpressure wait above
+          // already blocks here when bufferedAmount isn't draining (a real
+          // stall), so reaching this send() means bytes are actually going
+          // out — not stalled, even if the whole round takes a long time.
+          armStallTimer();
           const nowT = performance.now();
           if (nowT - lastUpProgressT > PROGRESS_THROTTLE_MS) {
             lastUpProgressT = nowT;
