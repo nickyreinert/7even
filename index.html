@@ -3,7 +3,18 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Speed Test</title>
+<title>7even</title>
+<meta name="description" content="7even — continuous connection speed test: latency, jitter, request loss, throughput, and drop detection.">
+<meta name="theme-color" content="#0a0a0a">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/icons/icon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/icons/icon-16.png">
+<link rel="apple-touch-icon" href="/icons/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="7even">
+<meta name="mobile-web-app-capable" content="yes">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -411,79 +422,125 @@
   .chart-canvas-tall {
     height: 150px;
   }
+
+  .dashboard-panel {
+    background: #111;
+    border: 1px solid #2a2a2a;
+    border-radius: 12px;
+    padding: 14px;
+    margin-top: 16px;
+  }
+  .dashboard-panel > button { margin-top: 0; }
+  .dashboard-panel .chart-block:first-of-type { margin-top: 14px; }
+
+  .chart-explanation {
+    font-size: 10px;
+    color: #808080;
+    line-height: 1.4;
+    margin-top: 6px;
+  }
+
+  .history-header-links {
+    display: flex;
+    gap: 14px;
+  }
+  .history-header-links .history-clear {
+    cursor: pointer;
+  }
+
+  .adv-settings-checkbox-field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    color: #ccc;
+  }
+  .adv-settings-checkbox-field input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+  }
+  .adv-settings-textarea-field {
+    margin-bottom: 10px;
+  }
+  .adv-settings-textarea-field > span {
+    display: block;
+    color: #ccc;
+    margin-bottom: 6px;
+  }
+  .adv-settings-textarea-field textarea {
+    width: 100%;
+    min-height: 92px;
+    background: #0a0a0a;
+    border: 1px solid #333;
+    border-radius: 4px;
+    color: #e0e0e0;
+    padding: 8px;
+    font-size: 12px;
+    font-family: monospace;
+    resize: vertical;
+  }
 </style>
 </head>
 <body>
 
-<h1>Speed Test</h1>
-<div class="subtitle">Continuous monitor · latency, jitter, request loss, throughput, drop detection</div>
+<h1>7even</h1>
+<div class="subtitle">Speed Test · continuous monitor — latency, jitter, request loss, throughput, drop detection</div>
 
-<button id="startBtn">Start Monitoring</button>
-<div class="elapsed" id="elapsed"></div>
-<div class="phase" id="phase"></div>
-<div class="live-indicator" id="liveIndicator"><div class="live-indicator-bar"></div></div>
+<div class="dashboard-panel">
+  <button id="startBtn">Start Monitoring</button>
+  <div class="elapsed" id="elapsed"></div>
+  <div class="phase" id="phase"></div>
+  <div class="live-indicator" id="liveIndicator"><div class="live-indicator-bar"></div></div>
 
-<div class="chart-block">
-  <div class="chart-title-row">
-    <div class="chart-title">Live — last 65s (ping ms bars + stream Mbps line)</div>
-    <div class="chart-legend">
-      <span class="chart-legend-item"><span class="chart-legend-dot" style="background:#3b82f6"></span>down</span>
-      <span class="chart-legend-item"><span class="chart-legend-dot" style="background:#f59e0b"></span>up</span>
-      <span class="chart-legend-item"><span class="chart-legend-dot" style="background:#a0a0a0"></span>ping</span>
+  <div class="chart-block">
+    <div class="chart-title-row">
+      <div class="chart-title">Live — last 65s (ping ms bars + stream Mbps line)</div>
+      <div class="chart-legend">
+        <span class="chart-legend-item"><span class="chart-legend-dot" style="background:#3b82f6"></span>down</span>
+        <span class="chart-legend-item"><span class="chart-legend-dot" style="background:#f59e0b"></span>up</span>
+        <span class="chart-legend-item"><span class="chart-legend-dot" style="background:#a0a0a0"></span>ping</span>
+      </div>
+    </div>
+    <canvas id="chartLiveRate" class="chart-canvas"></canvas>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="card-label">Latency</div>
+      <div class="card-value" id="valLatency">—<span class="card-unit"> ms</span></div>
+    </div>
+    <div class="card">
+      <div class="card-label">Jitter</div>
+      <div class="card-value" id="valJitter">—<span class="card-unit"> ms</span></div>
+    </div>
+    <div class="card">
+      <div class="card-label">Request Loss</div>
+      <div class="card-value" id="valLoss">—<span class="card-unit"> %</span></div>
+    </div>
+    <div class="card">
+      <div class="card-label">Download</div>
+      <div class="card-value" id="valDown">—<span class="card-unit"> Mbps</span></div>
+    </div>
+    <div class="card">
+      <div class="card-label">Upload</div>
+      <div class="card-value" id="valUp">—<span class="card-unit"> Mbps</span></div>
+    </div>
+    <div class="card">
+      <div class="card-label">Connection</div>
+      <div class="card-value" id="valConnType" style="font-size:16px;">—</div>
     </div>
   </div>
-  <canvas id="chartLiveRate" class="chart-canvas"></canvas>
-</div>
 
-<div class="toggle-log-row">
-  <div class="toggle-log" id="clearBtn">clear saved session</div>
-  <div class="toggle-log" id="exportBtn">export session data</div>
-</div>
+  <div id="qualityWrap"></div>
 
-<div class="grid">
-  <div class="card">
-    <div class="card-label">Latency</div>
-    <div class="card-value" id="valLatency">—<span class="card-unit"> ms</span></div>
+  <div class="stability-block" id="stabilityBlock" style="display:none;">
+    <div class="stability-header">
+      <span class="stability-label">Stability Score</span>
+      <span class="stability-composite" id="stabilityComposite">—</span>
+    </div>
+    <div class="stability-inputs" id="stabilityInputs"></div>
+    <div class="stability-caveat">Not a standard metric — a transparent composite of uptime, jitter, and loss (weights: 50/30/20). Shown with its inputs so you can judge it yourself, not as an authoritative score.</div>
   </div>
-  <div class="card">
-    <div class="card-label">Jitter</div>
-    <div class="card-value" id="valJitter">—<span class="card-unit"> ms</span></div>
-  </div>
-  <div class="card">
-    <div class="card-label">Request Loss</div>
-    <div class="card-value" id="valLoss">—<span class="card-unit"> %</span></div>
-  </div>
-  <div class="card">
-    <div class="card-label">Download</div>
-    <div class="card-value" id="valDown">—<span class="card-unit"> Mbps</span></div>
-  </div>
-  <div class="card">
-    <div class="card-label">Upload</div>
-    <div class="card-value" id="valUp">—<span class="card-unit"> Mbps</span></div>
-  </div>
-  <div class="card">
-    <div class="card-label">Connection</div>
-    <div class="card-value" id="valConnType" style="font-size:16px;">—</div>
-  </div>
-</div>
-
-<div id="qualityWrap"></div>
-
-<div class="stability-block" id="stabilityBlock" style="display:none;">
-  <div class="stability-header">
-    <span class="stability-label">Stability Score</span>
-    <span class="stability-composite" id="stabilityComposite">—</span>
-  </div>
-  <div class="stability-inputs" id="stabilityInputs"></div>
-  <div class="stability-caveat">Not a standard metric — a transparent composite of uptime, jitter, and loss (weights: 50/30/20). Shown with its inputs so you can judge it yourself, not as an authoritative score.</div>
-</div>
-
-<div class="history-block">
-  <div class="history-header">
-    <span class="history-title">Session History</span>
-    <span class="history-clear" id="historyClearBtn">clear history</span>
-  </div>
-  <div id="historyTable"><span class="no-drops">no completed sessions yet</span></div>
 </div>
 
 <div class="drop-events">
@@ -494,22 +551,38 @@
 <div class="chart-block">
   <div class="chart-title">Download — per-check result (Mbps)</div>
   <canvas id="chartDown" class="chart-canvas"></canvas>
+  <div class="chart-explanation">Throughput of each continuous streaming download episode, over the ws-speedtest WebSocket.</div>
 </div>
 <div class="chart-block">
   <div class="chart-title">Upload — per-check result (Mbps)</div>
   <canvas id="chartUp" class="chart-canvas"></canvas>
+  <div class="chart-explanation">Throughput of each continuous streaming upload episode, over the same WebSocket connection.</div>
 </div>
 <div class="chart-block">
   <div class="chart-title">Request Loss (%)</div>
   <canvas id="chartLoss" class="chart-canvas"></canvas>
+  <div class="chart-explanation">Share of ping probes that failed since the previous bar — a per-interval rate, not the session-wide average shown on the card above.</div>
 </div>
 <div class="chart-block">
   <div class="chart-title">Size Sweep · download — green=passed, red=failed</div>
   <canvas id="chartSweep" class="chart-canvas chart-canvas-tall"></canvas>
+  <div class="chart-explanation">Each column is one sweep, each row a chunk size (small to large, top to bottom). A steady cutoff at one size across many columns points to size-based dropping, not general link badness.</div>
 </div>
 <div class="chart-block">
   <div class="chart-title">Size Sweep · upload — green=passed, red=failed</div>
   <canvas id="chartSweepUp" class="chart-canvas chart-canvas-tall"></canvas>
+  <div class="chart-explanation">Same test, upload direction, over the WebSocket connection.</div>
+</div>
+
+<div class="history-block">
+  <div class="history-header">
+    <span class="history-title">Session History</span>
+    <span class="history-header-links">
+      <span class="history-clear" id="historyClearBtn">clear history</span>
+      <span class="history-clear" id="exportBtn">export</span>
+    </span>
+  </div>
+  <div id="historyTable"><span class="no-drops">no completed sessions yet</span></div>
 </div>
 
 <div class="toggle-log" id="toggleLog">show probe log</div>
@@ -551,7 +624,18 @@
       <span>Stream duration per direction (ms)</span>
       <input type="number" id="advStreamDuration" min="5000" max="55000" step="1000">
     </label>
-    <div class="adv-settings-note">A request that doesn't complete within its timeout counts as failed (AbortError) — that's not proof the connection died, just that it didn't finish in time. Raise these on a slow or high-latency link to stop it misreading "slow" as "lost". The Download/Upload cards stream continuously, back-to-back rounds, for "stream duration" seconds each direction (not one fixed-size request) — the round stall timeout is a safety net per round, not for the whole phase. Changes apply to the next probe/check and are saved for next time.</div>
+    <div class="adv-settings-note">A request that doesn't complete within its timeout counts as failed (AbortError) — that's not proof the connection died, just that it didn't finish in time. Raise these on a slow or high-latency link to stop it misreading "slow" as "lost". The Download/Upload cards and Live chart stream continuously, back-to-back rounds, the whole time monitoring runs (not one fixed-size request) — the round stall timeout is a safety net per round, not for a whole phase. Changes apply to the next probe/check and are saved for next time.</div>
+
+    <label class="adv-settings-checkbox-field">
+      <input type="checkbox" id="advSweepEnabled" checked>
+      <span>Run chunk-size sweep test</span>
+    </label>
+    <label class="adv-settings-textarea-field">
+      <span>Sweep chunk sizes &amp; trials (one per line, "&lt;size&gt; x&lt;trials&gt;")</span>
+      <textarea id="advSweepPlan" spellcheck="false"></textarea>
+    </label>
+    <div class="adv-settings-note">Runs between continuous-stream episodes: each size is requested this many times, sequentially, in both directions — small sizes get more trials since they're cheap and noisy, large sizes fewer since they're slow. A size that consistently fails while smaller ones pass is evidence of a size-based cutoff, not just general link badness. Sizes accept K/M suffixes (e.g. "32K x3", "10M x1"), 1KB–20MB, 1–10 trials each. Uncheck above to skip this test.</div>
+
     <div class="toggle-log" id="advResetBtn">reset to defaults</div>
   </div>
 </details>
@@ -579,36 +663,46 @@
 
   const PING_INTERVAL_MS = 3000;      // one lightweight probe every 3s, continuously
   const DROP_THRESHOLD_CONSECUTIVE = 2; // 2+ consecutive failed probes = a drop event begins
-  const THROUGHPUT_INTERVAL_MS = 60_000; // spot-check once per 60s, not continuously
 
-  // Download is a SEQUENTIAL size sweep, not one fixed-size request. Purpose:
-  // distinguish "general link badness" (roughly proportional failure across all
-  // sizes) from "requests above some size are being dropped" (a sharp pass/fail
-  // cutoff at a specific size). Every size gets the SAME fixed timeout — scaling
-  // timeout to size would let a merely-slow large transfer pass by being given
-  // more benefit of the doubt, which would weaken exactly the cutoff signal this
-  // is built to detect. Runs strictly one size at a time, never in parallel —
-  // concurrent requests on a constrained link would compete with each other and
-  // contaminate the result.
-  const DOWNLOAD_SWEEP_SIZES = [4_000, 16_000, 64_000, 256_000, 1_000_000, 5_000_000];
-  // Upload sweep tops out lower than download's 5MB: uplinks are typically
-  // several times slower, so the same top tier would routinely hit the
-  // per-size timeout on a healthy connection and read as a false cutoff.
-  const UPLOAD_SWEEP_SIZES = [4_000, 16_000, 64_000, 256_000, 1_000_000, 2_000_000];
-
-  const UPLOAD_BYTES = 2_000_000;
+  // Chunk-size sweep: a SEQUENTIAL, configurable ladder of {bytes, trials}
+  // tried in both directions, on top of the continuous stream test, to check
+  // whether the connection handles larger chunks differently from small
+  // ones. Purpose: distinguish "general link badness" (roughly proportional
+  // failure across all sizes) from "requests above some size are being
+  // dropped" (a sharp pass/fail cutoff at a specific size). Small sizes get
+  // more trials since they're cheap and noisy; large sizes get fewer since
+  // each attempt is slow. Every attempt gets the SAME fixed timeout
+  // regardless of size — scaling timeout to size would let a merely-slow
+  // large transfer pass by being given more benefit of the doubt, which
+  // would weaken exactly the cutoff signal this is built to detect. Runs
+  // strictly one attempt at a time, never in parallel — concurrent requests
+  // on a constrained link would compete with each other and contaminate the
+  // result. User-configurable in Advanced Settings (sizes/trials as text,
+  // plus an on/off checkbox) and persisted; SWEEP_PLAN/SWEEP_ENABLED below
+  // are the live values, DEFAULT_SWEEP_PLAN is only the reset-to/initial one.
+  const DEFAULT_SWEEP_PLAN = [
+    { bytes: 32_000, trials: 3 },
+    { bytes: 128_000, trials: 3 },
+    { bytes: 512_000, trials: 2 },
+    { bytes: 2_000_000, trials: 2 },
+    { bytes: 5_000_000, trials: 1 },
+    { bytes: 10_000_000, trials: 1 },
+  ];
+  const SWEEP_SIZE_BOUNDS = { min: 1_000, max: 20_000_000 };
+  const SWEEP_TRIALS_BOUNDS = { min: 1, max: 10 };
 
   // ---- Streaming throughput test (WebSocket) ----
-  // The sweep/POST above measure "time for one discrete request to fully
+  // The chunk sweep above measures "time for one discrete request to fully
   // complete" — no visibility into the transfer while it's happening, and
-  // each number is a single-shot average. This talks to the ws-speedtest
+  // each attempt is a single-shot number. This talks to the ws-speedtest
   // Worker (src/index.js in this repo) over a persistent connection instead,
   // and — unlike a single fixed-size request — keeps re-requesting rounds
   // back-to-back for a whole configurable duration per direction, so the
-  // Download/Upload numbers and the live chart keep moving continuously for
-  // that whole window instead of a brief burst. Round size stays modest and
-  // fixed for now; varying it per round is a natural next step but out of
-  // scope for this pass.
+  // Download/Upload numbers and the live chart keep moving continuously the
+  // entire time monitoring runs, one episode after another with no idle gap,
+  // rather than a periodic spot-check with dead air in between. Round size
+  // stays modest and fixed for now; varying it per round is a natural next
+  // step but out of scope for this pass.
   const WS_URL = 'wss://ws-speedtest.nyrt.workers.dev';
   const DOWN_ROUND_BYTES = 500_000;
   const UP_ROUND_BYTES = 250_000;
@@ -625,10 +719,7 @@
   const DEFAULT_SWEEP_TIMEOUT_MS = 10_000;
   const DEFAULT_UPLOAD_TIMEOUT_MS = 15_000;
   const DEFAULT_STREAM_TIMEOUT_MS = 30_000;  // stall timeout for a SINGLE round, not the whole phase
-  // 15s each way = 30s of continuous chart movement, leaving room in the 60s
-  // interval for the size-sweep strategy that follows it. At the old 25s the
-  // two strategies together overran the interval.
-  const DEFAULT_STREAM_PHASE_DURATION_MS = 15_000;
+  const DEFAULT_STREAM_PHASE_DURATION_MS = 15_000; // 15s down + 15s up per continuous-stream episode
   const TIMEOUT_BOUNDS = {
     probe: { min: 500, max: 30_000 },
     sweep: { min: 2_000, max: 60_000 },
@@ -642,10 +733,42 @@
   let UPLOAD_TIMEOUT_MS = DEFAULT_UPLOAD_TIMEOUT_MS;
   let STREAM_TIMEOUT_MS = DEFAULT_STREAM_TIMEOUT_MS;
   let STREAM_PHASE_DURATION_MS = DEFAULT_STREAM_PHASE_DURATION_MS;
+  let SWEEP_ENABLED = true;
 
   function clamp(n, min, max) {
     return Math.min(max, Math.max(min, n));
   }
+
+  // Parses the Advanced Settings sweep textarea: one "<size>[K|M] x<trials>"
+  // per line (e.g. "32K x3", "10M x1", or a bare byte count). Unparsable or
+  // blank lines are silently skipped rather than rejecting the whole plan —
+  // consistent with this file's existing "corrupt input, fall back quietly"
+  // pattern for settings. An empty result (nothing parsed) falls back to
+  // DEFAULT_SWEEP_PLAN so a typo can't silently disable the test.
+  function parseSweepPlanText(text) {
+    const plan = [];
+    for (const line of String(text || '').split('\n')) {
+      const m = line.match(/^\s*([\d.]+)\s*(kb|k|mb|m)?\s*x\s*(\d+)\s*$/i);
+      if (!m) continue;
+      let bytes = parseFloat(m[1]);
+      if (!Number.isFinite(bytes)) continue;
+      const unit = (m[2] || '').toLowerCase();
+      if (unit === 'k' || unit === 'kb') bytes *= 1_000;
+      else if (unit === 'm' || unit === 'mb') bytes *= 1_000_000;
+      bytes = clamp(Math.round(bytes), SWEEP_SIZE_BOUNDS.min, SWEEP_SIZE_BOUNDS.max);
+      const trials = clamp(parseInt(m[3], 10), SWEEP_TRIALS_BOUNDS.min, SWEEP_TRIALS_BOUNDS.max);
+      plan.push({ bytes, trials });
+    }
+    plan.sort((a, b) => a.bytes - b.bytes);
+    return plan.length ? plan : DEFAULT_SWEEP_PLAN.slice();
+  }
+
+  function formatSweepPlanText(plan) {
+    return plan.map(p => `${formatBytes(p.bytes)} x${p.trials}`).join('\n');
+  }
+
+  let SWEEP_PLAN = DEFAULT_SWEEP_PLAN.slice();
+  let SWEEP_PLAN_TEXT = formatSweepPlanText(DEFAULT_SWEEP_PLAN);
 
   function loadSettings() {
     let raw;
@@ -662,6 +785,11 @@
       if (Number.isFinite(s.uploadTimeoutMs)) UPLOAD_TIMEOUT_MS = clamp(s.uploadTimeoutMs, TIMEOUT_BOUNDS.upload.min, TIMEOUT_BOUNDS.upload.max);
       if (Number.isFinite(s.streamTimeoutMs)) STREAM_TIMEOUT_MS = clamp(s.streamTimeoutMs, TIMEOUT_BOUNDS.stream.min, TIMEOUT_BOUNDS.stream.max);
       if (Number.isFinite(s.streamPhaseDurationMs)) STREAM_PHASE_DURATION_MS = clamp(s.streamPhaseDurationMs, TIMEOUT_BOUNDS.streamDuration.min, TIMEOUT_BOUNDS.streamDuration.max);
+      if (typeof s.sweepEnabled === 'boolean') SWEEP_ENABLED = s.sweepEnabled;
+      if (typeof s.sweepPlanText === 'string' && s.sweepPlanText.trim()) {
+        SWEEP_PLAN_TEXT = s.sweepPlanText;
+        SWEEP_PLAN = parseSweepPlanText(s.sweepPlanText);
+      }
     } catch (e) {
       // corrupt settings — fall back to defaults already assigned above
     }
@@ -675,6 +803,8 @@
         uploadTimeoutMs: UPLOAD_TIMEOUT_MS,
         streamTimeoutMs: STREAM_TIMEOUT_MS,
         streamPhaseDurationMs: STREAM_PHASE_DURATION_MS,
+        sweepEnabled: SWEEP_ENABLED,
+        sweepPlanText: SWEEP_PLAN_TEXT,
       }));
     } catch (e) {
       // storage full or unavailable — settings just won't persist across reloads
@@ -694,13 +824,14 @@
   const qualityWrap = document.getElementById('qualityWrap');
   const dropEventsList = document.getElementById('dropEventsList');
   const protocolNoteEl = document.getElementById('protocolNote');
-  const clearBtn = document.getElementById('clearBtn');
   const exportBtn = document.getElementById('exportBtn');
   const advProbeTimeoutInput = document.getElementById('advProbeTimeout');
   const advSweepTimeoutInput = document.getElementById('advSweepTimeout');
   const advUploadTimeoutInput = document.getElementById('advUploadTimeout');
   const advStreamTimeoutInput = document.getElementById('advStreamTimeout');
   const advStreamDurationInput = document.getElementById('advStreamDuration');
+  const advSweepEnabledInput = document.getElementById('advSweepEnabled');
+  const advSweepPlanInput = document.getElementById('advSweepPlan');
   const advResetBtn = document.getElementById('advResetBtn');
   const canvasLiveRate = document.getElementById('chartLiveRate');
   const canvasDown = document.getElementById('chartDown');
@@ -729,7 +860,6 @@
   let sessionDurationSec = 0; // 0 = until stopped
   let pingTimer = null;
   let elapsedTimer = null;
-  let throughputTimer = null;
 
   let allRtts = [];            // every successful probe RTT this session
   let totalProbes = 0;
@@ -740,19 +870,18 @@
   let lastDownMbps = null;
   let lastUpMbps = null;
 
-  // Chart history: one entry per throughput interval tick. Loss is a DELTA
-  // (probes/failures since the previous tick), not the cumulative session
-  // average — a cumulative % barely moves after enough pings and makes for
-  // a flat, uninformative bar chart. probesAtLastTick/failuresAtLastTick
-  // exist only to compute that delta; they are not displayed anywhere.
-  //
-  // downHistory's mbps value is now derived from the LARGEST size in the
-  // sweep that succeeded this tick (best-available throughput), keeping the
-  // existing "Download (Mbps)" chart meaningful. sizeSweepHistory is the
-  // separate, more granular evidence trail: full per-size pass/fail/duration
-  // for every tick, which is what actually shows a size-based cutoff pattern
-  // (or its absence) if one exists.
-  const CHART_HISTORY_CAP = 120; // 120 intervals * 60s = 2 hours of bars before oldest drop off
+  // Chart history: one entry per continuous-throughput cycle (see
+  // throughputLoop()). down/upHistory's mbps is that cycle's continuous
+  // stream-test result (the same number the Download/Upload cards
+  // summarize). Loss is a DELTA (probes/failures since the previous cycle),
+  // not the cumulative session average — a cumulative % barely moves after
+  // enough pings and makes for a flat, uninformative bar chart.
+  // probesAtLastTick/failuresAtLastTick exist only to compute that delta;
+  // they are not displayed anywhere. sizeSweepHistory/uploadSweepHistory are
+  // a separate, more granular evidence trail: full per-size pass/fail/
+  // duration for every cycle's chunk sweep, which is what actually shows a
+  // size-based cutoff pattern (or its absence) if one exists.
+  const CHART_HISTORY_CAP = 120; // 120 most recent throughput cycles before the oldest bar drops off
   let downHistory = [];  // [{ t: ms timestamp, mbps: number|null }]
   let upHistory = [];
   let lossHistory = [];  // [{ t: ms timestamp, lossPct: number }]
@@ -760,7 +889,6 @@
   let uploadSweepHistory = []; // same shape, upload direction
   let probesAtLastTick = 0;
   let failuresAtLastTick = 0;
-  let nextThroughputCheckAtMs = 0; // for the "next check in Xs" hint while idle between checks
   let activeStreamTestCancel = null; // cancels an in-flight continuous stream test — see stopMonitoring()
   let activeSweepAbort = null;       // aborts the in-flight size-sweep fetch — see stopMonitoring()
   // Bumped on every stop. A throughput check is a multi-stage async pipeline
@@ -775,9 +903,7 @@
   // downHistory/upHistory/lossHistory above already cover session-long trend
   // from each tick's final number, this is just "what's happening right
   // now"). t is Date.now() ms, so both feeds share one real-time axis.
-  const LIVE_WINDOW_MS = 65_000; // a bit over one throughput interval, so the
-                                  // last check's episode stays visible until
-                                  // the next one starts
+  const LIVE_WINDOW_MS = 65_000; // ~65s rolling window shown by the Live chart
   const LIVE_RATE_SAMPLE_CAP = 600;
   const LIVE_PING_SAMPLE_CAP = 60;
   let liveRateSamples = []; // [{ t: number, mbps: number, phase: 'down'|'up' }]
@@ -823,6 +949,8 @@
         uploadTimeoutMs: UPLOAD_TIMEOUT_MS,
         streamTimeoutMs: STREAM_TIMEOUT_MS,
         streamPhaseDurationMs: STREAM_PHASE_DURATION_MS,
+        sweepEnabled: SWEEP_ENABLED,
+        sweepPlan: SWEEP_PLAN,
       },
     };
     try {
@@ -1143,20 +1271,6 @@
 
       drawAxisTicks(liveRateSamples.map(p => p.mbps), toY, 'left');
     }
-
-    // Down/up only streams for a few seconds once every THROUGHPUT_INTERVAL_MS
-    // (a fixed-size check, not an open-ended stream — see the protocol note
-    // below for why) — without this, the line sitting still for the other
-    // ~57s reads as broken rather than "waiting for the next check".
-    const isCheckActive = liveRateSamples.length > 0 && (now - liveRateSamples[liveRateSamples.length - 1].t < 3000);
-    if (running && nextThroughputCheckAtMs > 0 && !isCheckActive) {
-      const secsLeft = Math.max(0, Math.round((nextThroughputCheckAtMs - now) / 1000));
-      ctx.fillStyle = '#888';
-      ctx.font = '10px -apple-system, sans-serif';
-      ctx.textAlign = 'right';
-      ctx.fillText(`next check in ${secsLeft}s`, cssWidth - padding, padding + 10);
-      ctx.textAlign = 'left';
-    }
   }
 
   function lossBarColor(lossPct) {
@@ -1172,8 +1286,9 @@
     drawBarChart(canvasDown, downHistory, 'mbps', { colorFn: () => '#3b82f6' });
     drawBarChart(canvasUp, upHistory, 'mbps', { colorFn: () => '#f59e0b' });
     drawBarChart(canvasLoss, lossHistory, 'lossPct', { fixedMax: 100, colorFn: lossBarColor });
-    renderSweepChart(canvasSweep, sizeSweepHistory, DOWNLOAD_SWEEP_SIZES);
-    renderSweepChart(canvasSweepUp, uploadSweepHistory, UPLOAD_SWEEP_SIZES);
+    const sweepSizes = SWEEP_PLAN.map(p => p.bytes);
+    renderSweepChart(canvasSweep, sizeSweepHistory, sweepSizes);
+    renderSweepChart(canvasSweepUp, uploadSweepHistory, sweepSizes);
   }
 
   function renderSweepChart(canvas, history, sizes) {
@@ -1267,12 +1382,25 @@
     historyTable.innerHTML = rows.join('');
   }
 
+  // "Clear history" wipes both the archived-sessions list AND the current
+  // live/in-progress session — a single "start over" action, matching what
+  // one control in the Session History block should mean, rather than
+  // leaving a second, separately-labeled reset elsewhere on the page for
+  // just the live session.
   historyClearBtn.addEventListener('click', () => {
+    if (running) stopMonitoring('manual stop');
     try {
       localStorage.removeItem(HISTORY_KEY);
     } catch (e) {
       // ignore
     }
+    clearSession();
+    resetSessionState();
+    sessionStartMs = 0; // signals "no session has run" — renderStabilityScore checks this
+    els.connType.textContent = '—';
+    setPhase('');
+    elapsedEl.textContent = '';
+    renderProtocolPanel();
     renderHistoryTable();
   });
 
@@ -1372,31 +1500,49 @@
   }
 
   async function runSizeSweep() {
-    // Sequential, one size at a time — never parallel. Concurrent requests on a
-    // constrained mobile link would compete with each other for bandwidth and
-    // contaminate the exact signal this is built to isolate. Every size gets the
-    // SAME fixed SWEEP_TIMEOUT_MS: a cutoff at a specific size across many ticks
-    // is the signature of enforced size-based dropping; a roughly proportional
-    // failure rate across all sizes instead points to general link/congestion
-    // badness, not a size policy.
+    // Sequential, one size at a time, one trial at a time — never parallel.
+    // Concurrent requests on a constrained mobile link would compete with
+    // each other for bandwidth and contaminate the exact signal this is
+    // built to isolate. Every attempt gets the SAME fixed SWEEP_TIMEOUT_MS: a
+    // cutoff at a specific size across many ticks is the signature of
+    // enforced size-based dropping; a roughly proportional failure rate
+    // across all sizes instead points to general link/congestion badness,
+    // not a size policy. A size only counts as "ok" if ALL its configured
+    // trials passed — one flaky attempt among several is exactly the kind of
+    // noise the multi-trial ladder exists to catch, not something to hide
+    // behind a majority vote.
     const results = [];
     const abort = new AbortController();
     activeSweepAbort = abort;
     const gen = sessionGeneration;
     try {
-      for (const bytes of DOWNLOAD_SWEEP_SIZES) {
+      for (const { bytes, trials } of SWEEP_PLAN) {
         if (gen !== sessionGeneration) break; // session ended — stop mid-sweep
-        const t0 = performance.now();
-        try {
-          const buf = await timedFetch(DOWN_URL + bytes, {}, SWEEP_TIMEOUT_MS, abort.signal);
-          const durationMs = performance.now() - t0;
-          results.push({ bytes, ok: true, durationMs, error: null });
-          log(`sweep down ${formatBytes(bytes)}: ok, ${durationMs.toFixed(0)}ms`);
-        } catch (e) {
-          if (gen !== sessionGeneration) break; // aborted by stop, not a real failure
-          results.push({ bytes, ok: false, durationMs: null, error: e.name });
-          log(`sweep down ${formatBytes(bytes)}: FAILED (${e.name})`);
+        let passCount = 0;
+        let durationSum = 0;
+        let lastError = null;
+        for (let attempt = 1; attempt <= trials; attempt++) {
+          if (gen !== sessionGeneration) break;
+          const t0 = performance.now();
+          try {
+            await timedFetch(DOWN_URL + bytes, {}, SWEEP_TIMEOUT_MS, abort.signal);
+            const durationMs = performance.now() - t0;
+            passCount++;
+            durationSum += durationMs;
+            log(`sweep down ${formatBytes(bytes)} (${attempt}/${trials}): ok, ${durationMs.toFixed(0)}ms`);
+          } catch (e) {
+            if (gen !== sessionGeneration) break; // aborted by stop, not a real failure
+            lastError = e.name;
+            log(`sweep down ${formatBytes(bytes)} (${attempt}/${trials}): FAILED (${e.name})`);
+          }
         }
+        if (gen !== sessionGeneration) break;
+        results.push({
+          bytes, trials, passCount,
+          ok: passCount === trials,
+          durationMs: passCount > 0 ? durationSum / passCount : null,
+          error: passCount === trials ? null : lastError,
+        });
       }
     } finally {
       if (activeSweepAbort === abort) activeSweepAbort = null;
@@ -1479,17 +1625,31 @@
       ws = await openStreamSocket(SWEEP_TIMEOUT_MS);
     } catch (e) {
       log(`sweep up: connection FAILED (${e.message})`);
-      return UPLOAD_SWEEP_SIZES.map(bytes => ({ bytes, ok: false, durationMs: null, error: e.message }));
+      return SWEEP_PLAN.map(({ bytes, trials }) => ({ bytes, trials, passCount: 0, ok: false, durationMs: null, error: e.message }));
     }
     const results = [];
     try {
-      for (const bytes of UPLOAD_SWEEP_SIZES) {
+      for (const { bytes, trials } of SWEEP_PLAN) {
         if (gen !== sessionGeneration) break; // session ended mid-sweep
-        const r = await uploadOneSize(ws, bytes, SWEEP_TIMEOUT_MS);
-        results.push(r);
-        log(r.ok
-          ? `sweep up ${formatBytes(bytes)}: ok, ${r.durationMs.toFixed(0)}ms`
-          : `sweep up ${formatBytes(bytes)}: FAILED (${r.error})`);
+        let passCount = 0;
+        let durationSum = 0;
+        let lastError = null;
+        for (let attempt = 1; attempt <= trials; attempt++) {
+          if (gen !== sessionGeneration) break;
+          const r = await uploadOneSize(ws, bytes, SWEEP_TIMEOUT_MS);
+          if (r.ok) { passCount++; durationSum += r.durationMs; }
+          else lastError = r.error;
+          log(r.ok
+            ? `sweep up ${formatBytes(bytes)} (${attempt}/${trials}): ok, ${r.durationMs.toFixed(0)}ms`
+            : `sweep up ${formatBytes(bytes)} (${attempt}/${trials}): FAILED (${r.error})`);
+        }
+        if (gen !== sessionGeneration) break;
+        results.push({
+          bytes, trials, passCount,
+          ok: passCount === trials,
+          durationMs: passCount > 0 ? durationSum / passCount : null,
+          error: passCount === trials ? null : lastError,
+        });
       }
     } finally {
       try { ws.close(); } catch (e) { /* already closing */ }
@@ -1564,8 +1724,8 @@
 
       // Rounds keep streaming for up to STREAM_PHASE_DURATION_MS per
       // direction on their OWN clock, entirely independent of pingTimer/
-      // throughputTimer/elapsedTimer — stopMonitoring() clearing those alone
-      // does NOT stop an in-flight test. Exposed here so it can.
+      // elapsedTimer or the throughputLoop() driving this call — stopping
+      // those alone does NOT stop an in-flight test. Exposed here so it can.
       function cancelThisTest() { finish('cancelled'); }
       activeStreamTestCancel = cancelThisTest;
 
@@ -1723,30 +1883,42 @@
     return { value: kbps.toFixed(1), unit: 'Kbps' };
   }
 
-  let throughputCheckInProgress = false;
+  function averageMbps(history) {
+    const vals = history.map(h => h.mbps).filter(v => v != null);
+    if (!vals.length) return null;
+    return vals.reduce((a, b) => a + b, 0) / vals.length;
+  }
 
-  async function runThroughputSpotCheck() {
-    // Phases now stream for STREAM_PHASE_DURATION_MS each (default 25s+25s),
-    // so a check can legitimately take most of THROUGHPUT_INTERVAL_MS — an
-    // unusually slow sweep could in theory push it past the 60s mark, which
-    // would otherwise let setInterval fire an overlapping second run.
-    if (throughputCheckInProgress) {
-      log('throughput check still running — skipping this tick');
-      return;
-    }
-    throughputCheckInProgress = true;
-    try {
-      await runThroughputSpotCheckInner();
-    } finally {
-      throughputCheckInProgress = false;
+  // Download/Upload cards show the session's running AVERAGE throughput
+  // (over every completed stream episode so far), not just the last one —
+  // one stalled episode shouldn't make the card look worse than the session
+  // actually was, and it keeps the card's "dash until there's real data,
+  // real value once there is" behavior consistent with every other stat on
+  // this page instead of flickering blank whenever a single episode fails.
+  function renderThroughputCard(el, history) {
+    const avg = averageMbps(history);
+    if (avg == null) { el.innerHTML = '—'; return; }
+    const f = formatMbps(avg);
+    el.innerHTML = `${f.value}<span class="card-unit"> ${f.unit}</span>`;
+  }
+
+  // Drives the throughput measurement for as long as the session runs: each
+  // cycle is a continuous-stream episode (down then up, feeding the cards +
+  // live chart) immediately followed by the chunk-size sweep (if enabled),
+  // then loops straight back into the next stream episode — no periodic
+  // gating, no idle wait between cycles. `gen` is the sessionGeneration
+  // captured once at Start/resume; stopMonitoring() bumps the real one, so
+  // the loop condition catches a stop between cycles and every stage inside
+  // runThroughputCycle() catches one mid-cycle.
+  async function throughputLoop(gen) {
+    while (running && gen === sessionGeneration) {
+      await runThroughputCycle(gen);
     }
   }
 
-  async function runThroughputSpotCheckInner() {
+  async function runThroughputCycle(gen) {
     setPhase('Streaming throughput…');
     const tickTime = Date.now();
-    const gen = sessionGeneration; // stage guard — see sessionGeneration's declaration
-    nextThroughputCheckAtMs = tickTime + THROUGHPUT_INTERVAL_MS;
 
     // ---- Strategy 1: continuous streaming (drives the cards + live chart) ----
     // Runs FIRST so the animated chart starts moving immediately on Start,
@@ -1781,30 +1953,24 @@
     const upPartial = streamResult.phase === 'up' && streamResult.reason !== 'ok';
 
     if (lastDownMbps != null) {
-      const f = formatMbps(lastDownMbps);
-      els.down.innerHTML = `${f.value}<span class="card-unit"> ${f.unit}</span>`;
       log(downPartial
         ? `stream download: ${lastDownMbps.toFixed(2)} Mbps (partial — ${streamResult.reason}, ${formatBytes(streamResult.downBytes)} transferred)`
         : `stream download: ${lastDownMbps.toFixed(2)} Mbps`);
     } else {
-      els.down.innerHTML = '—';
       log(`stream download FAILED (${streamResult.reason}, stalled in ${streamResult.phase} phase, ${formatBytes(streamResult.downBytes)} received)`);
     }
     downHistory.push({ t: tickTime, mbps: lastDownMbps });
     if (downHistory.length > CHART_HISTORY_CAP) downHistory.shift();
+    renderThroughputCard(els.down, downHistory);
 
     if (lastUpMbps != null) {
-      const f = formatMbps(lastUpMbps);
-      els.up.innerHTML = `${f.value}<span class="card-unit"> ${f.unit}</span>`;
       log(upPartial
         ? `stream upload: ${lastUpMbps.toFixed(2)} Mbps (partial — ${streamResult.reason}, ${formatBytes(streamResult.upBytesSent)} transferred)`
         : `stream upload: ${lastUpMbps.toFixed(2)} Mbps`);
     } else if (streamResult.phase === 'up') {
-      els.up.innerHTML = '—';
       log(`stream upload FAILED (${streamResult.reason}, ${formatBytes(streamResult.upBytesSent)} sent, no bytes acknowledged)`);
     } else {
       // never even reached the upload phase — download itself failed first
-      els.up.innerHTML = '—';
       log('stream upload FAILED (download never completed)');
     }
     if (streamResult.upAckMismatchRounds > 0) {
@@ -1814,26 +1980,31 @@
     }
     upHistory.push({ t: tickTime, mbps: lastUpMbps });
     if (upHistory.length > CHART_HISTORY_CAP) upHistory.shift();
+    renderThroughputCard(els.up, upHistory);
     renderCharts();
 
     if (gen !== sessionGeneration) return; // stopped during the stream phase
 
-    // ---- Strategy 2: size sweep, both directions (stability across sizes) ----
+    // ---- Strategy 2: chunk-size sweep, both directions (stability across sizes) ----
     // Separate question from strategy 1: not "how fast" but "does behaviour
     // change with transfer size". A sharp pass/fail cutoff at one size,
     // repeated across ticks, is the signature of size-based dropping; noisy
     // failures spread across all sizes point at general link badness instead.
-    setPhase('Size sweep…');
-    const sweepResults = await runSizeSweep();
-    if (gen !== sessionGeneration) return; // stopped during the download sweep
-    sizeSweepHistory.push({ t: tickTime, results: sweepResults });
-    if (sizeSweepHistory.length > CHART_HISTORY_CAP) sizeSweepHistory.shift();
-    renderCharts();
+    // Skippable entirely (SWEEP_ENABLED, Advanced Settings) for a user who
+    // just wants the continuous stream numbers.
+    if (SWEEP_ENABLED) {
+      setPhase('Chunk-size sweep…');
+      const sweepResults = await runSizeSweep();
+      if (gen !== sessionGeneration) return; // stopped during the download sweep
+      sizeSweepHistory.push({ t: tickTime, results: sweepResults });
+      if (sizeSweepHistory.length > CHART_HISTORY_CAP) sizeSweepHistory.shift();
+      renderCharts();
 
-    const upSweepResults = await runUploadSweep(gen);
-    if (gen !== sessionGeneration) return; // stopped during the upload sweep
-    uploadSweepHistory.push({ t: tickTime, results: upSweepResults });
-    if (uploadSweepHistory.length > CHART_HISTORY_CAP) uploadSweepHistory.shift();
+      const upSweepResults = await runUploadSweep(gen);
+      if (gen !== sessionGeneration) return; // stopped during the upload sweep
+      uploadSweepHistory.push({ t: tickTime, results: upSweepResults });
+      if (uploadSweepHistory.length > CHART_HISTORY_CAP) uploadSweepHistory.shift();
+    }
 
     // delta loss: pings and failures accumulated SINCE the previous tick only,
     // not the session-wide cumulative rate — see the comment on the state
@@ -1848,7 +2019,6 @@
 
     renderCharts();
     saveSession();
-    if (running) setPhase(isResumedRun ? 'Monitoring… (resumed)' : 'Monitoring…');
   }
 
   function detectConnectionType() {
@@ -1902,7 +2072,7 @@
 
     els.latency.innerHTML = latency != null ? `${latency.toFixed(1)}<span class="card-unit"> ms</span>` : '—';
     els.jitter.innerHTML = jitter != null ? `${jitter.toFixed(1)}<span class="card-unit"> ms</span>` : '—';
-    els.loss.innerHTML = `${(lossRate * 100).toFixed(1)}<span class="card-unit"> %</span>`;
+    els.loss.innerHTML = totalProbes > 0 ? `${(lossRate * 100).toFixed(1)}<span class="card-unit"> %</span>` : '—';
 
     const quality = classifyQuality(latency, jitter, lossRate);
     qualityWrap.innerHTML = `<span class="quality-badge ${quality.cls}">${quality.label}</span>`;
@@ -1948,25 +2118,27 @@
 
   function renderProtocolPanel() {
     const intervalSec = PING_INTERVAL_MS / 1000;
-    const spotCheckMin = THROUGHPUT_INTERVAL_MS / 60000;
+    const sweepList = SWEEP_PLAN.map(p => `${formatBytes(p.bytes)}×${p.trials}`).join(', ');
     protocolNoteEl.textContent =
 `Protocol (live):
 Ping: 1 HTTPS GET every ${intervalSec}s to ${TRACE_URL}, ${PROBE_TIMEOUT_MS}ms timeout.
 Latency = median RTT of successful pings. Jitter = stddev of same.
 Loss = failed pings / total pings, session-wide.
 Drop event = ${DROP_THRESHOLD_CONSECUTIVE}+ consecutive failed pings; ends on first success after.
-Throughput spot-check every ${spotCheckMin} min, two independent checks:
-1) Download/Upload cards: one persistent WebSocket to ${WS_URL},
-streaming continuously in ${formatBytes(DOWN_ROUND_BYTES)}/${formatBytes(UP_ROUND_BYTES)} rounds back-to-back for
+Throughput runs continuously, back-to-back, for as long as monitoring is
+active — no periodic gating, two independent checks per cycle:
+1) Download/Upload cards + Live chart: one persistent WebSocket to ${WS_URL},
+streaming in ${formatBytes(DOWN_ROUND_BYTES)}/${formatBytes(UP_ROUND_BYTES)} rounds back-to-back for
 ${STREAM_PHASE_DURATION_MS/1000}s down then ${STREAM_PHASE_DURATION_MS/1000}s up (not one fixed-size request), live-updating the whole
-time. ${STREAM_TIMEOUT_MS/1000}s stall timeout per round, not per phase.
-2) Size Sweep charts only (stability, does not feed the cards above):
-download = sequential HTTPS GETs at ${DOWNLOAD_SWEEP_SIZES.map(formatBytes).join('/')};
-upload = sequential WebSocket rounds at ${UPLOAD_SWEEP_SIZES.map(formatBytes).join('/')} (upload tops out
-lower — uplinks are usually slower, so download's top tier would time out
-on a healthy link and read as a false cutoff). ${SWEEP_TIMEOUT_MS/1000}s timeout per size, one at
-a time — a cutoff at a specific size across many ticks suggests size-based
-dropping, not general link badness.
+time. ${STREAM_TIMEOUT_MS/1000}s stall timeout per round, not per phase. Cards show the
+session's running average across every completed episode.
+2) Chunk-size sweep (${SWEEP_ENABLED ? 'enabled' : 'disabled'}) — feeds the Size Sweep charts only, does
+not feed the cards above: download = sequential HTTPS GETs, upload =
+sequential WebSocket rounds, both at size×trials ${sweepList}
+(${SWEEP_TIMEOUT_MS/1000}s timeout per attempt, one at a time, sequential trials per
+size). A size that fails consistently while smaller ones pass is evidence of
+a size-based cutoff, not just general link badness — configurable in
+Advanced Settings.
 Timing via performance.now(). This measures HTTP/WebSocket-layer failure, not
 raw packet loss — browsers have no ICMP/UDP access. Quality thresholds are
 ITU-style convention, not a cited standard. Sweep results show which sizes
@@ -2016,13 +2188,14 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     setPhase('Monitoring…');
     setLiveIndicator(true);
 
-    // fire one immediately, then on interval — for both ping and throughput,
-    // otherwise setInterval's delayed-first-fire means short sessions (e.g. 1min
-    // duration vs 60s throughput interval) can end before a single spot-check runs
+    // fire the ping loop immediately, then on interval — otherwise
+    // setInterval's delayed-first-fire means a short session could end
+    // before a single ping runs. Throughput has no timer at all: it's a
+    // continuous self-rescheduling loop (see throughputLoop()) that starts
+    // right here and keeps running, one cycle after another, until stopped.
     runSinglePing();
-    runThroughputSpotCheck();
+    throughputLoop(sessionGeneration);
     pingTimer = setInterval(runSinglePing, PING_INTERVAL_MS);
-    throughputTimer = setInterval(runThroughputSpotCheck, THROUGHPUT_INTERVAL_MS);
     elapsedTimer = setInterval(() => {
       updateElapsedDisplay();
       renderProtocolPanel();
@@ -2041,12 +2214,9 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     isResumedRun = false;
     setLiveIndicator(false);
     clearInterval(pingTimer);
-    clearInterval(throughputTimer);
     clearInterval(elapsedTimer);
     pingTimer = null;
-    throughputTimer = null;
     elapsedTimer = null;
-    nextThroughputCheckAtMs = 0;
 
     // A continuous stream test runs on its own clock (STREAM_PHASE_DURATION_MS
     // per direction, up to 25s+ each by default) independent of the timers
@@ -2115,8 +2285,12 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
 
     logEl.textContent = logLines.join('\n');
     els.connType.textContent = saved.connTypeLabel || detectConnectionType();
-    if (lastDownMbps != null) { const f = formatMbps(lastDownMbps); els.down.innerHTML = `${f.value}<span class="card-unit"> ${f.unit}</span>`; }
-    if (lastUpMbps != null) { const f = formatMbps(lastUpMbps); els.up.innerHTML = `${f.value}<span class="card-unit"> ${f.unit}</span>`; }
+    // Same "average of this session's history, dash if there isn't any yet"
+    // rule as the live update path — a reload must never show one card's
+    // stale number next to another's dash just because one direction's last
+    // episode happened to fail.
+    renderThroughputCard(els.down, downHistory);
+    renderThroughputCard(els.up, upHistory);
     updateStatsDisplay();
     renderDropEvents();
     renderCharts();
@@ -2168,9 +2342,8 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     setLiveIndicator(true);
 
     runSinglePing();
-    runThroughputSpotCheck();
+    throughputLoop(sessionGeneration);
     pingTimer = setInterval(runSinglePing, PING_INTERVAL_MS);
-    throughputTimer = setInterval(runThroughputSpotCheck, THROUGHPUT_INTERVAL_MS);
     elapsedTimer = setInterval(() => {
       updateElapsedDisplay();
       renderProtocolPanel();
@@ -2200,7 +2373,8 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
         streamTimeoutMs: STREAM_TIMEOUT_MS,
         streamPhaseDurationMs: STREAM_PHASE_DURATION_MS,
         pingIntervalMs: PING_INTERVAL_MS,
-        throughputIntervalMs: THROUGHPUT_INTERVAL_MS,
+        sweepEnabled: SWEEP_ENABLED,
+        sweepPlan: SWEEP_PLAN,
       },
       currentSession: {
         running,
@@ -2253,6 +2427,17 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     advUploadTimeoutInput.value = UPLOAD_TIMEOUT_MS;
     advStreamTimeoutInput.value = STREAM_TIMEOUT_MS;
     advStreamDurationInput.value = STREAM_PHASE_DURATION_MS;
+    advSweepEnabledInput.checked = SWEEP_ENABLED;
+    advSweepPlanInput.value = SWEEP_PLAN_TEXT;
+  }
+
+  function handleSweepPlanInputChange() {
+    SWEEP_PLAN_TEXT = advSweepPlanInput.value;
+    SWEEP_PLAN = parseSweepPlanText(SWEEP_PLAN_TEXT);
+    advSweepPlanInput.value = formatSweepPlanText(SWEEP_PLAN); // reflect parsed/clamped plan back
+    SWEEP_PLAN_TEXT = advSweepPlanInput.value;
+    saveSettings();
+    renderProtocolPanel();
   }
 
   function handleTimeoutInputChange(input, bounds, assign) {
@@ -2276,6 +2461,7 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     handleTimeoutInputChange(advUploadTimeoutInput, TIMEOUT_BOUNDS.upload, v => { UPLOAD_TIMEOUT_MS = v; });
     handleTimeoutInputChange(advStreamTimeoutInput, TIMEOUT_BOUNDS.stream, v => { STREAM_TIMEOUT_MS = v; });
     handleTimeoutInputChange(advStreamDurationInput, TIMEOUT_BOUNDS.streamDuration, v => { STREAM_PHASE_DURATION_MS = v; });
+    handleSweepPlanInputChange();
   }
 
   advProbeTimeoutInput.addEventListener('change', () => {
@@ -2293,6 +2479,12 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
   advStreamDurationInput.addEventListener('change', () => {
     handleTimeoutInputChange(advStreamDurationInput, TIMEOUT_BOUNDS.streamDuration, v => { STREAM_PHASE_DURATION_MS = v; });
   });
+  advSweepEnabledInput.addEventListener('change', () => {
+    SWEEP_ENABLED = advSweepEnabledInput.checked;
+    saveSettings();
+    renderProtocolPanel();
+  });
+  advSweepPlanInput.addEventListener('change', handleSweepPlanInputChange);
 
   advResetBtn.addEventListener('click', () => {
     PROBE_TIMEOUT_MS = DEFAULT_PROBE_TIMEOUT_MS;
@@ -2300,23 +2492,15 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     UPLOAD_TIMEOUT_MS = DEFAULT_UPLOAD_TIMEOUT_MS;
     STREAM_TIMEOUT_MS = DEFAULT_STREAM_TIMEOUT_MS;
     STREAM_PHASE_DURATION_MS = DEFAULT_STREAM_PHASE_DURATION_MS;
+    SWEEP_ENABLED = true;
+    SWEEP_PLAN = DEFAULT_SWEEP_PLAN.slice();
+    SWEEP_PLAN_TEXT = formatSweepPlanText(DEFAULT_SWEEP_PLAN);
     saveSettings();
     syncAdvSettingsInputs();
     renderProtocolPanel();
   });
 
   exportBtn.addEventListener('click', exportSessionData);
-
-  clearBtn.addEventListener('click', () => {
-    if (running) stopMonitoring('manual stop');
-    clearSession();
-    resetSessionState();
-    sessionStartMs = 0; // signals "no session has run" — renderStabilityScore checks this
-    els.connType.textContent = '—';
-    setPhase('');
-    elapsedEl.textContent = '';
-    renderProtocolPanel();
-  });
 
   startBtn.addEventListener('click', () => {
     if (running) {
@@ -2329,6 +2513,18 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
   syncAdvSettingsInputs();
   restoreSession();
   renderHistoryTable();
+
+  // PWA install/offline support. Registered last, after everything the page
+  // itself needs is already wired up — a failed or slow registration must
+  // never block the speed test from working.
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js').catch(() => {
+        // offline shell just won't be available this visit — the live test
+        // itself needs the network anyway, so this is a soft failure
+      });
+    });
+  }
 })();
 </script>
 
