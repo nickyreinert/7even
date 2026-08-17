@@ -7,11 +7,28 @@
 
 const DOWN_CHUNK_SIZE = 65536; // 64KB per frame
 
+// This Worker is now actively linked from the production page (previously
+// unused), so an unauthenticated Origin check keeps other sites from
+// embedding it and running up this account's Workers usage for free.
+function isAllowedOrigin(originHeader) {
+  if (!originHeader) return false;
+  let hostname;
+  try {
+    hostname = new URL(originHeader).hostname;
+  } catch (e) {
+    return false;
+  }
+  return hostname === '7.1-1-1.de' || hostname.endsWith('.pages.dev');
+}
+
 export default {
   async fetch(request) {
     const upgradeHeader = request.headers.get('Upgrade');
     if (!upgradeHeader || upgradeHeader.toLowerCase() !== 'websocket') {
       return new Response('Expected WebSocket upgrade', { status: 426 });
+    }
+    if (!isAllowedOrigin(request.headers.get('Origin'))) {
+      return new Response('Forbidden origin', { status: 403 });
     }
 
     const pair = new WebSocketPair();

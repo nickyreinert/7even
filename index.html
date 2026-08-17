@@ -452,11 +452,11 @@
 </div>
 
 <div class="chart-block">
-  <div class="chart-title">Download — best passing tier (Mbps)</div>
+  <div class="chart-title">Download — live stream (Mbps)</div>
   <canvas id="chartDown" class="chart-canvas"></canvas>
 </div>
 <div class="chart-block">
-  <div class="chart-title">Upload (Mbps)</div>
+  <div class="chart-title">Upload — live stream (Mbps)</div>
   <canvas id="chartUp" class="chart-canvas"></canvas>
 </div>
 <div class="chart-block">
@@ -488,7 +488,11 @@
       <span>Upload timeout (ms)</span>
       <input type="number" id="advUploadTimeout" min="2000" max="60000" step="500">
     </label>
-    <div class="adv-settings-note">A request that doesn't complete within its timeout counts as failed (AbortError) — that's not proof the connection died, just that it didn't finish in time. Raise these on a slow or high-latency link to stop it misreading "slow" as "lost". Changes apply to the next probe/check and are saved for next time.</div>
+    <label class="adv-settings-field">
+      <span>Stream test timeout (ms)</span>
+      <input type="number" id="advStreamTimeout" min="5000" max="60000" step="1000">
+    </label>
+    <div class="adv-settings-note">A request that doesn't complete within its timeout counts as failed (AbortError) — that's not proof the connection died, just that it didn't finish in time. Raise these on a slow or high-latency link to stop it misreading "slow" as "lost". Stream test timeout covers the whole live download+upload check over WebSocket. Changes apply to the next probe/check and are saved for next time.</div>
     <div class="toggle-log" id="advResetBtn">reset to defaults</div>
   </div>
 </details>
@@ -513,7 +517,6 @@
   // ---- Protocol constants (also rendered live in the protocol panel below) ----
   const TRACE_URL = 'https://speed.cloudflare.com/cdn-cgi/trace';
   const DOWN_URL = 'https://speed.cloudflare.com/__down?bytes=';
-  const UP_URL = 'https://speed.cloudflare.com/__up';
 
   const PING_INTERVAL_MS = 3000;      // one lightweight probe every 3s, continuously
   const DROP_THRESHOLD_CONSECUTIVE = 2; // 2+ consecutive failed probes = a drop event begins
@@ -532,6 +535,20 @@
 
   const UPLOAD_BYTES = 2_000_000;
 
+  // ---- Streaming throughput test (WebSocket) ----
+  // The sweep/POST above measure "time for one discrete request to fully
+  // complete" — no visibility into the transfer while it's happening, and
+  // each number is a single-shot average. This talks to the ws-speedtest
+  // Worker (src/index.js in this repo) over a persistent connection instead:
+  // continuous binary frames streamed in both directions, which is what
+  // actually drives the live-updating Download/Upload numbers below rather
+  // than a value that only appears once the whole thing is done. Sizes reuse
+  // the existing sweep's top tier and UPLOAD_BYTES rather than inventing new
+  // ones, keeping per-tick data cost close to before.
+  const WS_URL = 'wss://ws-speedtest.nyrt.workers.dev';
+  const STREAM_DOWN_BYTES = 4_000_000;
+  const STREAM_UP_BYTES = UPLOAD_BYTES;
+
   // ---- Advanced settings: request timeouts (user-adjustable, persisted) ----
   // A timeout that fires before a response completes surfaces as AbortError —
   // that's a threshold judgment call ("didn't finish in time"), not proof the
@@ -542,15 +559,18 @@
   const DEFAULT_PROBE_TIMEOUT_MS = 2000;   // a probe that doesn't respond in 2s counts as failed
   const DEFAULT_SWEEP_TIMEOUT_MS = 10_000;
   const DEFAULT_UPLOAD_TIMEOUT_MS = 15_000;
+  const DEFAULT_STREAM_TIMEOUT_MS = 20_000; // covers the whole WS round trip: connect + down + up
   const TIMEOUT_BOUNDS = {
     probe: { min: 500, max: 30_000 },
     sweep: { min: 2_000, max: 60_000 },
     upload: { min: 2_000, max: 60_000 },
+    stream: { min: 5_000, max: 60_000 },
   };
 
   let PROBE_TIMEOUT_MS = DEFAULT_PROBE_TIMEOUT_MS;
   let SWEEP_TIMEOUT_MS = DEFAULT_SWEEP_TIMEOUT_MS;
   let UPLOAD_TIMEOUT_MS = DEFAULT_UPLOAD_TIMEOUT_MS;
+  let STREAM_TIMEOUT_MS = DEFAULT_STREAM_TIMEOUT_MS;
 
   function clamp(n, min, max) {
     return Math.min(max, Math.max(min, n));
@@ -569,6 +589,7 @@
       if (Number.isFinite(s.probeTimeoutMs)) PROBE_TIMEOUT_MS = clamp(s.probeTimeoutMs, TIMEOUT_BOUNDS.probe.min, TIMEOUT_BOUNDS.probe.max);
       if (Number.isFinite(s.sweepTimeoutMs)) SWEEP_TIMEOUT_MS = clamp(s.sweepTimeoutMs, TIMEOUT_BOUNDS.sweep.min, TIMEOUT_BOUNDS.sweep.max);
       if (Number.isFinite(s.uploadTimeoutMs)) UPLOAD_TIMEOUT_MS = clamp(s.uploadTimeoutMs, TIMEOUT_BOUNDS.upload.min, TIMEOUT_BOUNDS.upload.max);
+      if (Number.isFinite(s.streamTimeoutMs)) STREAM_TIMEOUT_MS = clamp(s.streamTimeoutMs, TIMEOUT_BOUNDS.stream.min, TIMEOUT_BOUNDS.stream.max);
     } catch (e) {
       // corrupt settings — fall back to defaults already assigned above
     }
@@ -580,6 +601,7 @@
         probeTimeoutMs: PROBE_TIMEOUT_MS,
         sweepTimeoutMs: SWEEP_TIMEOUT_MS,
         uploadTimeoutMs: UPLOAD_TIMEOUT_MS,
+        streamTimeoutMs: STREAM_TIMEOUT_MS,
       }));
     } catch (e) {
       // storage full or unavailable — settings just won't persist across reloads
@@ -604,6 +626,7 @@
   const advProbeTimeoutInput = document.getElementById('advProbeTimeout');
   const advSweepTimeoutInput = document.getElementById('advSweepTimeout');
   const advUploadTimeoutInput = document.getElementById('advUploadTimeout');
+  const advStreamTimeoutInput = document.getElementById('advStreamTimeout');
   const advResetBtn = document.getElementById('advResetBtn');
   const canvasDown = document.getElementById('chartDown');
   const canvasUp = document.getElementById('chartUp');
@@ -692,6 +715,7 @@
         probeTimeoutMs: PROBE_TIMEOUT_MS,
         sweepTimeoutMs: SWEEP_TIMEOUT_MS,
         uploadTimeoutMs: UPLOAD_TIMEOUT_MS,
+        streamTimeoutMs: STREAM_TIMEOUT_MS,
       },
     };
     try {
@@ -1096,6 +1120,110 @@
     return results;
   }
 
+  // Continuous streaming download+upload over one persistent WebSocket
+  // connection to the ws-speedtest Worker, instead of discrete HTTP
+  // request/response cycles. Resolves with { downMbps, upMbps } — either can
+  // be null independently (e.g. connection drops mid-upload after a
+  // successful download) rather than an all-or-nothing failure, matching the
+  // resilience of the two separate try/catches this replaced. Never rejects;
+  // STREAM_TIMEOUT_MS bounds the worst case (hung connection, no close/error
+  // ever firing) so callers don't need their own timeout wrapper.
+  function runStreamTest(onDownProgress, onUpProgress) {
+    return new Promise((resolve) => {
+      let settled = false;
+      let downMbps = null;
+      let upMbps = null;
+      let downBytes = 0;
+      let downStartT = 0;
+      let upStartT = 0;
+      let ws;
+
+      const overallTimer = setTimeout(finish, STREAM_TIMEOUT_MS);
+
+      function finish() {
+        if (settled) return;
+        settled = true;
+        clearTimeout(overallTimer);
+        try { ws && ws.close(); } catch (e) { /* already closed/closing */ }
+        resolve({ downMbps, upMbps });
+      }
+
+      try {
+        ws = new WebSocket(WS_URL);
+      } catch (e) {
+        finish();
+        return;
+      }
+      ws.binaryType = 'arraybuffer';
+
+      ws.addEventListener('open', () => {
+        downStartT = performance.now();
+        ws.send(JSON.stringify({ type: 'down_start', bytes: STREAM_DOWN_BYTES }));
+      });
+
+      ws.addEventListener('message', (event) => {
+        if (settled) return;
+
+        if (typeof event.data !== 'string') {
+          // binary frame — part of the download stream
+          downBytes += event.data.byteLength;
+          const elapsedSec = (performance.now() - downStartT) / 1000;
+          if (elapsedSec > 0.05 && onDownProgress) {
+            onDownProgress((downBytes * 8) / elapsedSec / 1_000_000);
+          }
+          return;
+        }
+
+        let msg;
+        try { msg = JSON.parse(event.data); } catch (e) { return; }
+
+        if (msg.type === 'down_end') {
+          const downDurationMs = performance.now() - downStartT;
+          downMbps = downBytes > 0 ? (downBytes * 8) / (downDurationMs / 1000) / 1_000_000 : null;
+          pumpUpload();
+        } else if (msg.type === 'up_ack') {
+          const upDurationMs = performance.now() - upStartT;
+          upMbps = msg.bytesReceived > 0 ? (msg.bytesReceived * 8) / (upDurationMs / 1000) / 1_000_000 : null;
+          finish();
+        }
+      });
+
+      ws.addEventListener('error', finish);
+      ws.addEventListener('close', finish);
+
+      const STREAM_UP_CHUNK_SIZE = 65536;
+      // Pace sends by the socket's OWN drain rate (bufferedAmount), not by how
+      // fast we can call send() — otherwise we'd just measure how quickly
+      // bytes queue into a local buffer, not real network throughput.
+      const BUFFERED_AMOUNT_HIGH_WATER = 262144;
+
+      async function pumpUpload() {
+        if (settled) return;
+        ws.send(JSON.stringify({ type: 'up_start' }));
+        upStartT = performance.now();
+        let sent = 0;
+        const chunk = new Uint8Array(STREAM_UP_CHUNK_SIZE);
+        crypto.getRandomValues(chunk);
+        while (sent < STREAM_UP_BYTES) {
+          if (settled) return;
+          while (ws.bufferedAmount > BUFFERED_AMOUNT_HIGH_WATER) {
+            if (settled) return;
+            await new Promise(r => setTimeout(r, 15));
+          }
+          const remaining = STREAM_UP_BYTES - sent;
+          const toSend = remaining < STREAM_UP_CHUNK_SIZE ? chunk.slice(0, remaining) : chunk;
+          ws.send(toSend);
+          sent += toSend.byteLength;
+          const elapsedSec = (performance.now() - upStartT) / 1000;
+          if (elapsedSec > 0.05 && onUpProgress) {
+            onUpProgress((sent * 8) / elapsedSec / 1_000_000);
+          }
+        }
+        if (!settled) ws.send(JSON.stringify({ type: 'up_end', bytesSent: sent }));
+      }
+    });
+  }
+
   function formatBytes(bytes) {
     if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(bytes % 1_000_000 === 0 ? 0 : 1)}MB`;
     if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(0)}KB`;
@@ -1124,39 +1252,44 @@
     setPhase('Spot-checking throughput…');
     const tickTime = Date.now();
 
+    // The size sweep stays purely diagnostic now (cutoff-at-a-specific-size
+    // detection, feeding the Size Sweep chart below) — it no longer drives
+    // the Download card. That's the streaming test's job now.
     const sweepResults = await runSizeSweep();
     sizeSweepHistory.push({ t: tickTime, results: sweepResults });
     if (sizeSweepHistory.length > CHART_HISTORY_CAP) sizeSweepHistory.shift();
 
-    // downHistory's mbps reflects the LARGEST size that succeeded this tick —
-    // best-available throughput, keeping the existing "Download (Mbps)" chart
-    // meaningful now that download is a sweep rather than one fixed request.
-    const passing = sweepResults.filter(r => r.ok);
-    if (passing.length > 0) {
-      const best = passing.reduce((a, b) => (b.bytes > a.bytes ? b : a));
-      lastDownMbps = (best.bytes * 8) / (best.durationMs / 1000) / 1_000_000;
-      const downFmt = formatMbps(lastDownMbps);
-      els.down.innerHTML = `${downFmt.value}<span class="card-unit"> ${downFmt.unit}</span>`;
+    const streamResult = await runStreamTest(
+      (liveDownMbps) => {
+        const f = formatMbps(liveDownMbps);
+        els.down.innerHTML = `${f.value}<span class="card-unit"> ${f.unit}</span>`;
+      },
+      (liveUpMbps) => {
+        const f = formatMbps(liveUpMbps);
+        els.up.innerHTML = `${f.value}<span class="card-unit"> ${f.unit}</span>`;
+      }
+    );
+    lastDownMbps = streamResult.downMbps;
+    lastUpMbps = streamResult.upMbps;
+
+    if (lastDownMbps != null) {
+      const f = formatMbps(lastDownMbps);
+      els.down.innerHTML = `${f.value}<span class="card-unit"> ${f.unit}</span>`;
+      log(`stream download: ${lastDownMbps.toFixed(2)} Mbps`);
     } else {
-      lastDownMbps = null; // every size in the sweep failed this tick
       els.down.innerHTML = '—';
+      log('stream download FAILED');
     }
     downHistory.push({ t: tickTime, mbps: lastDownMbps });
     if (downHistory.length > CHART_HISTORY_CAP) downHistory.shift();
 
-    try {
-      const payload = new Uint8Array(UPLOAD_BYTES);
-      crypto.getRandomValues(payload.subarray(0, Math.min(65536, UPLOAD_BYTES)));
-      const t0 = performance.now();
-      await timedFetch(UP_URL, { method: 'POST', body: payload }, UPLOAD_TIMEOUT_MS);
-      const upDuration = (performance.now() - t0) / 1000;
-      lastUpMbps = (UPLOAD_BYTES * 8) / upDuration / 1_000_000;
-      const upFmt = formatMbps(lastUpMbps);
-      els.up.innerHTML = `${upFmt.value}<span class="card-unit"> ${upFmt.unit}</span>`;
-      log(`upload spot-check: ${lastUpMbps.toFixed(2)} Mbps`);
-    } catch (e) {
-      lastUpMbps = null;
-      log(`upload spot-check FAILED (${e.name})`);
+    if (lastUpMbps != null) {
+      const f = formatMbps(lastUpMbps);
+      els.up.innerHTML = `${f.value}<span class="card-unit"> ${f.unit}</span>`;
+      log(`stream upload: ${lastUpMbps.toFixed(2)} Mbps`);
+    } else {
+      els.up.innerHTML = '—';
+      log('stream upload FAILED');
     }
     upHistory.push({ t: tickTime, mbps: lastUpMbps });
     if (upHistory.length > CHART_HISTORY_CAP) upHistory.shift();
@@ -1281,12 +1414,19 @@ Ping: 1 HTTPS GET every ${intervalSec}s to ${TRACE_URL}, ${PROBE_TIMEOUT_MS}ms t
 Latency = median RTT of successful pings. Jitter = stddev of same.
 Loss = failed pings / total pings, session-wide.
 Drop event = ${DROP_THRESHOLD_CONSECUTIVE}+ consecutive failed pings; ends on first success after.
-Throughput spot-check every ${spotCheckMin} min: sequential download SWEEP at ${DOWNLOAD_SWEEP_SIZES.map(formatBytes).join('/')}, ${SWEEP_TIMEOUT_MS/1000}s fixed timeout per size (one size at a time, never parallel — a cutoff at a specific size across many ticks suggests size-based dropping, not general link badness). Upload: POST ${(UPLOAD_BYTES/1e6).toFixed(0)}MB to __up, ${UPLOAD_TIMEOUT_MS/1000}s timeout.
-Timing via performance.now(). This measures HTTP-request-layer failure, not raw
-packet loss — browsers have no ICMP/UDP access. Quality thresholds are ITU-style
-convention, not a cited standard. Sweep results show which sizes pass/fail per
-check but do not by themselves prove carrier intent — a consistent cutoff is
-evidence toward that hypothesis, not proof of it.
+Throughput spot-check every ${spotCheckMin} min, two independent checks:
+1) Download/Upload cards: continuous binary stream over one persistent
+WebSocket to ${WS_URL} — ${formatBytes(STREAM_DOWN_BYTES)} down then ${formatBytes(STREAM_UP_BYTES)} up,
+live-updating as bytes flow, ${STREAM_TIMEOUT_MS/1000}s timeout for the whole round trip.
+2) Size Sweep chart only (diagnostic, does not feed the cards above):
+sequential HTTPS GETs at ${DOWNLOAD_SWEEP_SIZES.map(formatBytes).join('/')}, ${SWEEP_TIMEOUT_MS/1000}s timeout per size, one
+at a time — a cutoff at a specific size across many ticks suggests size-based
+dropping, not general link badness.
+Timing via performance.now(). This measures HTTP/WebSocket-layer failure, not
+raw packet loss — browsers have no ICMP/UDP access. Quality thresholds are
+ITU-style convention, not a cited standard. Sweep results show which sizes
+pass/fail per check but do not by themselves prove carrier intent — a
+consistent cutoff is evidence toward that hypothesis, not proof of it.
 Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} failed` : 'stopped'}`;
   }
 
@@ -1488,6 +1628,7 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
         probeTimeoutMs: PROBE_TIMEOUT_MS,
         sweepTimeoutMs: SWEEP_TIMEOUT_MS,
         uploadTimeoutMs: UPLOAD_TIMEOUT_MS,
+        streamTimeoutMs: STREAM_TIMEOUT_MS,
         pingIntervalMs: PING_INTERVAL_MS,
         throughputIntervalMs: THROUGHPUT_INTERVAL_MS,
       },
@@ -1539,6 +1680,7 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     advProbeTimeoutInput.value = PROBE_TIMEOUT_MS;
     advSweepTimeoutInput.value = SWEEP_TIMEOUT_MS;
     advUploadTimeoutInput.value = UPLOAD_TIMEOUT_MS;
+    advStreamTimeoutInput.value = STREAM_TIMEOUT_MS;
   }
 
   function handleTimeoutInputChange(input, bounds, assign) {
@@ -1560,6 +1702,7 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     handleTimeoutInputChange(advProbeTimeoutInput, TIMEOUT_BOUNDS.probe, v => { PROBE_TIMEOUT_MS = v; });
     handleTimeoutInputChange(advSweepTimeoutInput, TIMEOUT_BOUNDS.sweep, v => { SWEEP_TIMEOUT_MS = v; });
     handleTimeoutInputChange(advUploadTimeoutInput, TIMEOUT_BOUNDS.upload, v => { UPLOAD_TIMEOUT_MS = v; });
+    handleTimeoutInputChange(advStreamTimeoutInput, TIMEOUT_BOUNDS.stream, v => { STREAM_TIMEOUT_MS = v; });
   }
 
   advProbeTimeoutInput.addEventListener('change', () => {
@@ -1571,11 +1714,15 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
   advUploadTimeoutInput.addEventListener('change', () => {
     handleTimeoutInputChange(advUploadTimeoutInput, TIMEOUT_BOUNDS.upload, v => { UPLOAD_TIMEOUT_MS = v; });
   });
+  advStreamTimeoutInput.addEventListener('change', () => {
+    handleTimeoutInputChange(advStreamTimeoutInput, TIMEOUT_BOUNDS.stream, v => { STREAM_TIMEOUT_MS = v; });
+  });
 
   advResetBtn.addEventListener('click', () => {
     PROBE_TIMEOUT_MS = DEFAULT_PROBE_TIMEOUT_MS;
     SWEEP_TIMEOUT_MS = DEFAULT_SWEEP_TIMEOUT_MS;
     UPLOAD_TIMEOUT_MS = DEFAULT_UPLOAD_TIMEOUT_MS;
+    STREAM_TIMEOUT_MS = DEFAULT_STREAM_TIMEOUT_MS;
     saveSettings();
     syncAdvSettingsInputs();
     renderProtocolPanel();
