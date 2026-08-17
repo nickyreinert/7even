@@ -748,6 +748,7 @@
   let probesAtLastTick = 0;
   let failuresAtLastTick = 0;
   let nextThroughputCheckAtMs = 0; // for the "next check in Xs" hint while idle between checks
+  let activeStreamTestCancel = null; // cancels an in-flight continuous stream test — see stopMonitoring()
 
   // Combined rolling live view: ping RTT bars + streaming rate line on one
   // shared, scrolling real-time window — not persisted (transient, live-only;
@@ -1055,7 +1056,11 @@
       for (let i = 1; i < liveRateSamples.length; i++) {
         const prev = liveRateSamples[i - 1];
         const cur = liveRateSamples[i];
-        if (cur.t - prev.t > MAX_CONNECT_GAP_MS) continue; // gap = new episode, don't connect
+        // Skip the connecting segment on a time gap (separate check episodes)
+        // OR a phase change (down's last point and up's first point are two
+        // unrelated measurements — joining them with a line implies a
+        // continuous transition that never happened).
+        if (cur.t - prev.t > MAX_CONNECT_GAP_MS || cur.phase !== prev.phase) continue;
         ctx.strokeStyle = phaseColor[cur.phase] || '#2563eb';
         ctx.beginPath();
         ctx.moveTo(toX(prev.t), toY(prev.mbps));
@@ -1372,8 +1377,16 @@
           upMbps = ms > 0 ? (upBytesTotal * 8) / (ms / 1000) / 1_000_000 : null;
         }
         try { ws && ws.close(); } catch (e) { /* already closed/closing */ }
+        if (activeStreamTestCancel === cancelThisTest) activeStreamTestCancel = null;
         resolve({ downMbps, upMbps, reason: reason || 'ok', phase, downBytes: downBytesTotal, upBytesSent: upBytesTotal });
       }
+
+      // Rounds keep streaming for up to STREAM_PHASE_DURATION_MS per
+      // direction on their OWN clock, entirely independent of pingTimer/
+      // throughputTimer/elapsedTimer — stopMonitoring() clearing those alone
+      // does NOT stop an in-flight test. Exposed here so it can.
+      function cancelThisTest() { finish('cancelled'); }
+      activeStreamTestCancel = cancelThisTest;
 
       try {
         ws = new WebSocket(WS_URL);
@@ -1808,6 +1821,16 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     throughputTimer = null;
     elapsedTimer = null;
     nextThroughputCheckAtMs = 0;
+
+    // A continuous stream test runs on its own clock (STREAM_PHASE_DURATION_MS
+    // per direction, up to 25s+ each by default) independent of the timers
+    // just cleared above — without this it kept running in the background
+    // after "Stop"/duration-reached, still updating the chart and eventually
+    // finishing (or not) with no connection back to the now-stopped session.
+    if (activeStreamTestCancel) {
+      activeStreamTestCancel();
+      activeStreamTestCancel = null;
+    }
 
     // if a drop was in progress when we stopped, close it out so it's not lost
     if (currentDropStart !== null) {
