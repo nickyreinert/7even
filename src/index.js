@@ -49,7 +49,19 @@ export default {
       // IS an ArrayBuffer, just not `instanceof` this global's constructor).
       if (typeof data !== 'string') {
         if (uploadInProgress) {
-          uploadBytesReceived += data.byteLength;
+          // `data.byteLength` covers ArrayBuffer/typed-array delivery; if the
+          // runtime instead hands us a Blob-shaped object (`.size`, no
+          // `.byteLength`) the old code silently added `undefined`, which
+          // turns the running total into NaN — and `JSON.stringify(NaN)`
+          // serializes as `null`, which the client's `Number.isFinite` check
+          // then reads as 0. That NaN-to-null-to-0 chain is consistent with
+          // every round reporting exactly 0B regardless of size or trial
+          // count, so both shapes are handled explicitly here instead of
+          // trusting one property name.
+          const len = typeof data.byteLength === 'number' ? data.byteLength
+            : typeof data.size === 'number' ? data.size
+            : 0;
+          uploadBytesReceived += len;
         }
         return;
       }

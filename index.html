@@ -86,6 +86,7 @@
     border: 1px solid #2a2a2a;
     border-radius: 8px;
     padding: 12px;
+    cursor: pointer;
   }
   .card-label {
     font-size: 11px;
@@ -100,17 +101,15 @@
   }
   .card-unit { font-size: 12px; color: #888; font-weight: 400; }
 
-  .quality-badge {
-    display: inline-block;
-    padding: 4px 10px;
-    border-radius: 4px;
-    font-size: 12px;
-    font-weight: 600;
-    margin-top: 14px;
+  .card-desc {
+    display: none;
+    font-size: 11px;
+    color: #aaa;
+    line-height: 1.4;
+    margin-top: 4px;
   }
-  .q-good { background: #14532d; color: #4ade80; }
-  .q-fair { background: #713f12; color: #fbbf24; }
-  .q-poor { background: #7f1d1d; color: #f87171; }
+  .card.showing-desc .card-value { display: none; }
+  .card.showing-desc .card-desc { display: block; }
 
   .stability-block {
     background: #161616;
@@ -509,32 +508,36 @@
 
   <div class="grid">
     <div class="card">
-      <div class="card-label">Latency</div>
-      <div class="card-value" id="valLatency">—<span class="card-unit"> ms</span></div>
-    </div>
-    <div class="card">
-      <div class="card-label">Jitter</div>
-      <div class="card-value" id="valJitter">—<span class="card-unit"> ms</span></div>
-    </div>
-    <div class="card">
-      <div class="card-label">Request Loss</div>
-      <div class="card-value" id="valLoss">—<span class="card-unit"> %</span></div>
-    </div>
-    <div class="card">
       <div class="card-label">Download</div>
       <div class="card-value" id="valDown">—<span class="card-unit"> Mbps</span></div>
+      <div class="card-desc">Peak sustained download throughput, measured by continuously streaming binary data from the ws-speedtest Worker over WebSocket for each streaming episode.</div>
     </div>
     <div class="card">
       <div class="card-label">Upload</div>
       <div class="card-value" id="valUp">—<span class="card-unit"> Mbps</span></div>
+      <div class="card-desc">Peak sustained upload throughput, measured by continuously streaming binary data to the ws-speedtest Worker over WebSocket for each streaming episode.</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Latency</div>
+      <div class="card-value" id="valLatency">—<span class="card-unit"> ms</span></div>
+      <div class="card-desc">Median round-trip time of the periodic HTTP probes sent to Cloudflare's trace endpoint, in milliseconds.</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Jitter</div>
+      <div class="card-value" id="valJitter">—<span class="card-unit"> ms</span></div>
+      <div class="card-desc">Standard deviation of all probe round-trip times this session — how much latency varies probe to probe, not the latency itself.</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Request Loss</div>
+      <div class="card-value" id="valLoss">—<span class="card-unit"> %</span></div>
+      <div class="card-desc">Share of probes that never got a reply within the timeout, out of all probes sent this session.</div>
     </div>
     <div class="card">
       <div class="card-label">Connection</div>
       <div class="card-value" id="valConnType" style="font-size:16px;">—</div>
+      <div class="card-desc">Network type reported by the browser's Network Information API (e.g. 4g, wifi) — unsupported in some browsers, shown as "unknown" there.</div>
     </div>
   </div>
-
-  <div id="qualityWrap"></div>
 
   <div class="stability-block" id="stabilityBlock" style="display:none;">
     <div class="stability-header">
@@ -821,7 +824,6 @@
   const liveIndicator = document.getElementById('liveIndicator');
   const logEl = document.getElementById('log');
   const toggleLogEl = document.getElementById('toggleLog');
-  const qualityWrap = document.getElementById('qualityWrap');
   const dropEventsList = document.getElementById('dropEventsList');
   const protocolNoteEl = document.getElementById('protocolNote');
   const exportBtn = document.getElementById('exportBtn');
@@ -891,6 +893,12 @@
   let failuresAtLastTick = 0;
   let activeStreamTestCancel = null; // cancels an in-flight continuous stream test — see stopMonitoring()
   let activeSweepAbort = null;       // aborts the in-flight size-sweep fetch — see stopMonitoring()
+  // True while runThroughputCycle() is running the chunk-size sweep. The live
+  // chart is meant to visibly move only while pings/streaming are actually
+  // producing new samples — the sweep is a separate strategy that doesn't
+  // feed it, so renderLiveRateChart() freezes on its last frame rather than
+  // scrolling an empty window during that stretch.
+  let sweepInProgress = false;
   // Bumped on every stop. A throughput check is a multi-stage async pipeline
   // (sweep -> stream -> upload sweep); each stage compares this against the
   // value it captured at entry and bails if the session ended meanwhile.
@@ -1050,6 +1058,14 @@
     toggleLogEl.textContent = logEl.classList.contains('visible') ? 'hide probe log' : 'show probe log';
   });
 
+  // Stat cards double as their own explainer: click to swap the live value
+  // for a short description of what it measures, click again to swap back.
+  // Purely a display toggle — the underlying value keeps updating normally
+  // underneath while a description is showing.
+  document.querySelectorAll('.grid .card').forEach((card) => {
+    card.addEventListener('click', () => card.classList.toggle('showing-desc'));
+  });
+
   function setPhase(text) {
     phaseEl.textContent = text;
   }
@@ -1083,6 +1099,43 @@
     const m = Math.floor(totalSec / 60);
     const s = totalSec % 60;
     return m > 0 ? `${m}m ${s}s` : `${s}s`;
+  }
+
+  // Min/avg/max ticks for whichever axis, rather than an evenly-spaced scale —
+  // three real values from the actual data tell you more at this size than a
+  // generic 0/25/50/75/100 grid would. Skips a label if it'd land within 9px
+  // of one already drawn (e.g. flat/near-flat data), so text never overlaps
+  // itself. Shared by the live rate/ping chart and the per-check bar charts.
+  function drawValueAxisTicks(ctx, values, toYFn, side, cssWidth, padding, plotHeight, fmt) {
+    if (values.length === 0) return;
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const avg = values.reduce((a, b) => a + b, 0) / values.length;
+    const drawnYs = [];
+    [max, avg, min].forEach((v) => {
+      const y = toYFn(v);
+      if (drawnYs.some(dy => Math.abs(dy - y) < 11)) return;
+      drawnYs.push(y);
+      const labelY = Math.min(Math.max(y, padding + 6), padding + plotHeight - 3);
+      ctx.strokeStyle = '#666';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      if (side === 'left') {
+        ctx.moveTo(padding, y);
+        ctx.lineTo(padding + 3, y);
+      } else {
+        ctx.moveTo(cssWidth - padding - 3, y);
+        ctx.lineTo(cssWidth - padding, y);
+      }
+      ctx.stroke();
+      ctx.fillStyle = '#888';
+      ctx.font = '9px -apple-system, sans-serif';
+      ctx.textAlign = side === 'left' ? 'left' : 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(fmt ? fmt(v) : v.toFixed(v >= 10 ? 0 : 1), side === 'left' ? padding + 5 : cssWidth - padding - 5, labelY);
+    });
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
   }
 
   function drawBarChart(canvas, points, valueKey, opts) {
@@ -1130,9 +1183,13 @@
       ctx.fillStyle = opts.colorFn ? opts.colorFn(v) : '#2563eb';
       ctx.fillRect(x, y, barWidth, barHeight);
     });
+
+    const toY = (v) => padding + (plotHeight - Math.max(1, (v / maxVal) * plotHeight));
+    drawValueAxisTicks(ctx, values, toY, 'right', cssWidth, padding, plotHeight, opts.axisFmt);
   }
 
   function renderLiveRateChart() {
+    if (sweepInProgress) return; // frozen on its last frame — see sweepInProgress
     trimLiveWindow();
 
     const canvas = canvasLiveRate;
@@ -1163,43 +1220,6 @@
     const windowStart = now - LIVE_WINDOW_MS;
     const toX = (t) => padding + ((t - windowStart) / LIVE_WINDOW_MS) * plotWidth;
 
-    // Min/avg/max ticks for whichever axis, rather than an evenly-spaced
-    // scale — three real values from the actual data tell you more at this
-    // size than a generic 0/25/50/75/100 grid would. Skips a label if it'd
-    // land within 9px of one already drawn (e.g. flat/near-flat data), so
-    // text never overlaps itself.
-    function drawAxisTicks(values, toYFn, side) {
-      if (values.length === 0) return;
-      const min = Math.min(...values);
-      const max = Math.max(...values);
-      const avg = values.reduce((a, b) => a + b, 0) / values.length;
-      const drawnYs = [];
-      [max, avg, min].forEach((v) => {
-        const y = toYFn(v);
-        if (drawnYs.some(dy => Math.abs(dy - y) < 11)) return;
-        drawnYs.push(y);
-        const labelY = Math.min(Math.max(y, padding + 6), padding + plotHeight - 3);
-        ctx.strokeStyle = '#666';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        if (side === 'left') {
-          ctx.moveTo(padding, y);
-          ctx.lineTo(padding + 3, y);
-        } else {
-          ctx.moveTo(cssWidth - padding - 3, y);
-          ctx.lineTo(cssWidth - padding, y);
-        }
-        ctx.stroke();
-        ctx.fillStyle = '#888';
-        ctx.font = '9px -apple-system, sans-serif';
-        ctx.textAlign = side === 'left' ? 'left' : 'right';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(v.toFixed(v >= 10 ? 0 : 1), side === 'left' ? padding + 5 : cssWidth - padding - 5, labelY);
-      });
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'alphabetic';
-    }
-
     // Ping RTT as a bar strip along the bottom band — a separate, smaller
     // scale from the rate line above it (ms and Mbps aren't comparable, and
     // ping fires continuously all session while the rate line is bursty), so
@@ -1225,7 +1245,7 @@
       ctx.fillRect(x - barWidth / 2, pingBandTop + pingBandHeight - barHeight, barWidth, barHeight);
     });
 
-    drawAxisTicks(validPings, (rttMs) => pingBandTop + pingBandHeight - (rttMs / maxPing) * pingBandHeight, 'right');
+    drawValueAxisTicks(ctx, validPings, (rttMs) => pingBandTop + pingBandHeight - (rttMs / maxPing) * pingBandHeight, 'right', cssWidth, padding, plotHeight, (v) => `${v.toFixed(v >= 10 ? 0 : 1)}ms`);
 
     // Down/up rate line over the FULL height, its own independent scale —
     // sparse by nature (only present during the brief window each throughput
@@ -1269,7 +1289,7 @@
         ctx.fill();
       }
 
-      drawAxisTicks(liveRateSamples.map(p => p.mbps), toY, 'left');
+      drawValueAxisTicks(ctx, liveRateSamples.map(p => p.mbps), toY, 'left', cssWidth, padding, plotHeight, (v) => `${v.toFixed(v >= 10 ? 0 : 1)} Mbps`);
     }
   }
 
@@ -1283,9 +1303,10 @@
 
   function renderCharts() {
     renderLiveRateChart();
-    drawBarChart(canvasDown, downHistory, 'mbps', { colorFn: () => '#3b82f6' });
-    drawBarChart(canvasUp, upHistory, 'mbps', { colorFn: () => '#f59e0b' });
-    drawBarChart(canvasLoss, lossHistory, 'lossPct', { fixedMax: 100, colorFn: lossBarColor });
+    const mbpsFmt = (v) => `${v.toFixed(v >= 10 ? 0 : 1)} Mbps`;
+    drawBarChart(canvasDown, downHistory, 'mbps', { colorFn: () => '#3b82f6', axisFmt: mbpsFmt });
+    drawBarChart(canvasUp, upHistory, 'mbps', { colorFn: () => '#f59e0b', axisFmt: mbpsFmt });
+    drawBarChart(canvasLoss, lossHistory, 'lossPct', { fixedMax: 100, colorFn: lossBarColor, axisFmt: (v) => `${v.toFixed(1)}%` });
     const sweepSizes = SWEEP_PLAN.map(p => p.bytes);
     renderSweepChart(canvasSweep, sizeSweepHistory, sweepSizes);
     renderSweepChart(canvasSweepUp, uploadSweepHistory, sweepSizes);
@@ -1726,7 +1747,7 @@
       // direction on their OWN clock, entirely independent of pingTimer/
       // elapsedTimer or the throughputLoop() driving this call — stopping
       // those alone does NOT stop an in-flight test. Exposed here so it can.
-      function cancelThisTest() { finish('cancelled'); }
+      function cancelThisTest(reason) { finish(reason || 'cancelled'); }
       activeStreamTestCancel = cancelThisTest;
 
       try {
@@ -1994,16 +2015,22 @@
     // just wants the continuous stream numbers.
     if (SWEEP_ENABLED) {
       setPhase('Chunk-size sweep…');
-      const sweepResults = await runSizeSweep();
-      if (gen !== sessionGeneration) return; // stopped during the download sweep
-      sizeSweepHistory.push({ t: tickTime, results: sweepResults });
-      if (sizeSweepHistory.length > CHART_HISTORY_CAP) sizeSweepHistory.shift();
-      renderCharts();
+      sweepInProgress = true;
+      try {
+        const sweepResults = await runSizeSweep();
+        if (gen !== sessionGeneration) return; // stopped during the download sweep
+        sizeSweepHistory.push({ t: tickTime, results: sweepResults });
+        if (sizeSweepHistory.length > CHART_HISTORY_CAP) sizeSweepHistory.shift();
+        renderCharts();
 
-      const upSweepResults = await runUploadSweep(gen);
-      if (gen !== sessionGeneration) return; // stopped during the upload sweep
-      uploadSweepHistory.push({ t: tickTime, results: upSweepResults });
-      if (uploadSweepHistory.length > CHART_HISTORY_CAP) uploadSweepHistory.shift();
+        const upSweepResults = await runUploadSweep(gen);
+        if (gen !== sessionGeneration) return; // stopped during the upload sweep
+        uploadSweepHistory.push({ t: tickTime, results: upSweepResults });
+        if (uploadSweepHistory.length > CHART_HISTORY_CAP) uploadSweepHistory.shift();
+      } finally {
+        sweepInProgress = false;
+      }
+      renderLiveRateChart(); // resume visible animation now that the sweep has ended
     }
 
     // delta loss: pings and failures accumulated SINCE the previous tick only,
@@ -2025,17 +2052,6 @@
     const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
     if (!conn) return 'unknown (API unsupported)';
     return conn.effectiveType || conn.type || 'unknown';
-  }
-
-  function classifyQuality(latency, jitter, lossRate) {
-    // Convention thresholds (not measured, not authoritative):
-    // good:  latency<50ms, jitter<20ms, loss<1%
-    // fair:  latency<150ms, jitter<50ms, loss<5%
-    // poor:  anything worse
-    if (latency == null) return { label: 'UNKNOWN', cls: 'q-poor' };
-    if (latency < 50 && jitter < 20 && lossRate < 0.01) return { label: 'GOOD', cls: 'q-good' };
-    if (latency < 150 && jitter < 50 && lossRate < 0.05) return { label: 'FAIR', cls: 'q-fair' };
-    return { label: 'POOR', cls: 'q-poor' };
   }
 
   function computeStabilityScore(sessionStartMs, nowMs, dropEvents, currentDropStart, avgJitterMs, avgLossPct) {
@@ -2074,16 +2090,13 @@
     els.jitter.innerHTML = jitter != null ? `${jitter.toFixed(1)}<span class="card-unit"> ms</span>` : '—';
     els.loss.innerHTML = totalProbes > 0 ? `${(lossRate * 100).toFixed(1)}<span class="card-unit"> %</span>` : '—';
 
-    const quality = classifyQuality(latency, jitter, lossRate);
-    qualityWrap.innerHTML = `<span class="quality-badge ${quality.cls}">${quality.label}</span>`;
-
     renderStabilityScore(jitter, lossRate * 100);
   }
 
   function stabilityScoreClass(composite) {
-    // Same convention-not-standard caveat as classifyQuality — thresholds are
-    // a judgment call for visual color-coding, not a claim about what the
-    // numbers "mean" in any external sense.
+    // Convention thresholds, not measured or authoritative — a judgment call
+    // for visual color-coding, not a claim about what the numbers "mean" in
+    // any external sense.
     if (composite >= 90) return 's-good';
     if (composite >= 70) return 's-fair';
     return 's-poor';
@@ -2165,7 +2178,6 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     failuresAtLastTick = 0;
     logLines = [];
     logEl.textContent = '';
-    qualityWrap.innerHTML = '';
     stabilityBlock.style.display = 'none';
     renderDropEvents();
     renderCharts();
@@ -2227,7 +2239,7 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     // stage and stops later stages from starting once earlier ones settle.
     sessionGeneration++;
     if (activeStreamTestCancel) {
-      activeStreamTestCancel();
+      activeStreamTestCancel(reason);
       activeStreamTestCancel = null;
     }
     if (activeSweepAbort) {
