@@ -1014,6 +1014,43 @@
     const windowStart = now - LIVE_WINDOW_MS;
     const toX = (t) => padding + ((t - windowStart) / LIVE_WINDOW_MS) * plotWidth;
 
+    // Min/avg/max ticks for whichever axis, rather than an evenly-spaced
+    // scale — three real values from the actual data tell you more at this
+    // size than a generic 0/25/50/75/100 grid would. Skips a label if it'd
+    // land within 9px of one already drawn (e.g. flat/near-flat data), so
+    // text never overlaps itself.
+    function drawAxisTicks(values, toYFn, side) {
+      if (values.length === 0) return;
+      const min = Math.min(...values);
+      const max = Math.max(...values);
+      const avg = values.reduce((a, b) => a + b, 0) / values.length;
+      const drawnYs = [];
+      [max, avg, min].forEach((v) => {
+        const y = toYFn(v);
+        if (drawnYs.some(dy => Math.abs(dy - y) < 9)) return;
+        drawnYs.push(y);
+        const labelY = Math.min(Math.max(y, padding + 6), padding + plotHeight - 3);
+        ctx.strokeStyle = '#666';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        if (side === 'left') {
+          ctx.moveTo(padding, y);
+          ctx.lineTo(padding + 3, y);
+        } else {
+          ctx.moveTo(cssWidth - padding - 3, y);
+          ctx.lineTo(cssWidth - padding, y);
+        }
+        ctx.stroke();
+        ctx.fillStyle = '#888';
+        ctx.font = '9px -apple-system, sans-serif';
+        ctx.textAlign = side === 'left' ? 'left' : 'right';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(v.toFixed(v >= 10 ? 0 : 1), side === 'left' ? padding + 5 : cssWidth - padding - 5, labelY);
+      });
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+    }
+
     // Ping RTT as a bar strip along the bottom band — a separate, smaller
     // scale from the rate line above it (ms and Mbps aren't comparable, and
     // ping fires continuously all session while the rate line is bursty), so
@@ -1038,6 +1075,8 @@
       ctx.fillStyle = 'rgba(160, 160, 160, 0.55)';
       ctx.fillRect(x - barWidth / 2, pingBandTop + pingBandHeight - barHeight, barWidth, barHeight);
     });
+
+    drawAxisTicks(validPings, (rttMs) => pingBandTop + pingBandHeight - (rttMs / maxPing) * pingBandHeight, 'right');
 
     // Down/up rate line over the FULL height, its own independent scale —
     // sparse by nature (only present during the brief window each throughput
@@ -1078,6 +1117,8 @@
         ctx.arc(toX(last.t), toY(last.mbps), 2.5, 0, Math.PI * 2);
         ctx.fill();
       }
+
+      drawAxisTicks(liveRateSamples.map(p => p.mbps), toY, 'left');
     }
 
     // Down/up only streams for a few seconds once every THROUGHPUT_INTERVAL_MS
