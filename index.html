@@ -364,6 +364,31 @@
     letter-spacing: 0.5px;
     margin-bottom: 6px;
   }
+  .chart-title-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  .chart-title-row .chart-title { margin-bottom: 6px; }
+  .chart-legend {
+    display: flex;
+    gap: 10px;
+    font-size: 10px;
+    color: #aaa;
+    text-transform: none;
+    letter-spacing: normal;
+  }
+  .chart-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .chart-legend-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    display: inline-block;
+  }
   .chart-canvas {
     width: 100%;
     height: 100px;
@@ -452,11 +477,21 @@
 </div>
 
 <div class="chart-block">
-  <div class="chart-title">Download — live stream (Mbps)</div>
+  <div class="chart-title-row">
+    <div class="chart-title">Live Rate — during each check (Mbps)</div>
+    <div class="chart-legend">
+      <span class="chart-legend-item"><span class="chart-legend-dot" style="background:#2563eb"></span>down</span>
+      <span class="chart-legend-item"><span class="chart-legend-dot" style="background:#60a5fa"></span>up</span>
+    </div>
+  </div>
+  <canvas id="chartLiveRate" class="chart-canvas"></canvas>
+</div>
+<div class="chart-block">
+  <div class="chart-title">Download — per-check result (Mbps)</div>
   <canvas id="chartDown" class="chart-canvas"></canvas>
 </div>
 <div class="chart-block">
-  <div class="chart-title">Upload — live stream (Mbps)</div>
+  <div class="chart-title">Upload — per-check result (Mbps)</div>
   <canvas id="chartUp" class="chart-canvas"></canvas>
 </div>
 <div class="chart-block">
@@ -628,6 +663,7 @@
   const advUploadTimeoutInput = document.getElementById('advUploadTimeout');
   const advStreamTimeoutInput = document.getElementById('advStreamTimeout');
   const advResetBtn = document.getElementById('advResetBtn');
+  const canvasLiveRate = document.getElementById('chartLiveRate');
   const canvasDown = document.getElementById('chartDown');
   const canvasUp = document.getElementById('chartUp');
   const canvasLoss = document.getElementById('chartLoss');
@@ -683,6 +719,13 @@
   let sizeSweepHistory = []; // [{ t: ms timestamp, results: [{ bytes, ok, durationMs|null, error|null }] }]
   let probesAtLastTick = 0;
   let failuresAtLastTick = 0;
+
+  // Intra-transfer rate samples for the CURRENT/most recent stream test only
+  // — reset at the start of each tick, not persisted (transient, live-only;
+  // downHistory/upHistory above already cover session-long trend from each
+  // tick's final number). t is ms elapsed since that test started.
+  const LIVE_RATE_SAMPLE_CAP = 600;
+  let liveRateSamples = []; // [{ t: number, mbps: number, phase: 'down'|'up' }]
 
   let logLines = [];
   let isResumedRun = false;
@@ -897,6 +940,64 @@
     });
   }
 
+  function renderLiveRateChart() {
+    const canvas = canvasLiveRate;
+    const dpr = window.devicePixelRatio || 1;
+    const cssWidth = canvas.clientWidth || 300;
+    const cssHeight = canvas.clientHeight || 100;
+    if (canvas.width !== Math.round(cssWidth * dpr) || canvas.height !== Math.round(cssHeight * dpr)) {
+      canvas.width = Math.round(cssWidth * dpr);
+      canvas.height = Math.round(cssHeight * dpr);
+    }
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return; // supplementary — skip drawing rather than crash the caller
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+    if (liveRateSamples.length < 2) {
+      ctx.fillStyle = '#444';
+      ctx.font = '11px -apple-system, sans-serif';
+      ctx.fillText('no data yet', 8, cssHeight / 2);
+      return;
+    }
+
+    const padding = 4;
+    const plotWidth = cssWidth - padding * 2;
+    const plotHeight = cssHeight - padding * 2;
+    const maxT = Math.max(1, liveRateSamples[liveRateSamples.length - 1].t);
+    const maxVal = Math.max(1, ...liveRateSamples.map(p => p.mbps));
+
+    const toXY = (p) => [
+      padding + (p.t / maxT) * plotWidth,
+      padding + plotHeight - (p.mbps / maxVal) * plotHeight,
+    ];
+
+    const phaseColor = { down: '#2563eb', up: '#60a5fa' };
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+
+    for (let i = 1; i < liveRateSamples.length; i++) {
+      const [x0, y0] = toXY(liveRateSamples[i - 1]);
+      const [x1, y1] = toXY(liveRateSamples[i]);
+      ctx.strokeStyle = phaseColor[liveRateSamples[i].phase] || '#2563eb';
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.stroke();
+    }
+
+    // a small dot at the latest sample — a "moving" cursor while a check is
+    // actively streaming, frozen at the last position once it finishes
+    const last = liveRateSamples[liveRateSamples.length - 1];
+    const [lx, ly] = toXY(last);
+    ctx.fillStyle = phaseColor[last.phase] || '#2563eb';
+    ctx.beginPath();
+    ctx.arc(lx, ly, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   function lossBarColor(lossPct) {
     // matches the GOOD/FAIR/POOR thresholds already used for the quality badge,
     // so the chart's color language is consistent with the rest of the UI
@@ -906,6 +1007,7 @@
   }
 
   function renderCharts() {
+    renderLiveRateChart();
     drawBarChart(canvasDown, downHistory, 'mbps', { colorFn: () => '#2563eb' });
     drawBarChart(canvasUp, upHistory, 'mbps', { colorFn: () => '#60a5fa' });
     drawBarChart(canvasLoss, lossHistory, 'lossPct', { fixedMax: 100, colorFn: lossBarColor });
@@ -1180,10 +1282,16 @@
         if (msg.type === 'down_end') {
           const downDurationMs = performance.now() - downStartT;
           downMbps = downBytes > 0 ? (downBytes * 8) / (downDurationMs / 1000) / 1_000_000 : null;
+          // Guarantee at least one sample even if the whole phase finished
+          // faster than the progress throttle's own minimum-elapsed gate
+          // (e.g. a very fast or low-latency link) — otherwise a phase that
+          // completes in a handful of milliseconds shows nothing at all.
+          if (downMbps != null && onDownProgress) onDownProgress(downMbps);
           pumpUpload();
         } else if (msg.type === 'up_ack') {
           const upDurationMs = performance.now() - upStartT;
           upMbps = msg.bytesReceived > 0 ? (msg.bytesReceived * 8) / (upDurationMs / 1000) / 1_000_000 : null;
+          if (upMbps != null && onUpProgress) onUpProgress(upMbps);
           finish();
         }
       });
@@ -1259,14 +1367,25 @@
     sizeSweepHistory.push({ t: tickTime, results: sweepResults });
     if (sizeSweepHistory.length > CHART_HISTORY_CAP) sizeSweepHistory.shift();
 
+    liveRateSamples = [];
+    const streamTestStartT = performance.now();
+
+    function recordLiveSample(mbps, phase) {
+      liveRateSamples.push({ t: performance.now() - streamTestStartT, mbps, phase });
+      if (liveRateSamples.length > LIVE_RATE_SAMPLE_CAP) liveRateSamples.shift();
+      renderLiveRateChart();
+    }
+
     const streamResult = await runStreamTest(
       (liveDownMbps) => {
         const f = formatMbps(liveDownMbps);
         els.down.innerHTML = `${f.value}<span class="card-unit"> ${f.unit}</span>`;
+        recordLiveSample(liveDownMbps, 'down');
       },
       (liveUpMbps) => {
         const f = formatMbps(liveUpMbps);
         els.up.innerHTML = `${f.value}<span class="card-unit"> ${f.unit}</span>`;
+        recordLiveSample(liveUpMbps, 'up');
       }
     );
     lastDownMbps = streamResult.downMbps;
@@ -1441,6 +1560,7 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     upHistory = [];
     lossHistory = [];
     sizeSweepHistory = [];
+    liveRateSamples = [];
     probesAtLastTick = 0;
     failuresAtLastTick = 0;
     logLines = [];
