@@ -503,7 +503,10 @@
     <canvas id="chartLiveRate" class="chart-canvas"></canvas>
   </div>
 
-  <div class="toggle-log" id="toggleLog">show probe log</div>
+  <div class="toggle-log-row">
+    <div class="toggle-log" id="toggleLog">show probe log</div>
+    <div class="toggle-log" id="copyLog">copy probe log</div>
+  </div>
   <div class="log" id="log"></div>
 
   <div class="grid">
@@ -824,6 +827,7 @@
   const liveIndicator = document.getElementById('liveIndicator');
   const logEl = document.getElementById('log');
   const toggleLogEl = document.getElementById('toggleLog');
+  const copyLogEl = document.getElementById('copyLog');
   const dropEventsList = document.getElementById('dropEventsList');
   const protocolNoteEl = document.getElementById('protocolNote');
   const exportBtn = document.getElementById('exportBtn');
@@ -1052,6 +1056,17 @@
     logEl.textContent = logLines.join('\n');
     logEl.scrollTop = logEl.scrollHeight;
   }
+
+  copyLogEl.addEventListener('click', async () => {
+    if (!logLines.length) return;
+    try {
+      await navigator.clipboard.writeText(logLines.join('\n'));
+      copyLogEl.textContent = 'copied!';
+    } catch (e) {
+      copyLogEl.textContent = 'copy failed';
+    }
+    setTimeout(() => { copyLogEl.textContent = 'copy probe log'; }, 1500);
+  });
 
   toggleLogEl.addEventListener('click', () => {
     logEl.classList.toggle('visible');
