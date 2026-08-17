@@ -420,6 +420,18 @@
 <div class="elapsed" id="elapsed"></div>
 <div class="phase" id="phase"></div>
 <div class="live-indicator" id="liveIndicator"><div class="live-indicator-bar"></div></div>
+
+<div class="chart-block">
+  <div class="chart-title-row">
+    <div class="chart-title">Live Rate — during each check (Mbps)</div>
+    <div class="chart-legend">
+      <span class="chart-legend-item"><span class="chart-legend-dot" style="background:#2563eb"></span>down</span>
+      <span class="chart-legend-item"><span class="chart-legend-dot" style="background:#60a5fa"></span>up</span>
+    </div>
+  </div>
+  <canvas id="chartLiveRate" class="chart-canvas"></canvas>
+</div>
+
 <div class="toggle-log-row">
   <div class="toggle-log" id="clearBtn">clear saved session</div>
   <div class="toggle-log" id="exportBtn">export session data</div>
@@ -476,16 +488,6 @@
   <div id="dropEventsList"><span class="no-drops">none detected yet</span></div>
 </div>
 
-<div class="chart-block">
-  <div class="chart-title-row">
-    <div class="chart-title">Live Rate — during each check (Mbps)</div>
-    <div class="chart-legend">
-      <span class="chart-legend-item"><span class="chart-legend-dot" style="background:#2563eb"></span>down</span>
-      <span class="chart-legend-item"><span class="chart-legend-dot" style="background:#60a5fa"></span>up</span>
-    </div>
-  </div>
-  <canvas id="chartLiveRate" class="chart-canvas"></canvas>
-</div>
 <div class="chart-block">
   <div class="chart-title">Download — per-check result (Mbps)</div>
   <canvas id="chartDown" class="chart-canvas"></canvas>
