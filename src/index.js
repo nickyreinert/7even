@@ -42,8 +42,12 @@ export default {
     server.addEventListener('message', (event) => {
       const data = event.data;
 
-      // Binary frame => part of an upload test
-      if (data instanceof ArrayBuffer) {
+      // Binary frame => part of an upload test. Checked by type rather than
+      // `instanceof ArrayBuffer`: that failed to match real binary frames in
+      // production despite the client sending correctly-sized data (likely a
+      // cross-realm instanceof mismatch in the isolate runtime — the object
+      // IS an ArrayBuffer, just not `instanceof` this global's constructor).
+      if (typeof data !== 'string') {
         if (uploadInProgress) {
           uploadBytesReceived += data.byteLength;
         }

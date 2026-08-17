@@ -722,6 +722,7 @@
   let sizeSweepHistory = []; // [{ t: ms timestamp, results: [{ bytes, ok, durationMs|null, error|null }] }]
   let probesAtLastTick = 0;
   let failuresAtLastTick = 0;
+  let nextThroughputCheckAtMs = 0; // for the "next check in Xs" hint while idle between checks
 
   // Combined rolling live view: ping RTT bars + streaming rate line on one
   // shared, scrolling real-time window — not persisted (transient, live-only;
@@ -995,7 +996,7 @@
     const pingBandTop = padding + plotHeight - pingBandHeight;
     const validPings = livePingSamples.filter(p => p.rttMs != null).map(p => p.rttMs);
     const maxPing = Math.max(20, ...validPings);
-    const barWidth = 2;
+    const barWidth = 5;
 
     livePingSamples.forEach((p) => {
       const x = toX(p.t);
@@ -1046,6 +1047,20 @@
         ctx.arc(toX(last.t), toY(last.mbps), 2.5, 0, Math.PI * 2);
         ctx.fill();
       }
+    }
+
+    // Down/up only streams for a few seconds once every THROUGHPUT_INTERVAL_MS
+    // (a fixed-size check, not an open-ended stream — see the protocol note
+    // below for why) — without this, the line sitting still for the other
+    // ~57s reads as broken rather than "waiting for the next check".
+    const isCheckActive = liveRateSamples.length > 0 && (now - liveRateSamples[liveRateSamples.length - 1].t < 3000);
+    if (running && nextThroughputCheckAtMs > 0 && !isCheckActive) {
+      const secsLeft = Math.max(0, Math.round((nextThroughputCheckAtMs - now) / 1000));
+      ctx.fillStyle = '#888';
+      ctx.font = '10px -apple-system, sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText(`next check in ${secsLeft}s`, cssWidth - padding, padding + 10);
+      ctx.textAlign = 'left';
     }
   }
 
@@ -1431,6 +1446,7 @@
   async function runThroughputSpotCheck() {
     setPhase('Spot-checking throughput…');
     const tickTime = Date.now();
+    nextThroughputCheckAtMs = tickTime + THROUGHPUT_INTERVAL_MS;
 
     // The size sweep stays purely diagnostic now (cutoff-at-a-specific-size
     // detection, feeding the Size Sweep chart below) — it no longer drives
@@ -1692,6 +1708,7 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     pingTimer = null;
     throughputTimer = null;
     elapsedTimer = null;
+    nextThroughputCheckAtMs = 0;
 
     // if a drop was in progress when we stopped, close it out so it's not lost
     if (currentDropStart !== null) {
