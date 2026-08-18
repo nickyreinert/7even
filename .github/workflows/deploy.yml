@@ -23,7 +23,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      deployments: write
     steps:
       - uses: actions/checkout@v4
       - name: Deploy
@@ -33,4 +32,10 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           projectName: ${{ vars.CLOUDFLARE_PAGES_PROJECT || '7even' }}
           directory: .
-          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+          # gitHubToken is deliberately omitted. When set, pages-action first
+          # POSTs a GitHub Deployment record to api.github.com/.../deployments
+          # purely for the Deployments tab in the GitHub UI — and a sustained
+          # 503 on that endpoint failed this job four times in a row while the
+          # Cloudflare upload itself was never even attempted. The deployment
+          # record is cosmetic; the actual Pages deploy does not need it, so
+          # this job no longer takes a hard dependency on that API being up.
