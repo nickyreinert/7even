@@ -2,6 +2,12 @@
 
 Status: proposal, nothing built yet. Researched August 2026.
 
+**Recommendation in one line:** Kotlin Multiplatform, Android first — a normal
+Kotlin/Compose Android app whose measurement engine lives in a pure-Kotlin
+module that is already portable, so iOS later is a port rather than a rewrite.
+Cordova is rejected for the background half (§3), and iOS will never do
+continuous background monitoring no matter what we build (§2).
+
 ## 1. What we want
 
 Take what `index.html` already does — latency, jitter, request loss, download,
@@ -99,73 +105,108 @@ put the background measurement inside the WebView.
 
 ## 4. Framework options compared
 
+Given the decision to **go fully native and start with Android**, the tradeoff
+changes. The main argument for a WebView shell was reusing `index.html`; if
+Phase 1 is Android-only, we write a native UI for it either way.
+
 | Option | Background engine | UI | Verdict |
 |---|---|---|---|
-| **A. Capacitor shell + native measurement plugin** | Kotlin `WorkManager` + Swift `BGTaskScheduler`, written by us | reuse `index.html` as-is | **Recommended** |
-| B. Flutter rewrite | `workmanager` plugin, background isolate has full `dart:io` (real sockets) | rewrite from scratch | Good engineering, throws away working UI |
-| C. Full native ×2 | ideal control | 2× UI work | Only if the app becomes a serious product |
-| D. React Native | Headless JS is **Android-only**; iOS needs a separate path | reuse some web skills | Worst cross-platform story for *this* problem |
-| E. Cordova + background-mode | policy trap, WebView suspended | reuse `index.html` | **Rejected** — see §3 |
+| **A. Kotlin Multiplatform** | shared Kotlin engine; `WorkManager` on Android, called from `BGTaskScheduler` on iOS | native Compose (+ Compose MP or SwiftUI later) | **Recommended** |
+| B. Full native ×2 | Kotlin + Swift, written twice | Compose + SwiftUI | Fine, but A is this with the duplication removed |
+| C. Flutter | `workmanager` plugin; background isolate has full `dart:io` | Flutter widgets | Viable, but not "native", and Dart is a second ecosystem |
+| D. Capacitor shell + native plugin | native plugin per platform | reuse `index.html` | Fastest to an Android MVP, weakest long-term |
+| E. React Native | Headless JS is **Android-only** | RN | Worst cross-platform story for *this* problem |
+| F. Cordova + background-mode | policy trap, WebView suspended | reuse `index.html` | **Rejected** — see §3 |
 
-### Recommendation: Option A
+### Recommendation: Kotlin Multiplatform (KMP)
 
-Reasoning:
+This is precisely the "fully native but cross-platform" shape you described,
+and it fits this problem unusually well:
 
-- The background measurement engine we need is **small**. It is a handful of
-  timed HTTP requests and a byte-counting loop — a few hundred lines of Kotlin
-  and a few hundred of Swift. Writing it twice natively is cheaper than
-  rewriting the entire UI in Dart to avoid writing it twice.
-- The UI is the expensive, already-paid-for part. `index.html` is ~2,500 lines
-  of working, iterated-on interface. Capacitor lets us keep all of it.
-- Native gives us direct access to the things that matter here and that
-  wrappers abstract away badly: `NWPathMonitor` / `ConnectivityManager` for
-  network-type transitions, `URLSession` background transfers, precise
-  `WorkManager` constraints (unmetered-only, charging-only).
-- If Flutter later looks better, the measurement engine's *design* (§6) ports
-  directly; only the host changes.
+- **The shared part is exactly the part we'd otherwise duplicate.** Our
+  measurement engine is pure logic — timed HTTP requests, byte counting,
+  rolling statistics, the stability score. It touches no UI. In KMP that
+  becomes one Kotlin module compiled natively for both platforms. This removes
+  the "maintain Kotlin and Swift measurement parity" risk from §11 entirely,
+  which was the main weakness of the previous recommendation.
+- **The UI stays genuinely native.** Compose on Android now; at iOS time we
+  choose Compose Multiplatform (stable for iOS since May 2025) or SwiftUI.
+  That decision can be deferred without blocking anything.
+- **Nothing is abstracted away.** Unlike a WebView or Flutter, platform APIs
+  are directly reachable via `expect`/`actual` — `WorkManager`,
+  `ConnectivityManager`, `NWPathMonitor`, `BGTaskScheduler` are all first
+  class, not waiting on a plugin author.
+- **It is production-proven and Google-endorsed** as of 2026, not a bet.
 
-**Choose Flutter instead if** we expect to grow well beyond this feature set,
-or if maintaining parallel Kotlin/Swift measurement code proves annoying in
-practice. Flutter's background isolate runs a full Dart VM, so unlike the
-Capacitor runner it *can* open a real WebSocket. That is a genuine advantage —
-it just doesn't outweigh rewriting the UI today.
+**The key practical point for an Android-first build:** Phase 1 does *not*
+require standing up the whole KMP toolchain. It requires one discipline —
+keep the measurement engine in a **pure-Kotlin module with zero Android
+imports** (no `Context`, no `android.*`), talking to the rest of the app
+through interfaces. That module is then already KMP-ready. Adding the iOS
+target later becomes a build-configuration change plus writing the `actual`
+implementations, instead of a rewrite.
+
+So: build a normal Kotlin Android app, structured so the interesting half is
+portable. Pay the KMP cost only when iOS actually arrives.
+
+### Library choices
+
+| Concern | Pick | Why |
+|---|---|---|
+| HTTP / WebSocket | **Ktor client** — OkHttp engine on Android, Darwin on iOS | Ktor's own recommended pairing; Darwin wraps `NSURLSession`, OkHttp is the Android standard |
+| Persistence | **Room 3.x** (full KMP support) | Same API you'd use on Android anyway; near-zero learning curve. SQLDelight is the alternative if you'd rather write raw SQL |
+| DI | Koin | Standard KMP choice, no codegen |
+| Scheduling | `WorkManager` (Android) / `BGTaskScheduler` (iOS) via `expect`/`actual` | Deliberately *not* abstracted — the platforms differ too much to paper over |
+
+### What happens to `index.html`
+
+It stays. It is live at `7.1-1-1.de`, it works, and it keeps earning its place
+as the zero-install way to run a check. It also becomes the **reference spec**
+for the port: `runStreamTest()`, `runSizeSweep()`, `computeStabilityScore()`
+and the drop-detection logic are the algorithms the Kotlin engine
+reimplements, and its existing JSON export is the interchange format.
+
+The charts are the main porting cost. `drawBarChart()`,
+`drawValueAxisTicks()` and `renderLiveRateChart()` are written against the 2D
+canvas API, which maps closely onto Compose's `Canvas` / `DrawScope` — the
+translation is mechanical rather than a redesign.
 
 ## 5. Architecture
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│ Foreground UI  —  index.html in a Capacitor WebView  │
+│ UI — Compose (Android)  ·  Compose MP / SwiftUI later│
 │  live charts · history · reports · settings          │
 └───────────────┬──────────────────────────────────────┘
-                │ Capacitor bridge (read samples, write config)
-┌───────────────▼──────────────────────────────────────┐
-│ Shared local store — SQLite                          │
-│  samples · drop events · rollups · config            │
-└───────────────▲──────────────────────────────────────┘
-                │ writes samples
-┌───────────────┴──────────────────────────────────────┐
-│ Native measurement engine  (Kotlin | Swift)          │
-│  probe scheduler · HTTP timing · byte counting       │
-└───────────────┬──────────────────────────────────────┘
                 │
-     ┌──────────┴──────────┐
-     │ Android: WorkManager│  iOS: BGTaskScheduler
-     │ + optional FGS      │  + silent push (best effort)
-     └─────────────────────┘
+┌───────────────▼──────────────────────────────────────┐
+│ :shared  (pure Kotlin, KMP-ready, no platform imports)│
+│  measurement engine · probe tiers · stats · reports   │
+│  Room entities/DAOs · Ktor client                     │
+└───────────────┬──────────────────────────────────────┘
+                │ expect/actual
+     ┌──────────┴───────────────────────┐
+     │ Android: WorkManager + opt. FGS  │  iOS: BGTaskScheduler
+     │ ConnectivityManager              │  NWPathMonitor
+     └──────────────────────────────────┘
 ```
 
 Key decisions baked into this:
 
-- **SQLite, not `localStorage`.** The current app persists to `localStorage`,
-  which is per-WebView and unreachable from a native background task. The
-  background engine must write somewhere the UI can read. SQLite is the shared
-  surface. The existing JSON snapshot format maps onto it cleanly.
-- **The UI never measures in the background.** It only measures while
-  on-screen (where the existing WebSocket engine works fine, unchanged). All
-  unattended measurement is native.
-- **No backend required for v1.** Reports are computed on-device from local
-  samples. A backend becomes necessary only for iOS silent push (§7.2) and for
-  cross-device history — both explicitly deferred.
+- **`:shared` never imports a platform.** This is the whole discipline. If it
+  compiles without an Android SDK on the classpath, iOS is cheap later. If it
+  doesn't, we've silently chosen Option B and doubled the iOS cost.
+- **Scheduling is deliberately not abstracted.** `WorkManager` and
+  `BGTaskScheduler` have genuinely different semantics (guaranteed-ish
+  periodic vs opportunistic). A common interface pretending otherwise would
+  hide the one thing §2 says we must be honest about. The engine exposes
+  "run one probe cycle"; each platform decides when to call it.
+- **Room, not `localStorage`.** The current app persists to `localStorage`,
+  which is per-WebView and unreachable from a background task. Room is the
+  shared surface both the UI and the background worker read and write.
+- **No backend required for v1.** Reports are computed on-device. A backend is
+  needed only for iOS silent push (§7.2) and cross-device history — both
+  deferred.
 
 ## 6. The measurement design has to change
 
@@ -205,12 +246,25 @@ in the store listing. Every tier above T1 is opt-in per network type, and the
 settings screen shows the projected monthly cost as the user changes the
 sliders — the same "show your work" principle the web app already follows.
 
-### Protocol change: drop WebSocket for background probes
+### Protocol: HTTP for background probes, WebSocket kept for the rest
 
-Background runtimes handle short, discrete HTTP requests far better than
-long-lived sockets — a socket that has to survive a 30 s iOS window and a
-process that may be frozen mid-transfer is a bad fit. For T1/T2, use plain
-HTTPS against the existing endpoints:
+Note this reasoning changed with the move to KMP. Under Capacitor it was
+*forced* — that runtime has no `WebSocket` at all. Ktor has full WebSocket
+support on both platforms, so this is now a **design choice, not a
+constraint**, and the case is narrower:
+
+- A long-lived socket is a poor fit for a 30 s iOS window and for a process
+  that may be frozen mid-transfer. Short discrete requests resume cleanly.
+- T1 is three tiny requests; opening a WebSocket to carry them costs more in
+  handshake than it saves.
+
+So: T1/T2 use plain HTTPS. **T3 and the Android foreground-service intensive
+mode keep the existing WebSocket streaming protocol unchanged** — there, the
+process is alive and unfrozen, and the continuous-stream measurement is the
+better one. This is a real improvement over the previous plan, which would
+have lost WebSocket streaming on mobile entirely.
+
+For T1/T2, use plain HTTPS against the existing endpoints:
 
 - down: `https://speed.cloudflare.com/__down?bytes=N` (already used by the sweep)
 - up: extend the `ws-speedtest` Worker with a plain `POST /__up` that reads and
@@ -300,16 +354,24 @@ The actual product deliverable. Computed on-device from SQLite rollups.
 
 | Phase | Scope | Rough effort |
 |---|---|---|
-| **0. Spike** | Capacitor shell + `index.html` running on a device; SQLite bridge; prove a Kotlin `WorkManager` job wakes and records T1 overnight | 1 week |
-| **1. Android MVP** | T1+T2 tiers, config UI, drop detection, daily/weekly report + notification, boot persistence | 3–4 weeks |
-| **2. Android polish** | Intensive-mode FGS w/ Android 15 timeout handling, T3, per-network segmentation, export, data-budget UI | 2–3 weeks |
-| **3. iOS** | `BGTaskScheduler` engine (Swift port of the Kotlin engine), honest coverage UI, App Review notes | 3–4 weeks |
+| **0. Spike** | Kotlin Android app; `:shared` module skeleton; Room; a `WorkManager` job that wakes and records T1 overnight on a real device | 1 week |
+| **1. Android MVP** | T1+T2 in `:shared`, Compose UI incl. ported charts, config, drop detection, daily/weekly report + notification, boot persistence | 4–6 weeks |
+| **2. Android polish** | Intensive-mode FGS w/ Android 15 timeout handling, T3 over WebSocket, per-network segmentation, export, data-budget UI | 2–3 weeks |
+| **3. iOS via KMP** | add iOS target to `:shared`, write `actual`s, `BGTaskScheduler` host, UI (Compose MP or SwiftUI), honest coverage UI, App Review notes | 3–4 weeks |
 | **4. Optional** | Silent-push backend for iOS coverage, cross-device sync, SSID labeling | open |
 
-Phase 0 is genuinely a go/no-go gate. If a `WorkManager` job does not reliably
-fire overnight on a real device with real OEM battery management (Samsung One
-UI and Xiaomi HyperOS are notoriously aggressive), the whole premise needs
-revisiting before we spend the other 10 weeks.
+Phase 1 is ~1–2 weeks longer than the Capacitor path because the UI is new
+rather than reused. Phase 3 is correspondingly cheaper and much lower-risk,
+because the engine is already shared and tested rather than being reimplemented
+in Swift. Net effort is roughly a wash; the KMP version ends up with the better
+codebase.
+
+**Phase 0 is a genuine go/no-go gate.** If a `WorkManager` job does not
+reliably fire overnight on a real device under real OEM battery management
+(Samsung One UI and Xiaomi HyperOS are notoriously aggressive), the entire
+premise needs revisiting before spending the other ~10 weeks. Test on a
+physical Samsung or Xiaomi, not an emulator — emulators do not reproduce OEM
+battery killers, which is exactly the failure mode that matters.
 
 ## 11. Risks
 
@@ -320,20 +382,31 @@ revisiting before we spend the other 10 weeks.
 | Cellular data complaints | Medium | Tiered probes, Wi-Fi-only defaults, projected-cost UI |
 | Measuring the network changes the network | Medium | Keep T1 tiny; never run T2/T3 concurrently with itself; already handled in sweep design |
 | Play/App Review rejection over background use | Medium | Declare properly, no tricks, clear reviewer notes |
-| Maintaining Kotlin+Swift measurement parity | Low-Med | Keep the engine small and spec'd; shared test vectors; revisit Flutter if it drifts |
+| ~~Maintaining Kotlin+Swift measurement parity~~ | — | **Eliminated by KMP** — one shared engine, not two implementations |
+| `:shared` accidentally takes an Android dependency, silently killing the KMP payoff | Medium | Enforce from Phase 0: `:shared` must compile with no Android SDK on the classpath; make that a CI check, not a code-review habit |
+| Compose chart porting takes longer than expected | Low-Med | Charts are the one genuinely fiddly port; budget for them explicitly in Phase 1 rather than treating them as UI trim |
 
 ## 12. Open questions for you
 
-1. **Is Android-only v1 acceptable?** It's where the product genuinely works,
-   and it removes the biggest risk from the critical path.
-2. **How much does the WebSocket streaming test matter to you?** If it's the
-   heart of the product, that pushes toward Flutter (real sockets in background
-   isolates). If it's fine as a foreground-only feature, Option A stands.
-3. **Personal tool or store product?** A personal-use Android app can use
-   battery exemptions and a permanent foreground service freely and skip all
-   of §9. A store product cannot. This changes the design materially.
-4. **Report destination** — local notification only, or also email/webhook?
+Two of the four are now settled: **Android first** (confirmed), and the
+**WebSocket question is moot** — Ktor supports it on both platforms, so T3
+and intensive mode keep the existing streaming protocol.
+
+Still open:
+
+1. **Personal tool or store product?** This is now the biggest open decision,
+   and it changes the design materially. A personal-use Android app can take a
+   battery-optimization exemption and run a permanent foreground service
+   freely, sample every 30 s, and skip all of §9 — which makes the product
+   dramatically better. A store product cannot.
+2. **Report destination** — local notification only, or also email/webhook?
    Email implies a backend.
+3. **iOS UI at Phase 3** — Compose Multiplatform (share the UI too) or SwiftUI
+   (fully native feel)? Genuinely deferrable; noting it so it isn't forgotten.
+
+If the answer to (1) is "personal tool," say so early — it would let us cut
+most of §9, loosen §6's data budget, and get to something useful in
+noticeably less than the estimate above.
 
 ## Sources
 
@@ -352,3 +425,11 @@ revisiting before we spend the other 10 weeks.
 - [Background processes — Flutter docs](https://docs.flutter.dev/packages-and-plugins/background-processes)
 - [Run React Native background tasks with Headless JS — LogRocket](https://blog.logrocket.com/run-react-native-background-tasks-headless-js/)
 - [Clarification on FOREGROUND_SERVICE_DATA_SYNC and REQUEST_IGNORE_BATTERY_OPTIMIZATIONS — Google Play Developer Community](https://support.google.com/googleplay/android-developer/thread/330168645/clarification-on-foreground-service-data-sync-and-request-ignore-battery-optimizations?hl=en)
+- [Kotlin Multiplatform — Android Developers](https://developer.android.com/kotlin/multiplatform)
+- [Kotlin Multiplatform — kotlinlang.org](https://kotlinlang.org/multiplatform/)
+- [Compose Multiplatform — kotlinlang.org](https://kotlinlang.org/compose-multiplatform/)
+- [Compose Multiplatform for iOS Stable in 2025](https://www.kmpship.app/blog/compose-multiplatform-ios-stable-2025)
+- [Is Kotlin Multiplatform production-ready in 2026? — Volpis](https://volpis.com/blog/is-kotlin-multiplatform-production-ready/)
+- [Set up Room database for KMP — Android Developers](https://developer.android.com/kotlin/multiplatform/room)
+- [Room vs SQLDelight for Kotlin Multiplatform (2026)](https://docs.bswen.com/blog/2026-03-14-room-vs-sqldelight-kmp/)
+- [Ktor client engines — Ktor Documentation](https://ktor.io/docs/client-engines.html)
