@@ -2,6 +2,7 @@ package de.sevenapp.monitor.android.ui
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -54,6 +55,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = SevenColors) {
                 var screen by rememberSaveable { mutableStateOf(Screen.MAIN) }
+                BackHandler(enabled = screen == Screen.HELP) { screen = Screen.MAIN }
                 Scaffold(
                     topBar = {
                         TopAppBar(
