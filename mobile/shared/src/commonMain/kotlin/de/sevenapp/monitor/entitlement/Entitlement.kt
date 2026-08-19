@@ -61,6 +61,24 @@ data class Entitlement(
 }
 
 /**
+ * Whether the paywall is switched on at all.
+ *
+ * **Currently off, deliberately.** Getting onto Play with a new personal
+ * developer account requires a closed test with 12 opted-in testers for 14
+ * continuous days — and the feature those testers most need to exercise is
+ * background monitoring, which is precisely what the paywall would lock. A
+ * paywalled closed test would mean testing everything except the thing that
+ * actually has to work.
+ *
+ * So: ship free, get through closed testing, switch this on when Play Billing
+ * is integrated. The gating logic below is written and tested for both states,
+ * so turning it on is a flag change rather than a feature build.
+ */
+object PaywallConfig {
+    const val ENABLED: Boolean = false
+}
+
+/**
  * The single place that decides what a tier may do.
  *
  * Deliberately a pure function of tier and time, in commonMain, so the same
@@ -70,6 +88,22 @@ data class Entitlement(
  * scheduled has to actually stop that work.
  */
 object FeatureGate {
+
+    /**
+     * The one place a tier is resolved. Everything — UI, workers, retention —
+     * must go through this rather than reading [Entitlement.effectiveTierAt]
+     * directly, so that [PaywallConfig] genuinely is a single switch.
+     *
+     * With the paywall off, everyone is PRO. Not "FREE with checks skipped":
+     * making the tier itself PRO means every downstream rule (retention,
+     * intervals, reports) behaves exactly as it will once billing ships, so
+     * closed testing exercises the real thing.
+     */
+    fun resolveTier(
+        entitlement: Entitlement,
+        nowEpochMs: Long,
+        paywallEnabled: Boolean = PaywallConfig.ENABLED,
+    ): Tier = if (!paywallEnabled) Tier.PRO else entitlement.effectiveTierAt(nowEpochMs)
 
     /**
      * On-demand testing is free, deliberately and permanently.
@@ -148,8 +182,11 @@ object FeatureGate {
      * on every wakeup, so an entitlement that lapses between cycles stops
      * collection without needing the app to be opened.
      */
-    fun shouldBackgroundWorkRun(entitlement: Entitlement, nowEpochMs: Long): Boolean =
-        canScheduleBackgroundMonitoring(entitlement.effectiveTierAt(nowEpochMs))
+    fun shouldBackgroundWorkRun(
+        entitlement: Entitlement,
+        nowEpochMs: Long,
+        paywallEnabled: Boolean = PaywallConfig.ENABLED,
+    ): Boolean = canScheduleBackgroundMonitoring(resolveTier(entitlement, nowEpochMs, paywallEnabled))
 }
 
 /**
@@ -160,6 +197,13 @@ object FeatureGate {
 data class LockedFeature(val name: String, val reason: String)
 
 object Paywall {
+
+    /**
+     * Whether the plan/upgrade UI should appear at all. With the paywall off
+     * there is nothing to sell, and showing an "Upgrade" button that cannot
+     * take money is worse than showing nothing.
+     */
+    fun shouldShowPlanUi(paywallEnabled: Boolean = PaywallConfig.ENABLED): Boolean = paywallEnabled
 
     fun lockedFor(tier: Tier): List<LockedFeature> = when (tier) {
         Tier.PRO -> emptyList()

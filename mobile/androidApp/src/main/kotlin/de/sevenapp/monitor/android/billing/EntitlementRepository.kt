@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import de.sevenapp.monitor.entitlement.Entitlement
+import de.sevenapp.monitor.entitlement.FeatureGate
 import de.sevenapp.monitor.entitlement.Tier
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -60,6 +61,29 @@ class EntitlementRepository(private val context: Context) {
      * collected.
      */
     suspend fun hasEverHadPro(): Boolean = context.entitlementStore.data.first()[KEY_EVER_PRO] ?: false
+
+    /**
+     * The one place the app asks "what tier is this user, right now".
+     *
+     * Also records the Pro high-water mark as a side effect, and that side
+     * effect is load-bearing: while [PaywallConfig] is off everyone resolves to
+     * PRO, so everyone gets the 90-day retention window. If the paywall is
+     * later switched on, those users resolve to FREE — and without this flag
+     * the next prune would delete up to 88 days of history they had already
+     * collected. Writing it here means the existing retention ratchet protects
+     * them automatically, with no migration step to remember at launch.
+     */
+    suspend fun effectiveTier(nowEpochMs: Long = System.currentTimeMillis()): Tier {
+        val tier = FeatureGate.resolveTier(current(), nowEpochMs)
+        if (tier == Tier.PRO && !hasEverHadPro()) {
+            context.entitlementStore.edit { it[KEY_EVER_PRO] = true }
+        }
+        return tier
+    }
+
+    /** Retention window to prune at, already ratcheted. */
+    suspend fun retentionDays(nowEpochMs: Long = System.currentTimeMillis()): Int =
+        FeatureGate.effectiveRetentionDays(effectiveTier(nowEpochMs), hasEverHadPro())
 
     /** Drops to Free. Deliberately leaves KEY_EVER_PRO set — see the ratchet above. */
     suspend fun clear() {

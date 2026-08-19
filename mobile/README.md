@@ -7,7 +7,7 @@ in [`../app.md`](../app.md); this file covers the code.
 
 | Part | State | Verified how |
 |---|---|---|
-| `:shared` measurement engine | **working** | 112 unit tests, green on JDK 21 |
+| `:shared` measurement engine | **working** | 119 unit tests, green on JDK 21 |
 | `checkNoPlatformImports` gate | **working** | verified to fail on a deliberate `import android.*` |
 | `androidApp` module | **written, never compiled** | ⚠️ no Android SDK in this environment |
 
@@ -140,7 +140,16 @@ a default and that test fails, the fix is the default, not the test.
 
 ## Free vs paid
 
-**One-off testing is free; unattended repeated testing is Pro.** A manual test
+> **The paywall is currently OFF** (`PaywallConfig.ENABLED = false`) and
+> everyone resolves to Pro. Play's closed-testing requirement — 12 opted-in
+> testers for 14 continuous days — means testers must be able to exercise
+> background monitoring, which is the very thing the paywall locks. Switch it
+> on once Play Billing is integrated; both states are tested.
+>
+> `FeatureGate.resolveTier()` is the single resolution point. Everything goes
+> through it, so the flag really is one switch.
+
+**The intended line: one-off testing is free; unattended repeated testing is Pro.** A manual test
 costs nothing per run — the measurement is client-side against public
 endpoints — so charging for it would be charging for nothing. Pro is the
 scheduled, unattended version, plus reports and 90-day history.
@@ -169,8 +178,12 @@ what is free, what lapsing does to data, how grace behaves.
 
 ## Not built yet
 
-- **Play Billing.** See above. `grantProForTesting()` is the only way to reach
-  Pro today, and it is named accordingly.
+- **Play Billing**, and with it flipping `PaywallConfig.ENABLED`. Note the
+  ordering trap: while the paywall is off everyone banks 90-day retention, so
+  `EntitlementRepository.effectiveTier()` records the Pro high-water mark as it
+  resolves. Without that, switching the paywall on would prune existing users'
+  history back to 2 days. It is covered by
+  `switchingThePaywallOnMustNotPruneHistoryCollectedBeforeIt`.
 - **`THROUGHPUT_FULL` is selected but not implemented.** `TierPolicy` returns it
   correctly and `SweepRunner` exists and is tested, but `ProbeEngine` still runs
   the *light* measurement for that tier — the sweep and the WebSocket stream

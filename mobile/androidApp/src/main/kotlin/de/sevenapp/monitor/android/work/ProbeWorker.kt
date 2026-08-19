@@ -56,12 +56,9 @@ class ProbeWorker(
             store = store,
             engine = ProbeEngine(KtorTransport(), Clock { System.currentTimeMillis() }),
             clock = Clock { System.currentTimeMillis() },
-            // Ratcheted, so a lapse never prunes away history collected while
-            // paying — see FeatureGate.effectiveRetentionDays.
-            retentionDays = FeatureGate.effectiveRetentionDays(
-                currentTier = entitlement.effectiveTierAt(now),
-                hasEverHadPro = entitlements.hasEverHadPro(),
-            ),
+            // Ratcheted, so neither a lapse nor switching the paywall on ever
+            // prunes away history already collected.
+            retentionDays = entitlements.retentionDays(now),
         )
 
         return try {

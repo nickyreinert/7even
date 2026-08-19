@@ -23,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import de.sevenapp.monitor.core.Format
+import de.sevenapp.monitor.entitlement.Paywall
 import de.sevenapp.monitor.entitlement.Tier
 import de.sevenapp.monitor.report.Report
 
@@ -92,7 +93,7 @@ fun DashboardScreen(
                         Text(if (state.manualTestRunning) "Testing…" else "Run a test now")
                     }
 
-                    if (state.tier == Tier.PRO) {
+                    if (state.tier == Tier.PRO || !Paywall.shouldShowPlanUi()) {
                         androidx.compose.foundation.layout.Row(
                             Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,

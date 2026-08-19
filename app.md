@@ -340,7 +340,24 @@ The actual product deliverable. Computed on-device from SQLite rollups.
 
 ## 8a. Free vs paid
 
-**The line: one-off testing is free, unattended repeated testing is paid.**
+> **Status: the paywall is OFF and payment is deferred.** Getting a new
+> personal developer account onto Play requires a closed test with **12
+> opted-in testers for 14 continuous days** — and the feature those testers
+> most need to exercise is background monitoring, which is exactly what the
+> paywall would lock. A paywalled closed test would test everything except the
+> thing that has to work. So: ship free, pass closed testing, switch the
+> paywall on when Play Billing is integrated.
+>
+> `PaywallConfig.ENABLED = false` is the single switch. The gating rules below
+> are implemented and tested in *both* states, so turning it on is a flag
+> change rather than a feature build.
+>
+> Note the requirement is **12** testers, not 20 — Google reduced it on 11 Dec
+> 2024. It also applies only to *personal* accounts created after 13 Nov 2023;
+> **organization accounts are exempt entirely** and can publish straight to
+> production, which may be the cheaper path if that is an option.
+
+**The intended line: one-off testing is free, unattended repeated testing is paid.**
 
 That is the honest place to draw it. A single manual test costs nothing per run
 — the measurement is client-side against public endpoints — so charging for it
@@ -378,6 +395,15 @@ Enforcement is at the scheduling layer, not just the UI: `ProbeWorker` and
 `ReportWorker` re-check entitlement on every wakeup, so a lapse stops
 collection without needing the app to be opened. Hiding a switch is
 presentation; that is the gate.
+
+**One trap worth knowing about before switching the paywall on.** While it is
+off, everyone resolves to Pro and so accumulates the 90-day retention window.
+If the paywall were then switched on naively, those users would resolve to Free
+and the next prune would delete up to 88 days of history they had already
+collected. The app therefore records the Pro high-water mark whenever the
+resolved tier is Pro — including while the paywall is off — so the existing
+retention ratchet protects them automatically. No launch-day migration to
+remember.
 
 ### Billing is not built
 

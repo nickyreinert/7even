@@ -44,11 +44,16 @@ fun SettingsScreen(
         modifier = modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        item { PlanCard(state, viewModel) }
+        // Nothing to sell yet, so no plan UI. An "Upgrade" button that cannot
+        // take money is worse than no button — and during closed testing the
+        // whole app is unlocked anyway.
+        if (Paywall.shouldShowPlanUi()) {
+            item { PlanCard(state, viewModel) }
+        }
 
         item {
             SettingsCard("Background monitoring") {
-                if (state.tier == Tier.FREE) {
+                if (Paywall.shouldShowPlanUi() && state.tier == Tier.FREE) {
                     // Explain, don't just grey out. A disabled control with no
                     // reason is the most annoying possible paywall.
                     Text(
@@ -135,7 +140,7 @@ fun SettingsScreen(
 
         item {
             SettingsCard("Reports") {
-                if (state.tier == Tier.FREE) {
+                if (Paywall.shouldShowPlanUi() && state.tier == Tier.FREE) {
                     Text(
                         "Scheduled reports are part of Pro — they summarise data collected " +
                             "in the background, which Free does not collect.",
@@ -157,16 +162,18 @@ fun SettingsScreen(
         item {
             SettingsCard("Your data") {
                 Text(
-                    "Kept for ${FeatureGate.retentionDays(state.tier)} days on this plan.",
+                    "Kept for ${FeatureGate.retentionDays(state.tier)} days.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
-                Text(
-                    // Worth stating explicitly: people reasonably assume
-                    // cancelling destroys their history.
-                    "Export is free on every plan, and your history is never deleted if " +
-                        "Pro lapses — collection stops, the record stays.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
+                if (Paywall.shouldShowPlanUi()) {
+                    Text(
+                        // Worth stating explicitly: people reasonably assume
+                        // cancelling destroys their history.
+                        "Export is free on every plan, and your history is never deleted if " +
+                            "Pro lapses — collection stops, the record stays.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
                 OutlinedButton(
                     onClick = viewModel::export,
                     modifier = Modifier.padding(top = 8.dp),

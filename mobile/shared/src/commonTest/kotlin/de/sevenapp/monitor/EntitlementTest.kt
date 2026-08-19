@@ -56,9 +56,16 @@ class EntitlementTest {
     fun graceKeepsCollectionRunningThroughAFailedRenewal() {
         // The point of grace is that a payment glitch must not punch a hole in
         // the user's data — a gap they can never go back and recreate.
+        // paywallEnabled is passed explicitly because grace only has meaning
+        // once there is something to lapse from; with the paywall off (the
+        // current default) everyone resolves to PRO regardless.
         val e = Entitlement(Tier.PRO, expiresAtEpochMs = now)
-        assertTrue(FeatureGate.shouldBackgroundWorkRun(e, now + day))
-        assertFalse(FeatureGate.shouldBackgroundWorkRun(e, now + (Entitlement.GRACE_DAYS + 1) * day))
+        assertTrue(FeatureGate.shouldBackgroundWorkRun(e, now + day, paywallEnabled = true))
+        assertFalse(
+            FeatureGate.shouldBackgroundWorkRun(
+                e, now + (Entitlement.GRACE_DAYS + 1) * day, paywallEnabled = true,
+            ),
+        )
     }
 }
 
@@ -174,5 +181,65 @@ class RetentionRatchetTest {
         val whilePro = FeatureGate.effectiveRetentionDays(Tier.PRO, hasEverHadPro = true)
         val afterLapse = FeatureGate.effectiveRetentionDays(Tier.FREE, hasEverHadPro = true)
         assertTrue(afterLapse >= whilePro, "retention shrank on lapse: $whilePro -> $afterLapse")
+    }
+}
+
+/**
+ * The paywall is off for now so closed testing can exercise background
+ * monitoring — the feature that would otherwise be locked. These pin both
+ * states, so switching it on later is a flag change rather than a rewrite.
+ */
+class PaywallDisabledTest {
+
+    private val now = 1_000_000_000L
+
+    @Test
+    fun paywallIsOffForNow() {
+        // If this ever fails, someone enabled billing — check that Play
+        // Billing is actually integrated before accepting the change.
+        assertFalse(de.sevenapp.monitor.entitlement.PaywallConfig.ENABLED)
+    }
+
+    @Test
+    fun everyoneIsProWhileThePaywallIsOff() {
+        assertEquals(Tier.PRO, FeatureGate.resolveTier(Entitlement.FREE, now, paywallEnabled = false))
+    }
+
+    @Test
+    fun freeUserCanScheduleMonitoringWhileThePaywallIsOff() {
+        // The whole point: testers must be able to run the background feature.
+        assertTrue(FeatureGate.shouldBackgroundWorkRun(Entitlement.FREE, now, paywallEnabled = false))
+    }
+
+    @Test
+    fun entitlementIsRespectedOnceThePaywallIsOn() {
+        assertEquals(Tier.FREE, FeatureGate.resolveTier(Entitlement.FREE, now, paywallEnabled = true))
+        assertFalse(FeatureGate.shouldBackgroundWorkRun(Entitlement.FREE, now, paywallEnabled = true))
+    }
+
+    @Test
+    fun expiredProStillLapsesCorrectlyOnceThePaywallIsOn() {
+        val expired = Entitlement(Tier.PRO, expiresAtEpochMs = now - Entitlement.GRACE_MS - 1)
+        assertEquals(Tier.FREE, FeatureGate.resolveTier(expired, now, paywallEnabled = true))
+    }
+
+    @Test
+    fun planUiIsHiddenWhileThereIsNothingToSell() {
+        assertFalse(Paywall.shouldShowPlanUi(paywallEnabled = false))
+        assertTrue(Paywall.shouldShowPlanUi(paywallEnabled = true))
+    }
+
+    @Test
+    fun switchingThePaywallOnMustNotPruneHistoryCollectedBeforeIt() {
+        // The trap: users accumulate 90 days while the paywall is off, then it
+        // is switched on and they resolve to FREE. If hasEverHadPro were false
+        // for them, the next prune would delete 88 days of their history.
+        // The app therefore records everPro whenever the resolved tier is PRO,
+        // including while the paywall is off — this asserts the payoff.
+        val ranWhilePaywallOff = true
+        assertEquals(
+            FeatureGate.retentionDays(Tier.PRO),
+            FeatureGate.effectiveRetentionDays(Tier.FREE, hasEverHadPro = ranWhilePaywallOff),
+        )
     }
 }

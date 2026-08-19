@@ -64,7 +64,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
         val failures = pings.count { !it.ok }
 
         _state.value = _state.value.copy(
-            tier = entitlements.current().effectiveTierAt(now),
+            tier = entitlements.effectiveTier(now),
             monitoringEnabled = RoomMonitorStore.isMonitoringEnabled(app),
             intervalMinutes = config.cycleIntervalMinutes,
             recentPings = store.recentPings(120).reversed(), // oldest-first for the chart
@@ -96,10 +96,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
                 store = store,
                 engine = ProbeEngine(KtorTransport(), Clock { System.currentTimeMillis() }),
                 clock = Clock { System.currentTimeMillis() },
-                retentionDays = FeatureGate.effectiveRetentionDays(
-                    currentTier = entitlements.current().effectiveTierAt(now),
-                    hasEverHadPro = entitlements.hasEverHadPro(),
-                ),
+                retentionDays = entitlements.retentionDays(now),
             ).runCycle(readDeviceState())
         } catch (t: Throwable) {
             // A failed manual test is itself a measurement — the cycle records

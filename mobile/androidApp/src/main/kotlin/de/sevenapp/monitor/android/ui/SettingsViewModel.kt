@@ -51,7 +51,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         val monthStart = now - 30L * 24 * 60 * 60 * 1000
 
         _state.value = SettingsState(
-            tier = entitlement.effectiveTierAt(now),
+            tier = entitlements.effectiveTier(now),
             inGrace = entitlement.isInGraceAt(now),
             expiryLabel = entitlement.expiresAtEpochMs?.let { "Renews or expires ${java.text.DateFormat.getDateInstance().format(java.util.Date(it))}" },
             monitoringEnabled = RoomMonitorStore.isMonitoringEnabled(app),
@@ -88,7 +88,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setInterval(minutes: Int) = viewModelScope.launch {
         val app = getApplication<Application>()
-        val tier = entitlements.current().effectiveTierAt(System.currentTimeMillis())
+        val tier = entitlements.effectiveTier()
         if (minutes !in FeatureGate.allowedIntervalMinutes(tier)) return@launch
 
         store.saveConfig(store.loadConfig().copy(cycleIntervalMinutes = minutes))

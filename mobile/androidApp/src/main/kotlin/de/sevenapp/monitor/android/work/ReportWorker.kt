@@ -56,8 +56,8 @@ class ReportWorker(
             // Scheduled reports follow background monitoring, so the same gate
             // applies here. Same reasoning as ProbeWorker: enforce on wakeup,
             // not only at schedule time.
-            val entitlement = EntitlementRepository.get(ctx).current()
-            if (!FeatureGate.canReceiveScheduledReports(entitlement.effectiveTierAt(now))) {
+            val entitlements = EntitlementRepository.get(ctx)
+            if (!FeatureGate.canReceiveScheduledReports(entitlements.effectiveTier(now))) {
                 cancel(ctx)
                 return Result.success()
             }
