@@ -13,6 +13,7 @@ import de.sevenapp.monitor.android.livetest.LiveTestRunner
 import de.sevenapp.monitor.android.net.NetworkBinder
 import de.sevenapp.monitor.android.work.ProbeWorker
 import de.sevenapp.monitor.android.work.ReportWorker
+import de.sevenapp.monitor.android.work.MonitoringNotification
 import de.sevenapp.monitor.core.NetworkType
 import de.sevenapp.monitor.core.NetworkPreference
 import de.sevenapp.monitor.core.PingSample
@@ -47,6 +48,8 @@ data class DashboardState(
     val lightUpBytes: Int = 128 * 1024,
     val manualTestRunning: Boolean = false,
     val manualTestElapsedMs: Long = 0L,
+    val manualTestStep: Int = 1,
+    val manualTestStepLabel: String = "Preparing",
     val manualTestError: String? = null,
     val recentPings: List<PingSample> = emptyList(),
     val recentThroughput: List<ThroughputSample> = emptyList(),
@@ -136,6 +139,8 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             it.copy(
             manualTestRunning = true,
             manualTestError = null,
+            manualTestStep = 1,
+            manualTestStepLabel = "Preparing",
             livePings = emptyList(),
             liveDownloadMbps = emptyList(),
             liveUploadMbps = emptyList(),
@@ -165,12 +170,18 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
                         is LiveSample.Rate -> when (sample.direction) {
                             SweepRunner.Direction.DOWN -> current.copy(
                                 liveDownloadMbps = (current.liveDownloadMbps + sample.mbps).takeLast(120),
+                                manualTestStep = 2,
+                                manualTestStepLabel = "Download stream",
                             )
                             SweepRunner.Direction.UP -> current.copy(
                                 liveUploadMbps = (current.liveUploadMbps + sample.mbps).takeLast(120),
+                                manualTestStep = 3,
+                                manualTestStepLabel = "Upload stream",
                             )
                         }
                         is LiveSample.Ping -> current.copy(
+                            manualTestStep = 1,
+                            manualTestStepLabel = "Ping",
                             livePings = (current.livePings + PingSample(
                                 atEpochMs = sample.atEpochMs,
                                 rttMs = sample.rttMs,
@@ -178,8 +189,8 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
                             )).takeLast(120),
                         )
                         is LiveSample.Sweep -> when (sample.direction) {
-                            SweepRunner.Direction.DOWN -> current.copy(latestDownloadSweep = sample.results)
-                            SweepRunner.Direction.UP -> current.copy(latestUploadSweep = sample.results)
+                            SweepRunner.Direction.DOWN -> current.copy(latestDownloadSweep = sample.results, manualTestStep = 4, manualTestStepLabel = "Download size sweep")
+                            SweepRunner.Direction.UP -> current.copy(latestUploadSweep = sample.results, manualTestStep = 5, manualTestStepLabel = "Upload size sweep")
                         }
                     }
                 }
@@ -243,9 +254,11 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
         if (enabled) {
             ProbeWorker.schedule(app, store.loadConfig().cycleIntervalMinutes.toLong())
             ReportWorker.schedule(app)
+            MonitoringNotification.active(app)
         } else {
             ProbeWorker.cancel(app)
             ReportWorker.cancel(app)
+            MonitoringNotification.cancel(app)
         }
         refresh()
     }

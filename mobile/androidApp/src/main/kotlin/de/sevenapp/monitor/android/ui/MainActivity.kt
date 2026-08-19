@@ -290,7 +290,8 @@ private fun manualTestButtonLabel(state: DashboardState): String {
     val displayedMs = if (state.liveTestDurationMs == Long.MAX_VALUE) state.manualTestElapsedMs
     else (state.liveTestDurationMs - state.manualTestElapsedMs).coerceAtLeast(0L)
     val seconds = displayedMs / 1_000
-    return "Stop · %02d:%02d".format(seconds / 60, seconds % 60)
+    val timer = if (state.manualTestElapsedMs == 0L) "" else " · %02d:%02d".format(seconds / 60, seconds % 60)
+    return "Stop · ${state.manualTestStep}/5 · ${state.manualTestStepLabel}$timer"
 }
 
 private fun sweepHeight(results: List<de.sevenapp.monitor.probe.SweepResult>): Int =

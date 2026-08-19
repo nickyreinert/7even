@@ -38,6 +38,7 @@ class ProbeWorker(
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
+        MonitoringNotification.checking(applicationContext)
         // Checked on every wakeup, not only when scheduling. Hiding a toggle is
         // presentation; this is enforcement — an entitlement that lapses while
         // work is already enqueued has to actually stop collecting, without
@@ -80,6 +81,7 @@ class ProbeWorker(
                     runSweep = config.automaticSweepEnabled,
                 ).runSession { }
             }
+            MonitoringNotification.completed(applicationContext)
             Result.success()
         } catch (t: Throwable) {
             // Retry, not failure: Result.failure() would stop the periodic

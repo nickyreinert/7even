@@ -163,7 +163,7 @@ fun SettingsScreen(
                         "30 sec" to 30_000L,
                         "1 min" to 60_000L,
                         "5 min" to 300_000L,
-                        "15 min" to 900_000L,
+                        "15m" to 900_000L,
                         "Unlimited" to Long.MAX_VALUE,
                     ).forEach { (label, duration) ->
                         FilterChip(selected = state.manualStreamDurationMs == duration, onClick = { viewModel.setManualStreamDuration(duration) }, label = { Text(label) })
