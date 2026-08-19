@@ -118,8 +118,10 @@ class LiveTestRunner(
             persistEpisode(down, up)
 
             if (liveConfig.sweepEnabled) {
-                sweepRunner.run(liveConfig.sweepSteps, SweepRunner.Direction.DOWN, sweepConfig)
-                sweepRunner.run(liveConfig.sweepSteps, SweepRunner.Direction.UP, sweepConfig)
+                val downSweep = sweepRunner.run(liveConfig.sweepSteps, SweepRunner.Direction.DOWN, sweepConfig)
+                onSample(LiveSample.Sweep(clock.nowEpochMs(), SweepRunner.Direction.DOWN, downSweep))
+                val upSweep = sweepRunner.run(liveConfig.sweepSteps, SweepRunner.Direction.UP, sweepConfig)
+                onSample(LiveSample.Sweep(clock.nowEpochMs(), SweepRunner.Direction.UP, upSweep))
             }
         } while (!LiveTestSchedule.isSessionDone(sessionStart, clock.nowEpochMs(), liveConfig.minDurationMs))
     }

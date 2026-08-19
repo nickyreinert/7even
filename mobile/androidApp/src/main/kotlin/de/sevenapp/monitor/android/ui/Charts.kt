@@ -15,6 +15,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.unit.dp
 import de.sevenapp.monitor.chart.AxisTicks
 import de.sevenapp.monitor.core.PingSample
+import de.sevenapp.monitor.probe.SweepResult
 import kotlin.math.max
 
 /**
@@ -129,11 +130,49 @@ fun LossChart(
             val padding = 4f
             val plotH = size.height - padding * 2
             val plotW = size.width - padding * 2
-            val barW = max(1f, (plotW / samples.size) - 1f)
-            samples.forEachIndexed { index, sample ->
-                if (sample.ok) return@forEachIndexed
-                val x = padding + index * (plotW / samples.size)
-                drawRect(FailRed, Offset(x, padding), androidx.compose.ui.geometry.Size(barW, plotH))
+            // A bar represents one group of three pings: a real percentage,
+            // rather than implying that an individual reply was a percentage.
+            val lossRates = samples.chunked(3).map { group ->
+                100.0 * group.count { !it.ok } / group.size
+            }
+            val barW = max(1f, (plotW / lossRates.size) - 1f)
+            lossRates.forEachIndexed { index, lossPct ->
+                val x = padding + index * (plotW / lossRates.size)
+                val h = max(1f, (lossPct / 100.0 * plotH).toFloat())
+                drawRect(FailRed, Offset(x, padding + plotH - h), androidx.compose.ui.geometry.Size(barW, h))
+            }
+            drawAxisTicks(lossRates, { value -> (padding + plotH - value / 100.0 * plotH).toFloat() }, padding, plotH) { "${it.toInt()}%" }
+        }
+    }
+}
+
+@Composable
+fun SweepResultChart(
+    results: List<SweepResult>,
+    modifier: Modifier = Modifier,
+    heightDp: Int = 128,
+) {
+    Box(modifier.fillMaxWidth().height(heightDp.dp)) {
+        Canvas(Modifier.fillMaxWidth().height(heightDp.dp)) {
+            if (results.isEmpty()) return@Canvas
+            val rowHeight = size.height / results.size
+            results.forEachIndexed { index, result ->
+                val top = index * rowHeight + 2f
+                drawRect(
+                    color = if (result.ok) Color(0xFF22C55E) else FailRed,
+                    topLeft = Offset(0f, top),
+                    size = androidx.compose.ui.geometry.Size(size.width, max(2f, rowHeight - 4f)),
+                )
+                val label = when {
+                    result.bytes >= 1_000_000 -> "${result.bytes / 1_000_000} MB"
+                    else -> "${result.bytes / 1_000} KB"
+                }
+                val paint = android.graphics.Paint().apply {
+                    color = android.graphics.Color.WHITE
+                    textSize = 11.dp.toPx()
+                    isAntiAlias = true
+                }
+                drawContext.canvas.nativeCanvas.drawText(label, 8f, top + rowHeight * 0.65f, paint)
             }
         }
     }

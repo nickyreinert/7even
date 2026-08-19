@@ -160,14 +160,18 @@ fun DashboardScreen(
         item {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Connection quality", style = MaterialTheme.typography.titleMedium)
-                    Text("Download — per-check result", style = MaterialTheme.typography.labelMedium)
+                    Text("Latest results", style = MaterialTheme.typography.titleMedium)
+                    Text("Download — per-check result (Mbps)", style = MaterialTheme.typography.labelMedium)
                     ThroughputBars(state.recentThroughput.map { it.downMbps }, upload = false)
-                    Text("Upload — per-check result", style = MaterialTheme.typography.labelMedium)
+                    Text("Upload — per-check result (Mbps)", style = MaterialTheme.typography.labelMedium)
                     ThroughputBars(state.recentThroughput.map { it.upMbps }, upload = true)
-                    Text("Dropped packets / request loss", style = MaterialTheme.typography.labelMedium)
+                    Text("Request Loss (%)", style = MaterialTheme.typography.labelMedium)
                     LossChart(state.recentPings)
-                    Text("Each red bar is a probe that did not receive a reply before its timeout.", style = MaterialTheme.typography.bodySmall)
+                    Text("Size Sweep · download — green=passed, red=failed", style = MaterialTheme.typography.labelMedium)
+                    SweepResultChart(state.latestDownloadSweep)
+                    Text("Size Sweep · upload — green=passed, red=failed", style = MaterialTheme.typography.labelMedium)
+                    SweepResultChart(state.latestUploadSweep)
+                    Text("Showing only the latest checks. Browse History for older measurements.", style = MaterialTheme.typography.bodySmall)
                 }
             }
         }

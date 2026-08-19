@@ -23,6 +23,7 @@ import de.sevenapp.monitor.probe.DeviceState
 import de.sevenapp.monitor.probe.LiveSample
 import de.sevenapp.monitor.probe.LiveTestConfig
 import de.sevenapp.monitor.probe.SweepRunner
+import de.sevenapp.monitor.probe.SweepResult
 import de.sevenapp.monitor.report.Report
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -44,6 +45,8 @@ data class DashboardState(
     val recentThroughput: List<ThroughputSample> = emptyList(),
     val liveDownloadMbps: List<Double> = emptyList(),
     val liveUploadMbps: List<Double> = emptyList(),
+    val latestDownloadSweep: List<SweepResult> = emptyList(),
+    val latestUploadSweep: List<SweepResult> = emptyList(),
     val latencyMedianMs: Double? = null,
     val jitterMs: Double? = null,
     val lossPct: Double? = null,
@@ -84,7 +87,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             lightDownBytes = config.lightDownBytes,
             lightUpBytes = config.lightUpBytes,
             recentPings = store.recentPings(120).reversed(), // oldest-first for the chart
-            recentThroughput = store.throughputBetween(dayAgo, now).takeLast(60),
+            recentThroughput = store.throughputBetween(dayAgo, now).takeLast(8),
             latencyMedianMs = Stats.median(rtts),
             jitterMs = if (rtts.size >= 2) Stats.stdDev(rtts) else null,
             lossPct = if (pings.isEmpty()) null else (failures.toDouble() / pings.size) * 100.0,
@@ -111,6 +114,8 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             manualTestRunning = true,
             liveDownloadMbps = emptyList(),
             liveUploadMbps = emptyList(),
+            latestDownloadSweep = emptyList(),
+            latestUploadSweep = emptyList(),
             )
         }
 
@@ -135,6 +140,10 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
                             )
                         }
                         is LiveSample.Ping -> current
+                        is LiveSample.Sweep -> when (sample.direction) {
+                            SweepRunner.Direction.DOWN -> current.copy(latestDownloadSweep = sample.results)
+                            SweepRunner.Direction.UP -> current.copy(latestUploadSweep = sample.results)
+                        }
                     }
                 }
             }

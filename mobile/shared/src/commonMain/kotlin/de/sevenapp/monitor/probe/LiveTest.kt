@@ -22,6 +22,13 @@ sealed interface LiveSample {
         val direction: SweepRunner.Direction,
         val mbps: Double,
     ) : LiveSample
+
+    /** The completed pass/fail matrix for the most recent size sweep. */
+    data class Sweep(
+        override val atEpochMs: Long,
+        val direction: SweepRunner.Direction,
+        val results: List<SweepResult>,
+    ) : LiveSample
 }
 
 /**
