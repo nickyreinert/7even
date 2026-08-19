@@ -1,11 +1,14 @@
 package de.sevenapp.monitor.android.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.material3.Button
@@ -17,9 +20,12 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -30,14 +36,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import de.sevenapp.monitor.core.Format
 import de.sevenapp.monitor.core.NetworkType
 import de.sevenapp.monitor.entitlement.FeatureGate
 import de.sevenapp.monitor.entitlement.Paywall
 import de.sevenapp.monitor.entitlement.Tier
 import de.sevenapp.monitor.report.ReportPeriod
+import de.sevenapp.monitor.probe.SweepPlan
+import de.sevenapp.monitor.probe.SweepStep
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 fun SettingsScreen(
     modifier: Modifier = Modifier,
     viewModel: SettingsViewModel = androidx.lifecycle.viewmodel.compose.viewModel(),
@@ -111,6 +122,10 @@ fun SettingsScreen(
             }
         }
 
+        stickyHeader {
+            SettingsDataUseCard(state)
+        }
+
         item {
             SettingsCard("Speed tests") {
                 Text(
@@ -136,8 +151,8 @@ fun SettingsScreen(
         }
 
         item {
-            SettingsCard("Measurement sizes") {
-                Text("Select one or more packet sizes for each connection. Every selected size is tested in both directions; more sizes use more battery and data.", style = MaterialTheme.typography.bodySmall)
+            SettingsCard("Background check payloads") {
+                Text("These are the small HTTP download/upload payloads used by automatic background checks. They do not control the live stream or the size sweep below.", style = MaterialTheme.typography.bodySmall)
                 MeasurementSizes("Use Wi-Fi", NetworkType.WIFI, NetworkType.WIFI in state.monitoringNetworks, state.wifiMeasurementSizes, viewModel)
                 MeasurementSizes("Use mobile data", NetworkType.CELLULAR, NetworkType.CELLULAR in state.monitoringNetworks, state.cellularMeasurementSizes, viewModel)
             }
@@ -146,27 +161,6 @@ fun SettingsScreen(
         item { SweepSettingsCard(state, viewModel) }
 
         item { EndpointSettingsCard(state, viewModel) }
-
-        item {
-            SettingsCard("Data use") {
-                // The projection updates as the switches above change, so the
-                // cost of a choice is visible before it is made rather than at
-                // the end of the month.
-                Text(
-                    "About ${Format.bytes(state.projectedMeteredBytesPerMonth)} of mobile data per month",
-                    style = MaterialTheme.typography.headlineSmall,
-                )
-                Text(
-                    "Estimated from your current settings, assuming about half your time " +
-                        "on mobile data. Wi-Fi use is not counted here.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Text(
-                    "Used so far this month: ${Format.bytes(state.meteredBytesThisMonth)}",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            }
-        }
 
         item {
             SettingsCard("Reports") {
@@ -215,7 +209,8 @@ fun SettingsScreen(
 
 @Composable
 private fun SweepSettingsCard(state: SettingsState, viewModel: SettingsViewModel) {
-    var planText by remember(state.sweepPlanText) { mutableStateOf(state.sweepPlanText) }
+    var rows by remember(state.sweepSteps) { mutableStateOf(state.sweepSteps.map { SweepEditorRow.from(it) }) }
+    var openUnitMenuFor by remember { mutableStateOf<Int?>(null) }
     SettingsCard("Size sweep") {
         CheckRow(
             label = "Run send and receive size checks",
@@ -224,27 +219,82 @@ private fun SweepSettingsCard(state: SettingsState, viewModel: SettingsViewModel
             onCheckedChange = viewModel::setLiveSweep,
         )
         Text(
-            "Each try becomes one green or red block in the download and upload charts. " +
-                "Use K or M units and × repeats, for example: 16K x6, 32K x6, 10M x1.",
+            "Every row sends and receives that size the requested number of times. Each try becomes one green or red block in the charts.",
             style = MaterialTheme.typography.bodySmall,
         )
-        OutlinedTextField(
-            value = planText,
-            onValueChange = { planText = it },
-            label = { Text("Size × repeats") },
-            placeholder = { Text("32K x3, 128K x3, 512K x2, 2M x2, 5M x1, 10M x1") },
-            modifier = Modifier.fillMaxWidth(),
-            minLines = 3,
-        )
+        rows.forEachIndexed { index, row ->
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedTextField(
+                    value = row.repeats,
+                    onValueChange = { value -> rows = rows.update(index) { it.copy(repeats = value) } },
+                    label = { Text("How many") },
+                    modifier = Modifier.width(88.dp),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                )
+                Text("×", style = MaterialTheme.typography.titleLarge)
+                OutlinedTextField(
+                    value = row.size,
+                    onValueChange = { value -> rows = rows.update(index) { it.copy(size = value) } },
+                    label = { Text("Size") },
+                    modifier = Modifier.width(88.dp),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                )
+                Box {
+                    OutlinedButton(onClick = { openUnitMenuFor = index }) { Text(row.unit) }
+                    DropdownMenu(expanded = openUnitMenuFor == index, onDismissRequest = { openUnitMenuFor = null }) {
+                        listOf("KB", "MB").forEach { unit ->
+                            DropdownMenuItem(text = { Text(unit) }, onClick = {
+                                rows = rows.update(index) { it.copy(unit = unit) }
+                                openUnitMenuFor = null
+                            })
+                        }
+                    }
+                }
+                if (rows.size > 1) TextButton(onClick = { rows = rows.filterIndexed { i, _ -> i != index } }) { Text("−") }
+            }
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { viewModel.setSweepPlan(planText) }) { Text("Save sweep") }
+            OutlinedButton(onClick = { rows = rows + SweepEditorRow("1", "16", "KB") }) { Text("Add row") }
+            Button(onClick = { viewModel.setSweepSteps(rows.mapNotNull { it.toStep() }) }) { Text("Save sweep") }
             OutlinedButton(onClick = {
-                planText = "32K x3, 128K x3, 512K x2, 2M x2, 5M x1, 10M x1"
-                viewModel.setSweepPlan(planText)
+                rows = SweepPlan.DEFAULT.map { SweepEditorRow.from(it) }
+                viewModel.setSweepSteps(SweepPlan.DEFAULT)
             }) { Text("Use defaults") }
         }
     }
 }
+
+@Composable
+private fun SettingsDataUseCard(state: SettingsState) {
+    Card(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("Data use", style = MaterialTheme.typography.titleMedium)
+            Text("About ${Format.bytes(state.projectedMeteredBytesPerMonth)} mobile data / month", style = MaterialTheme.typography.bodyLarge)
+            Text("Used this month: ${Format.bytes(state.meteredBytesThisMonth)}", style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+private data class SweepEditorRow(val repeats: String, val size: String, val unit: String) {
+    fun toStep(): SweepStep? {
+        val count = repeats.toIntOrNull() ?: return null
+        val numericSize = size.toLongOrNull() ?: return null
+        val bytes = numericSize * if (unit == "MB") 1_000_000 else 1_000
+        return if (count in 1..SweepPlan.MAX_TRIALS && bytes in 1..SweepPlan.MAX_BYTES) SweepStep(bytes.toInt(), count) else null
+    }
+
+    companion object {
+        fun from(step: SweepStep): SweepEditorRow = if (step.bytes % 1_000_000 == 0) {
+            SweepEditorRow(step.trials.toString(), (step.bytes / 1_000_000).toString(), "MB")
+        } else {
+            SweepEditorRow(step.trials.toString(), (step.bytes / 1_000).toString(), "KB")
+        }
+    }
+}
+
+private fun <T> List<T>.update(index: Int, transform: (T) -> T): List<T> = mapIndexed { current, item -> if (current == index) transform(item) else item }
 
 @Composable
 private fun MeasurementSizes(label: String, network: NetworkType, enabled: Boolean, selected: Set<Int>, viewModel: SettingsViewModel) {
