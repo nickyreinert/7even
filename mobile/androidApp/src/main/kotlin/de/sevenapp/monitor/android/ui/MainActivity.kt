@@ -199,6 +199,29 @@ private fun SummaryCards(state: DashboardState) {
             MetricCard("Drops", state.dropCount.toString(), Modifier.weight(1f))
         }
         MetricCard("Mobile data this month", Format.bytes(state.meteredBytesThisMonth), Modifier.fillMaxWidth())
+        state.stability?.let { score ->
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Stability Score", style = MaterialTheme.typography.titleMedium)
+                        Text("%.1f".format(score.composite), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    }
+                    Text(
+                        "Uptime: %.1f%%   Jitter score: %.1f   Loss score: %.1f".format(
+                            score.uptimePct,
+                            score.jitterScore,
+                            score.lossScore,
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(
+                        "Not a standard metric — a transparent composite of uptime, jitter, and loss " +
+                            "(weights: 50/30/20). Shown with its inputs so you can judge it yourself, not as an authoritative score.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
     }
 }
 

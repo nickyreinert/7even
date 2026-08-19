@@ -15,6 +15,7 @@ import de.sevenapp.monitor.core.NetworkType
 import de.sevenapp.monitor.core.NetworkPreference
 import de.sevenapp.monitor.core.PingSample
 import de.sevenapp.monitor.core.Stats
+import de.sevenapp.monitor.core.StabilityScore
 import de.sevenapp.monitor.core.ThroughputSample
 import de.sevenapp.monitor.entitlement.FeatureGate
 import de.sevenapp.monitor.entitlement.Tier
@@ -54,6 +55,7 @@ data class DashboardState(
     val meteredBytesThisMonth: Long = 0,
     val projectedMeteredBytesPerMonth: Long = 0,
     val latestReport: Report? = null,
+    val stability: StabilityScore.Result? = null,
 )
 
 class DashboardViewModel(app: Application) : AndroidViewModel(app) {
@@ -78,6 +80,8 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
         val rtts = pings.mapNotNull { it.rttMs }
         val failures = pings.count { !it.ok }
 
+        val drops = store.dropsOverlapping(dayAgo, now)
+        val lossPct = if (pings.isEmpty()) null else (failures.toDouble() / pings.size) * 100.0
         _state.value = _state.value.copy(
             tier = entitlements.effectiveTier(now),
             monitoringEnabled = RoomMonitorStore.isMonitoringEnabled(app),
@@ -90,8 +94,15 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             recentThroughput = store.throughputBetween(dayAgo, now).takeLast(8),
             latencyMedianMs = Stats.median(rtts),
             jitterMs = if (rtts.size >= 2) Stats.stdDev(rtts) else null,
-            lossPct = if (pings.isEmpty()) null else (failures.toDouble() / pings.size) * 100.0,
-            dropCount = store.dropsOverlapping(dayAgo, now).size,
+            lossPct = lossPct,
+            dropCount = drops.size,
+            stability = if (pings.isEmpty()) null else StabilityScore.compute(
+                windowStartEpochMs = dayAgo,
+                nowEpochMs = now,
+                drops = drops,
+                avgJitterMs = if (rtts.size >= 2) Stats.stdDev(rtts) else null,
+                avgLossPct = lossPct ?: 0.0,
+            ),
             meteredBytesThisMonth = store.bytesUsedSince(monthStart, metered = true),
             projectedMeteredBytesPerMonth = DataBudget.project(config).meteredBytesPerMonth,
         )
