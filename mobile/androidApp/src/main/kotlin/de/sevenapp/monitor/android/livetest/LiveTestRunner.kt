@@ -16,6 +16,7 @@ import de.sevenapp.monitor.probe.LiveSample
 import de.sevenapp.monitor.probe.LiveTestConfig
 import de.sevenapp.monitor.probe.LiveTestSchedule
 import de.sevenapp.monitor.probe.ProbeConfig
+import de.sevenapp.monitor.probe.SweepResult
 import de.sevenapp.monitor.probe.SweepRunner
 import de.sevenapp.monitor.probe.TransportResult
 import de.sevenapp.monitor.probe.mbpsOf
@@ -64,16 +65,15 @@ class LiveTestRunner(
     suspend fun runSession(onSample: (LiveSample) -> Unit) {
         NetworkBinder.withNetwork(context, probeConfig.preferredTestNetwork) { network ->
             val httpTransport = KtorTransport(KtorTransport.defaultClient(network))
-            val ws = if (runStream) WsLiveTestClient(probeConfig.wsUrl, network) else null
+            val ws = if (runStream || runSweep) WsLiveTestClient(probeConfig.wsUrl, network) else null
 
             coroutineScope {
                 val pingJob = launch { runPingLoop(httpTransport, onSample) }
                 try {
                     if (ws != null) {
                         ws.connect(NativeAuth.header())
-                        runStreamAndSweepLoop(ws, httpTransport, onSample)
-                    } else if (runSweep) {
-                        runSweepOnly(httpTransport, onSample)
+                        if (runStream) runStreamAndSweepLoop(ws, onSample)
+                        else runWebSocketSweep(ws, onSample)
                     }
                 } finally {
                     pingJob.cancel()
@@ -96,12 +96,9 @@ class LiveTestRunner(
 
     private suspend fun runStreamAndSweepLoop(
         ws: WsLiveTestClient,
-        httpTransport: KtorTransport,
         onSample: (LiveSample) -> Unit,
     ) {
         val sessionStart = clock.nowEpochMs()
-        val sweepRunner = SweepRunner(httpTransport)
-        val sweepConfig = probeConfig.copy(transferTimeoutMs = liveConfig.sweepTimeoutMs)
 
         do {
             val down = ws.runDownEpisode(
@@ -125,25 +122,52 @@ class LiveTestRunner(
             persistEpisode(down, up)
 
             if (liveConfig.sweepEnabled) {
-                val downSweep = sweepRunner.run(liveConfig.sweepSteps, SweepRunner.Direction.DOWN, sweepConfig)
-                store.saveLatestSweep(SweepRunner.Direction.DOWN, downSweep)
-                onSample(LiveSample.Sweep(clock.nowEpochMs(), SweepRunner.Direction.DOWN, downSweep))
-                val upSweep = sweepRunner.run(liveConfig.sweepSteps, SweepRunner.Direction.UP, sweepConfig)
-                store.saveLatestSweep(SweepRunner.Direction.UP, upSweep)
-                onSample(LiveSample.Sweep(clock.nowEpochMs(), SweepRunner.Direction.UP, upSweep))
+                runWebSocketSweep(ws, onSample)
             }
         } while (!LiveTestSchedule.isSessionDone(sessionStart, clock.nowEpochMs(), liveConfig.minDurationMs))
     }
 
-    private suspend fun runSweepOnly(transport: KtorTransport, onSample: (LiveSample) -> Unit) {
-        val runner = SweepRunner(transport)
-        val config = probeConfig.copy(transferTimeoutMs = liveConfig.sweepTimeoutMs)
-        val down = runner.run(liveConfig.sweepSteps, SweepRunner.Direction.DOWN, config)
+    private suspend fun runWebSocketSweep(ws: WsLiveTestClient, onSample: (LiveSample) -> Unit) {
+        val down = runWebSocketSweepDirection(ws, SweepRunner.Direction.DOWN)
         store.saveLatestSweep(SweepRunner.Direction.DOWN, down)
         onSample(LiveSample.Sweep(clock.nowEpochMs(), SweepRunner.Direction.DOWN, down))
-        val up = runner.run(liveConfig.sweepSteps, SweepRunner.Direction.UP, config)
+        val up = runWebSocketSweepDirection(ws, SweepRunner.Direction.UP)
         store.saveLatestSweep(SweepRunner.Direction.UP, up)
         onSample(LiveSample.Sweep(clock.nowEpochMs(), SweepRunner.Direction.UP, up))
+    }
+
+    private suspend fun runWebSocketSweepDirection(
+        ws: WsLiveTestClient,
+        direction: SweepRunner.Direction,
+    ): List<SweepResult> = liveConfig.sweepSteps.map { step ->
+        val outcomes = mutableListOf<Boolean>()
+        var durationTotal = 0.0
+        var lastError: de.sevenapp.monitor.probe.FailureReason? = null
+        repeat(step.trials) {
+            val result = when (direction) {
+                SweepRunner.Direction.DOWN -> ws.runDownTransfer(step.bytes, liveConfig.sweepTimeoutMs)
+                SweepRunner.Direction.UP -> ws.runUpTransfer(step.bytes, liveConfig.sweepTimeoutMs)
+            }
+            when (result) {
+                is WsLiveTestClient.EpisodeResult.Ok -> {
+                    outcomes += true
+                    durationTotal += result.elapsedMs
+                }
+                is WsLiveTestClient.EpisodeResult.Failed -> {
+                    outcomes += false
+                    lastError = result.reason
+                }
+            }
+        }
+        val passed = outcomes.count { it }
+        SweepResult(
+            bytes = step.bytes,
+            trials = step.trials,
+            passCount = passed,
+            avgDurationMs = if (passed > 0) durationTotal / passed else null,
+            lastError = if (passed == step.trials) null else lastError,
+            trialOutcomes = outcomes,
+        )
     }
 
     private suspend fun persistEpisode(down: WsLiveTestClient.EpisodeResult, up: WsLiveTestClient.EpisodeResult) {

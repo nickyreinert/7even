@@ -155,28 +155,31 @@ fun SweepResultChart(
     Box(modifier.fillMaxWidth().height(heightDp.dp)) {
         Canvas(Modifier.fillMaxWidth().height(heightDp.dp)) {
             if (results.isEmpty()) return@Canvas
-            val attempts = results.flatMap { result ->
+            val labelWidth = 64.dp.toPx()
+            val rowHeight = size.height / results.size
+            results.forEachIndexed { index, result ->
                 val outcomes = result.trialOutcomes.ifEmpty { List(result.trials) { it < result.passCount } }
-                outcomes.mapIndexed { index, passed -> Triple(result.bytes, index + 1, passed) }
-            }
-            val rowHeight = size.height / attempts.size
-            attempts.forEachIndexed { index, (bytes, tryNumber, passed) ->
-                val top = index * rowHeight + 2f
-                drawRect(
-                    color = if (passed) Color(0xFF22C55E) else FailRed,
-                    topLeft = Offset(0f, top),
-                    size = androidx.compose.ui.geometry.Size(size.width, max(2f, rowHeight - 4f)),
-                )
-                val label = when {
-                    bytes >= 1_000_000 -> "${bytes / 1_000_000} MB · try $tryNumber"
-                    else -> "${bytes / 1_000} KB · try $tryNumber"
-                }
+                val top = index * rowHeight + 3f
+                val label = if (result.bytes >= 1_000_000) "${result.bytes / 1_000_000} MB" else "${result.bytes / 1_000} KB"
                 val paint = android.graphics.Paint().apply {
                     color = android.graphics.Color.WHITE
                     textSize = 11.dp.toPx()
                     isAntiAlias = true
                 }
                 drawContext.canvas.nativeCanvas.drawText(label, 8f, top + rowHeight * 0.65f, paint)
+
+                if (outcomes.isEmpty()) return@forEachIndexed
+                val gap = 3.dp.toPx()
+                val availableWidth = (size.width - labelWidth).coerceAtLeast(1f)
+                val blockWidth = (availableWidth - gap * (outcomes.size - 1)) / outcomes.size
+                outcomes.forEachIndexed { tryIndex, passed ->
+                    val left = labelWidth + tryIndex * (blockWidth + gap)
+                    drawRect(
+                        color = if (passed) Color(0xFF22C55E) else FailRed,
+                        topLeft = Offset(left, top),
+                        size = androidx.compose.ui.geometry.Size(blockWidth.coerceAtLeast(1f), max(2f, rowHeight - 6f)),
+                    )
+                }
             }
         }
     }

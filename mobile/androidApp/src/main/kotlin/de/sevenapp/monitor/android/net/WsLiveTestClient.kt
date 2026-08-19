@@ -176,6 +176,60 @@ class WsLiveTestClient(
         return EpisodeResult.Ok(totalBytes, elapsedMs(episodeStart))
     }
 
+    /** One exact-size download used by the reliability sweep. */
+    suspend fun runDownTransfer(bytes: Int, timeoutMs: Long): EpisodeResult {
+        val s = session ?: return EpisodeResult.Failed(0, 0.0, FailureReason.UNKNOWN)
+        val started = System.nanoTime()
+        var received = 0L
+        return try {
+            val completed = withTimeoutOrNull(timeoutMs) {
+                s.send(Frame.Text(JSONObject().put("type", "down_start").put("bytes", bytes).toString()))
+                while (true) {
+                    when (val frame = s.incoming.receive()) {
+                        is Frame.Binary -> received += frame.data.size
+                        is Frame.Text -> if (JSONObject(frame.readText()).optString("type") == "down_end") return@withTimeoutOrNull true
+                        else -> Unit
+                    }
+                }
+                @Suppress("UNREACHABLE_CODE") true
+            }
+            if (completed == true && received == bytes.toLong()) EpisodeResult.Ok(received, elapsedMs(started))
+            else EpisodeResult.Failed(received, elapsedMs(started), FailureReason.TIMEOUT)
+        } catch (t: Throwable) {
+            EpisodeResult.Failed(received, elapsedMs(started), t.toFailureReason())
+        }
+    }
+
+    /** One exact-size upload used by the reliability sweep, verified by the Worker's byte acknowledgement. */
+    suspend fun runUpTransfer(bytes: Int, timeoutMs: Long): EpisodeResult {
+        val s = session ?: return EpisodeResult.Failed(0, 0.0, FailureReason.UNKNOWN)
+        val started = System.nanoTime()
+        return try {
+            val acknowledged = withTimeoutOrNull(timeoutMs) {
+                s.send(Frame.Text(JSONObject().put("type", "up_start").toString()))
+                var sent = 0
+                while (sent < bytes) {
+                    val n = minOf(UP_CHUNK_SIZE, bytes - sent)
+                    s.send(Frame.Binary(fin = true, data = Random.nextBytes(n)))
+                    sent += n
+                }
+                s.send(Frame.Text(JSONObject().put("type", "up_end").put("bytesSent", sent).toString()))
+                while (true) {
+                    val frame = s.incoming.receive()
+                    if (frame is Frame.Text) {
+                        val message = JSONObject(frame.readText())
+                        if (message.optString("type") == "up_ack") return@withTimeoutOrNull message.optLong("bytesReceived", -1)
+                    }
+                }
+                @Suppress("UNREACHABLE_CODE") -1L
+            }
+            if (acknowledged == bytes.toLong()) EpisodeResult.Ok(bytes.toLong(), elapsedMs(started))
+            else EpisodeResult.Failed(0, elapsedMs(started), FailureReason.TIMEOUT)
+        } catch (t: Throwable) {
+            EpisodeResult.Failed(0, elapsedMs(started), t.toFailureReason())
+        }
+    }
+
     private fun elapsedMs(startNanos: Long): Double = (System.nanoTime() - startNanos) / 1_000_000.0
 
     private fun Throwable.toFailureReason(): FailureReason = when (this) {

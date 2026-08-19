@@ -174,15 +174,11 @@ fun DashboardScreen(
                 }
             }
         }
+        item { Text("Last results", style = MaterialTheme.typography.titleMedium) }
         item { SummaryCards(state) }
         item {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Latest results", style = MaterialTheme.typography.titleMedium)
-                    Text("Download — per-check result (Mbps)", style = MaterialTheme.typography.labelMedium)
-                    ThroughputBars(state.recentThroughput.map { it.downMbps }, upload = false)
-                    Text("Upload — per-check result (Mbps)", style = MaterialTheme.typography.labelMedium)
-                    ThroughputBars(state.recentThroughput.map { it.upMbps }, upload = true)
                     Text("Request Loss (%)", style = MaterialTheme.typography.labelMedium)
                     LossChart(state.recentPings)
                     Text("Size Sweep · download — green=passed, red=failed", style = MaterialTheme.typography.labelMedium)
@@ -252,7 +248,7 @@ private fun SummaryCards(state: DashboardState) {
 private fun formatMbps(value: Double?): String = value?.let { "%.1f Mbps".format(it) } ?: "—"
 
 private fun sweepHeight(results: List<de.sevenapp.monitor.probe.SweepResult>): Int =
-    (results.sumOf { it.trials } * 20).coerceAtLeast(128)
+    (results.size * 36).coerceAtLeast(128)
 
 @Composable
 private fun MetricCard(label: String, value: String, modifier: Modifier) {
