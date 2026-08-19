@@ -24,6 +24,7 @@ import de.sevenapp.monitor.report.Report
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 data class DashboardState(
@@ -63,7 +64,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
         val rtts = pings.mapNotNull { it.rttMs }
         val failures = pings.count { !it.ok }
 
-        _state.value = _state.value.copy(
+        _state.update { it.copy(
             tier = entitlements.effectiveTier(now),
             monitoringEnabled = RoomMonitorStore.isMonitoringEnabled(app),
             intervalMinutes = config.cycleIntervalMinutes,
@@ -74,7 +75,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             dropCount = store.dropsOverlapping(dayAgo, now).size,
             meteredBytesThisMonth = store.bytesUsedSince(monthStart, metered = true),
             projectedMeteredBytesPerMonth = DataBudget.project(config).meteredBytesPerMonth,
-        )
+        ) }
     }
 
     /**
@@ -91,7 +92,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun runManualTest() = viewModelScope.launch {
         if (_state.value.manualTestRunning) return@launch
-        _state.value = _state.value.copy(manualTestRunning = true, liveSamples = emptyList())
+        _state.update { it.copy(manualTestRunning = true, liveSamples = emptyList()) }
 
         val app = getApplication<Application>()
         val config = store.loadConfig()
@@ -104,16 +105,27 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
                 probeConfig = config,
                 fallbackNetworkType = deviceState.networkType,
             ).runSession { sample ->
+                // LiveTestRunner.runSession drives the ping loop and the
+                // down/up episode loop as two SEPARATE concurrent coroutines,
+                // and both call this callback — the ping loop roughly every 3s,
+                // the episode loop roughly every 200ms while a round is active.
+                // `_state.value = _state.value.copy(...)` is a read-modify-write:
+                // under real concurrent writers it can lose an update (coroutine
+                // A reads the list, coroutine B reads the same list and writes
+                // first, then A writes back its own copy, silently dropping B's
+                // sample). At these relative frequencies that would show up
+                // exactly as reported: nearly all of one direction's samples
+                // survive while the sparser ones get clobbered out of the list.
+                // `update {}` performs an atomic compare-and-swap retry instead,
+                // so no sample from either coroutine is ever lost.
                 val cutoff = sample.atEpochMs - LiveTestConfig.LIVE_WINDOW_MS
-                _state.value = _state.value.copy(
-                    liveSamples = (_state.value.liveSamples + sample).filter { it.atEpochMs >= cutoff },
-                )
+                _state.update { it.copy(liveSamples = (it.liveSamples + sample).filter { s -> s.atEpochMs >= cutoff }) }
             }
         } catch (t: Throwable) {
             // A failed test still recorded whatever pings/episodes completed
             // before it threw — there is nothing further to undo here.
         } finally {
-            _state.value = _state.value.copy(manualTestRunning = false)
+            _state.update { it.copy(manualTestRunning = false) }
             refresh()
         }
     }
