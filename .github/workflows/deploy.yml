@@ -25,13 +25,26 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+
+      # The repo root is no longer a valid site root: it also holds mobile/
+      # (the Android app's Gradle build, Kotlin source, and gradle-wrapper.jar).
+      # `directory: .` would upload all of that to the CDN and serve it under
+      # 7.1-1-1.de. Stage the actual site instead — an explicit list, so a
+      # future top-level addition needs a deliberate line here rather than
+      # being swept up automatically.
+      - name: Stage site
+        run: |
+          mkdir -p _site
+          cp index.html manifest.json sw.js favicon.svg CNAME _site/
+          cp -r icons _site/
+
       - name: Deploy
         uses: cloudflare/pages-action@v1
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           projectName: ${{ vars.CLOUDFLARE_PAGES_PROJECT || '7even' }}
-          directory: .
+          directory: _site
           # gitHubToken is deliberately omitted. When set, pages-action first
           # POSTs a GitHub Deployment record to api.github.com/.../deployments
           # purely for the Deployments tab in the GitHub UI — and a sustained
