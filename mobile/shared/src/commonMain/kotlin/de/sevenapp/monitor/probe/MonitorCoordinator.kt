@@ -37,8 +37,13 @@ class MonitorCoordinator(
      */
     private val retentionMs: Long = retentionDays * 24L * 60 * 60 * 1000
 
-    suspend fun runCycle(deviceState: DeviceState): ProbeEngine.CycleOutput {
-        val config = store.loadConfig()
+    suspend fun runCycle(
+        deviceState: DeviceState,
+        forceSpeedTest: Boolean = false,
+    ): ProbeEngine.CycleOutput {
+        val config = store.loadConfig().let {
+            if (forceSpeedTest) it.copy(throughputEveryNCycles = 1) else it
+        }
         val dropState = store.loadDropState()
 
         val detector = DropDetector().apply {

@@ -9,7 +9,6 @@ import de.sevenapp.monitor.android.billing.EntitlementRepository
 import de.sevenapp.monitor.android.data.RoomMonitorStore
 import de.sevenapp.monitor.android.work.ProbeWorker
 import de.sevenapp.monitor.android.work.ReportWorker
-import de.sevenapp.monitor.core.NetworkPreference
 import de.sevenapp.monitor.core.NetworkType
 import de.sevenapp.monitor.entitlement.FeatureGate
 import de.sevenapp.monitor.entitlement.Tier
@@ -26,11 +25,16 @@ data class SettingsState(
     val expiryLabel: String? = null,
     val monitoringEnabled: Boolean = false,
     val intervalMinutes: Int = 15,
+    val monitoringNetworks: Set<NetworkType> = setOf(NetworkType.WIFI, NetworkType.CELLULAR),
     val throughputNetworks: Set<NetworkType> = emptySet(),
     val fullSweepRequiresCharging: Boolean = true,
-    val liveTestMinDurationMs: Long = 60_000,
-    val liveTestSweepEnabled: Boolean = true,
-    val preferredTestNetwork: NetworkPreference = NetworkPreference.AUTO,
+    val traceUrl: String = "",
+    val downUrlTemplate: String = "",
+    val upUrl: String = "",
+    val streamUrl: String = "",
+    val useWebSocketStream: Boolean = false,
+    val wifiMeasurementSizes: Set<Int> = emptySet(),
+    val cellularMeasurementSizes: Set<Int> = emptySet(),
     val reportPeriod: ReportPeriod = ReportPeriod.WEEKLY,
     val projectedMeteredBytesPerMonth: Long = 0,
     val meteredBytesThisMonth: Long = 0,
@@ -60,11 +64,16 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             expiryLabel = entitlement.expiresAtEpochMs?.let { "Renews or expires ${java.text.DateFormat.getDateInstance().format(java.util.Date(it))}" },
             monitoringEnabled = RoomMonitorStore.isMonitoringEnabled(app),
             intervalMinutes = config.cycleIntervalMinutes,
+            monitoringNetworks = config.monitoringNetworks,
             throughputNetworks = config.throughputLightNetworks,
             fullSweepRequiresCharging = config.fullSweepRequiresCharging,
-            liveTestMinDurationMs = config.liveTestMinDurationMs,
-            liveTestSweepEnabled = config.liveTestSweepEnabled,
-            preferredTestNetwork = config.preferredTestNetwork,
+            traceUrl = config.traceUrl,
+            downUrlTemplate = config.downUrlTemplate,
+            upUrl = config.upUrl,
+            streamUrl = config.streamUrl,
+            useWebSocketStream = config.useWebSocketStream,
+            wifiMeasurementSizes = config.wifiMeasurementSizes,
+            cellularMeasurementSizes = config.cellularMeasurementSizes,
             reportPeriod = RoomMonitorStore.reportPeriod(app),
             projectedMeteredBytesPerMonth = DataBudget.project(config).meteredBytesPerMonth,
             meteredBytesThisMonth = store.bytesUsedSince(monthStart, metered = true),
@@ -98,8 +107,46 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         val tier = entitlements.effectiveTier()
         if (minutes !in FeatureGate.allowedIntervalMinutes(tier)) return@launch
 
-        store.saveConfig(store.loadConfig().copy(cycleIntervalMinutes = minutes))
+        store.saveConfig(store.loadConfig().copy(
+            cycleIntervalMinutes = minutes,
+            throughputEveryNCycles = if (minutes >= 24 * 60) 1 else store.loadConfig().throughputEveryNCycles,
+        ))
         if (RoomMonitorStore.isMonitoringEnabled(app)) ProbeWorker.schedule(app, minutes.toLong())
+        refresh()
+    }
+
+    fun setMonitoringNetworks(networks: Set<NetworkType>) = viewModelScope.launch {
+        // The UI always supplies one of Wi-Fi, mobile, or both. Keeping this
+        // guard at the data boundary also prevents a saved empty set from
+        // silently disabling monitoring.
+        val allowed = networks.intersect(setOf(NetworkType.WIFI, NetworkType.CELLULAR))
+        if (allowed.isEmpty()) return@launch
+        store.saveConfig(store.loadConfig().copy(monitoringNetworks = allowed))
+        refresh()
+    }
+
+    fun toggleMonitoringNetwork(network: NetworkType, enabled: Boolean) = viewModelScope.launch {
+        val config = store.loadConfig()
+        val networks = config.monitoringNetworks.toMutableSet()
+        if (enabled) networks += network else networks -= network
+        if (networks.isEmpty()) return@launch
+        store.saveConfig(config.copy(monitoringNetworks = networks))
+        refresh()
+    }
+
+    fun toggleMeasurementSize(network: NetworkType, bytes: Int, enabled: Boolean) = viewModelScope.launch {
+        val config = store.loadConfig()
+        val sizes = when (network) {
+            NetworkType.WIFI -> config.wifiMeasurementSizes.toMutableSet()
+            NetworkType.CELLULAR -> config.cellularMeasurementSizes.toMutableSet()
+            else -> return@launch
+        }
+        if (enabled) sizes += bytes else sizes -= bytes
+        if (sizes.isEmpty()) return@launch
+        store.saveConfig(
+            if (network == NetworkType.WIFI) config.copy(wifiMeasurementSizes = sizes)
+            else config.copy(cellularMeasurementSizes = sizes),
+        )
         refresh()
     }
 
@@ -117,18 +164,29 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         refresh()
     }
 
-    fun setLiveTestDurationMinutes(minutes: Int) = viewModelScope.launch {
-        store.saveConfig(store.loadConfig().copy(liveTestMinDurationMs = minutes * 60_000L))
-        refresh()
-    }
-
-    fun setLiveTestSweepEnabled(enabled: Boolean) = viewModelScope.launch {
-        store.saveConfig(store.loadConfig().copy(liveTestSweepEnabled = enabled))
-        refresh()
-    }
-
-    fun setPreferredTestNetwork(preference: NetworkPreference) = viewModelScope.launch {
-        store.saveConfig(store.loadConfig().copy(preferredTestNetwork = preference))
+    fun setEndpoints(
+        traceUrl: String,
+        downUrlTemplate: String,
+        upUrl: String,
+        streamUrl: String,
+        useWebSocketStream: Boolean,
+    ) = viewModelScope.launch {
+        // A malformed URL must not be allowed to break every background cycle.
+        // The download URL retains {bytes}, which is replaced with the selected
+        // packet size immediately before a test runs.
+        val validHttp = { url: String -> url.startsWith("https://") }
+        val validWs = { url: String -> url.startsWith("wss://") }
+        if (!validHttp(traceUrl) || !validHttp(downUrlTemplate) || !validHttp(upUrl) ||
+            !downUrlTemplate.contains("{bytes}") || (useWebSocketStream && !validWs(streamUrl))) {
+            return@launch
+        }
+        store.saveConfig(store.loadConfig().copy(
+            traceUrl = traceUrl.trim(),
+            downUrlTemplate = downUrlTemplate.trim(),
+            upUrl = upUrl.trim(),
+            streamUrl = streamUrl.trim(),
+            useWebSocketStream = useWebSocketStream,
+        ))
         refresh()
     }
 

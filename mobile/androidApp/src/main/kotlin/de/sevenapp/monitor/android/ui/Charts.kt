@@ -8,14 +8,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.unit.dp
 import de.sevenapp.monitor.chart.AxisTicks
 import de.sevenapp.monitor.core.PingSample
-import de.sevenapp.monitor.probe.LiveSample
-import de.sevenapp.monitor.probe.LiveTestConfig
-import de.sevenapp.monitor.probe.SweepRunner
 import kotlin.math.max
 
 /**
@@ -118,72 +117,59 @@ fun ThroughputBars(
     }
 }
 
-/**
- * The foreground live test's chart: down/up streaming rate as scrolling
- * lines, ping RTT as bars underneath, both on one shared real-time axis
- * spanning [LiveTestConfig.LIVE_WINDOW_MS] — the mobile port of the web
- * app's combined "Live — last 65s" chart. Genuinely live: it redraws as
- * [samples] grows during the run, not just once at the end.
- */
 @Composable
-fun LiveRateChart(
-    samples: List<LiveSample>,
+fun LossChart(
+    samples: List<PingSample>,
     modifier: Modifier = Modifier,
-    heightDp: Int = 160,
+    heightDp: Int = 100,
 ) {
     Box(modifier.fillMaxWidth().height(heightDp.dp)) {
         Canvas(Modifier.fillMaxWidth().height(heightDp.dp)) {
             if (samples.isEmpty()) return@Canvas
-
             val padding = 4f
-            val pingH = size.height * 0.28f
-            val rateH = size.height - pingH - padding
+            val plotH = size.height - padding * 2
             val plotW = size.width - padding * 2
-
-            val now = samples.maxOf { it.atEpochMs }
-            val windowStart = now - LiveTestConfig.LIVE_WINDOW_MS
-            fun xFor(atEpochMs: Long): Float =
-                padding + ((atEpochMs - windowStart).toFloat() / LiveTestConfig.LIVE_WINDOW_MS) * plotW
-
-            val rates = samples.filterIsInstance<LiveSample.Rate>()
-            val maxMbps = max(1.0, rates.maxOfOrNull { it.mbps } ?: 1.0)
-
-            fun drawRateLine(direction: SweepRunner.Direction, color: Color) {
-                val points = rates.filter { it.direction == direction }.sortedBy { it.atEpochMs }
-                if (points.size < 2) return
-                for (i in 1 until points.size) {
-                    val p0 = points[i - 1]
-                    val p1 = points[i]
-                    drawLine(
-                        color = color,
-                        start = Offset(xFor(p0.atEpochMs), (rateH - (p0.mbps / maxMbps) * rateH).toFloat()),
-                        end = Offset(xFor(p1.atEpochMs), (rateH - (p1.mbps / maxMbps) * rateH).toFloat()),
-                        strokeWidth = 3f,
-                    )
-                }
+            val barW = max(1f, (plotW / samples.size) - 1f)
+            samples.forEachIndexed { index, sample ->
+                if (sample.ok) return@forEachIndexed
+                val x = padding + index * (plotW / samples.size)
+                drawRect(FailRed, Offset(x, padding), androidx.compose.ui.geometry.Size(barW, plotH))
             }
-            drawRateLine(SweepRunner.Direction.DOWN, DownBlue)
-            drawRateLine(SweepRunner.Direction.UP, UpAmber)
+        }
+    }
+}
 
-            val pings = samples.filterIsInstance<LiveSample.Ping>()
-            val maxRtt = max(20.0, pings.mapNotNull { it.rttMs }.maxOrNull() ?: 20.0)
-            val barW = 3f
-            pings.forEach { ping ->
-                val x = xFor(ping.atEpochMs)
-                if (ping.rttMs == null) {
-                    drawRect(FailRed, Offset(x, rateH + padding + pingH - 4f), androidx.compose.ui.geometry.Size(barW, 4f))
-                } else {
-                    val rttMs = ping.rttMs ?: return@forEach
-                    val h = max(1f, ((rttMs / maxRtt) * pingH).toFloat())
-                    drawRect(AxisGrey.copy(alpha = 0.8f), Offset(x, rateH + padding + pingH - h), androidx.compose.ui.geometry.Size(barW, h))
-                }
+@Composable
+fun MetricLineChart(
+    values: List<Double?>,
+    color: Color = DownBlue,
+    modifier: Modifier = Modifier,
+    heightDp: Int = 140,
+    suffix: String = "",
+) {
+    Box(modifier.fillMaxWidth().height(heightDp.dp)) {
+        Canvas(Modifier.fillMaxWidth().height(heightDp.dp)) {
+            val present = values.filterNotNull()
+            if (present.isEmpty()) return@Canvas
+            val padding = 8f
+            val plotH = size.height - padding * 2
+            val plotW = size.width - padding * 2
+            val maxValue = max(1.0, present.max())
+            val path = Path()
+            var drawing = false
+            values.forEachIndexed { index, value ->
+                if (value == null) { drawing = false; return@forEachIndexed }
+                val x = padding + index * (plotW / max(1, values.lastIndex))
+                val y = (padding + plotH - (value / maxValue) * plotH).toFloat()
+                if (drawing) path.lineTo(x, y) else { path.moveTo(x, y); drawing = true }
             }
-
-            drawLine(
-                color = TickGrey,
-                start = Offset(padding, rateH + padding / 2),
-                end = Offset(size.width - padding, rateH + padding / 2),
-                strokeWidth = 1f,
+            drawPath(path, color, style = Stroke(width = 3f))
+            drawAxisTicks(
+                values = present,
+                toY = { value -> (padding + plotH - (value / maxValue) * plotH).toFloat() },
+                padding = padding,
+                plotHeight = plotH,
+                label = { value -> if (value >= 10) "${value.toInt()}$suffix" else "${(value * 10).toInt() / 10.0}$suffix" },
             )
         }
     }

@@ -8,32 +8,38 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import de.sevenapp.monitor.android.billing.EntitlementRepository
 import de.sevenapp.monitor.android.data.RoomMonitorStore
-import de.sevenapp.monitor.android.livetest.LiveTestRunner
+import de.sevenapp.monitor.android.net.KtorTransport
 import de.sevenapp.monitor.android.work.ProbeWorker
 import de.sevenapp.monitor.android.work.ReportWorker
+import de.sevenapp.monitor.core.Clock
 import de.sevenapp.monitor.core.NetworkType
 import de.sevenapp.monitor.core.PingSample
 import de.sevenapp.monitor.core.Stats
+import de.sevenapp.monitor.core.ThroughputSample
 import de.sevenapp.monitor.entitlement.FeatureGate
 import de.sevenapp.monitor.entitlement.Tier
 import de.sevenapp.monitor.probe.DataBudget
 import de.sevenapp.monitor.probe.DeviceState
-import de.sevenapp.monitor.probe.LiveSample
-import de.sevenapp.monitor.probe.LiveTestConfig
+import de.sevenapp.monitor.probe.MonitorCoordinator
+import de.sevenapp.monitor.probe.ProbeEngine
 import de.sevenapp.monitor.report.Report
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 data class DashboardState(
     val tier: Tier = Tier.FREE,
     val monitoringEnabled: Boolean = false,
     val intervalMinutes: Int = 15,
+    val monitoringNetworks: Set<NetworkType> = setOf(NetworkType.WIFI, NetworkType.CELLULAR),
+    val lightDownBytes: Int = 256 * 1024,
+    val lightUpBytes: Int = 128 * 1024,
     val manualTestRunning: Boolean = false,
     val recentPings: List<PingSample> = emptyList(),
-    val liveSamples: List<LiveSample> = emptyList(),
+    val recentThroughput: List<ThroughputSample> = emptyList(),
+    val liveDownloadMbps: List<Double> = emptyList(),
+    val liveUploadMbps: List<Double> = emptyList(),
     val latencyMedianMs: Double? = null,
     val jitterMs: Double? = null,
     val lossPct: Double? = null,
@@ -64,25 +70,26 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
         val rtts = pings.mapNotNull { it.rttMs }
         val failures = pings.count { !it.ok }
 
-        _state.update { it.copy(
+        _state.value = _state.value.copy(
             tier = entitlements.effectiveTier(now),
             monitoringEnabled = RoomMonitorStore.isMonitoringEnabled(app),
             intervalMinutes = config.cycleIntervalMinutes,
+            monitoringNetworks = config.monitoringNetworks,
+            lightDownBytes = config.lightDownBytes,
+            lightUpBytes = config.lightUpBytes,
             recentPings = store.recentPings(120).reversed(), // oldest-first for the chart
+            recentThroughput = store.recentThroughput(60).reversed(),
             latencyMedianMs = Stats.median(rtts),
             jitterMs = if (rtts.size >= 2) Stats.stdDev(rtts) else null,
             lossPct = if (pings.isEmpty()) null else (failures.toDouble() / pings.size) * 100.0,
             dropCount = store.dropsOverlapping(dayAgo, now).size,
             meteredBytesThisMonth = store.bytesUsedSince(monthStart, metered = true),
             projectedMeteredBytesPerMonth = DataBudget.project(config).meteredBytesPerMonth,
-        ) }
+        )
     }
 
     /**
-     * Run the web-style foreground test right now, on demand: continuous
-     * pings, back-to-back streaming download/upload episodes over one
-     * WebSocket, and (if enabled in Settings) a chunk-size sweep, for at
-     * least the configured minimum duration — see [LiveTestRunner].
+     * Run one cycle right now, on demand.
      *
      * Free at every tier, deliberately — this is the whole app for someone who
      * just wants to check their connection, and it costs nothing per run since
@@ -92,40 +99,34 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun runManualTest() = viewModelScope.launch {
         if (_state.value.manualTestRunning) return@launch
-        _state.update { it.copy(manualTestRunning = true, liveSamples = emptyList()) }
+        _state.value = _state.value.copy(
+            manualTestRunning = true,
+            liveDownloadMbps = emptyList(),
+            liveUploadMbps = emptyList(),
+        )
 
-        val app = getApplication<Application>()
-        val config = store.loadConfig()
-        val deviceState = readDeviceState()
-
+        val now = System.currentTimeMillis()
         try {
-            LiveTestRunner(
-                context = app,
+            MonitorCoordinator(
                 store = store,
-                probeConfig = config,
-                fallbackNetworkType = deviceState.networkType,
-            ).runSession { sample ->
-                // LiveTestRunner.runSession drives the ping loop and the
-                // down/up episode loop as two SEPARATE concurrent coroutines,
-                // and both call this callback — the ping loop roughly every 3s,
-                // the episode loop roughly every 200ms while a round is active.
-                // `_state.value = _state.value.copy(...)` is a read-modify-write:
-                // under real concurrent writers it can lose an update (coroutine
-                // A reads the list, coroutine B reads the same list and writes
-                // first, then A writes back its own copy, silently dropping B's
-                // sample). At these relative frequencies that would show up
-                // exactly as reported: nearly all of one direction's samples
-                // survive while the sparser ones get clobbered out of the list.
-                // `update {}` performs an atomic compare-and-swap retry instead,
-                // so no sample from either coroutine is ever lost.
-                val cutoff = sample.atEpochMs - LiveTestConfig.LIVE_WINDOW_MS
-                _state.update { it.copy(liveSamples = (it.liveSamples + sample).filter { s -> s.atEpochMs >= cutoff }) }
-            }
+                engine = ProbeEngine(
+                    KtorTransport(onStreamProgress = { down, up ->
+                        val current = _state.value
+                        _state.value = current.copy(
+                            liveDownloadMbps = down?.let { (current.liveDownloadMbps + it).takeLast(80) } ?: current.liveDownloadMbps,
+                            liveUploadMbps = up?.let { (current.liveUploadMbps + it).takeLast(80) } ?: current.liveUploadMbps,
+                        )
+                    }),
+                    Clock { System.currentTimeMillis() },
+                ),
+                clock = Clock { System.currentTimeMillis() },
+                retentionDays = entitlements.retentionDays(now),
+            ).runCycle(readDeviceState(), forceSpeedTest = true)
         } catch (t: Throwable) {
-            // A failed test still recorded whatever pings/episodes completed
-            // before it threw — there is nothing further to undo here.
+            // A failed manual test is itself a measurement — the cycle records
+            // failed probes before it can throw, so there is nothing to undo.
         } finally {
-            _state.update { it.copy(manualTestRunning = false) }
+            _state.value = _state.value.copy(manualTestRunning = false)
             refresh()
         }
     }
@@ -149,6 +150,34 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             ProbeWorker.cancel(app)
             ReportWorker.cancel(app)
         }
+        refresh()
+    }
+
+    fun setInterval(minutes: Int) = viewModelScope.launch {
+        val app = getApplication<Application>()
+        if (minutes !in FeatureGate.allowedIntervalMinutes(entitlements.effectiveTier())) return@launch
+        store.saveConfig(store.loadConfig().copy(
+            cycleIntervalMinutes = minutes,
+            // A daily or weekly recurrence is normally chosen specifically to
+            // run one bounded speed test at that cadence, not to wait through
+            // four calendar cycles before the first one.
+            throughputEveryNCycles = if (minutes >= 24 * 60) 1 else store.loadConfig().throughputEveryNCycles,
+        ))
+        if (RoomMonitorStore.isMonitoringEnabled(app)) ProbeWorker.schedule(app, minutes.toLong())
+        refresh()
+    }
+
+    fun setMonitoringNetworks(networks: Set<NetworkType>) = viewModelScope.launch {
+        val selected = networks.intersect(setOf(NetworkType.WIFI, NetworkType.CELLULAR))
+        if (selected.isEmpty()) return@launch
+        store.saveConfig(store.loadConfig().copy(monitoringNetworks = selected))
+        refresh()
+    }
+
+    fun setMeasurementSize(bytes: Int) = viewModelScope.launch {
+        // Mobile's light test intentionally uses the same size in both
+        // directions. That makes its battery/data cost easy to understand.
+        store.saveConfig(store.loadConfig().copy(lightDownBytes = bytes, lightUpBytes = bytes))
         refresh()
     }
 

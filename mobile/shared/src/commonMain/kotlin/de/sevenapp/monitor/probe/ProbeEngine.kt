@@ -53,6 +53,19 @@ class ProbeEngine(
         )
 
         if (tier == null) {
+            if (input.deviceState.networkType != de.sevenapp.monitor.core.NetworkType.NONE) {
+                // This is an intentional user choice, not a failed connection.
+                // Recording it as a failed ping would turn time on an excluded
+                // connection into a false outage in the report.
+                return CycleOutput(
+                    tier = null,
+                    pings = emptyList(),
+                    throughput = null,
+                    dropTransitions = emptyList(),
+                    bytesUsed = 0,
+                    skippedReason = "connection type not selected",
+                )
+            }
             // No usable network. Record it as a failed probe rather than
             // silently skipping: "the phone had no connection" is exactly the
             // event a connection monitor exists to capture, and dropping it
@@ -118,24 +131,28 @@ class ProbeEngine(
         // THROUGHPUT_FULL's sweep ladder and WebSocket stream test are Phase 2;
         // until then a full-tier cycle runs the light measurement rather than
         // nothing, so a charging-and-on-Wi-Fi cycle still yields a data point.
-        val downBytes = config.lightDownBytes
-        val upBytes = config.lightUpBytes
-
         var moved = 0L
-
-        val down = transport.download(config.downUrl(downBytes), downBytes, config.transferTimeoutMs)
-        val downMbps = when (down) {
-            is TransferResult.Ok -> { moved += down.bytes; mbpsOf(down.bytes, down.elapsedMs) }
-            is TransferResult.Partial -> { moved += down.bytes; mbpsOf(down.bytes, down.elapsedMs) }
-            is TransferResult.Failed -> null
+        val downRates = mutableListOf<Double>()
+        val upRates = mutableListOf<Double>()
+        var partial = false
+        config.measurementSizes(input.deviceState.networkType).forEach { bytes ->
+            val down = if (config.useWebSocketStream) transport.webSocketDownload(config.streamUrl, bytes, config.transferTimeoutMs)
+            else transport.download(config.downUrl(bytes), bytes, config.transferTimeoutMs)
+            when (down) {
+                is TransferResult.Ok -> { moved += down.bytes; mbpsOf(down.bytes, down.elapsedMs)?.let(downRates::add) }
+                is TransferResult.Partial -> { moved += down.bytes; partial = true; mbpsOf(down.bytes, down.elapsedMs)?.let(downRates::add) }
+                is TransferResult.Failed -> Unit
+            }
+            val up = if (config.useWebSocketStream) transport.webSocketUpload(config.streamUrl, bytes, config.transferTimeoutMs)
+            else transport.upload(config.upUrl, bytes, config.transferTimeoutMs)
+            when (up) {
+                is TransferResult.Ok -> { moved += up.bytes; mbpsOf(up.bytes, up.elapsedMs)?.let(upRates::add) }
+                is TransferResult.Partial -> { moved += up.bytes; partial = true; mbpsOf(up.bytes, up.elapsedMs)?.let(upRates::add) }
+                is TransferResult.Failed -> Unit
+            }
         }
-
-        val up = transport.upload(config.upUrl, upBytes, config.transferTimeoutMs)
-        val upMbps = when (up) {
-            is TransferResult.Ok -> { moved += up.bytes; mbpsOf(up.bytes, up.elapsedMs) }
-            is TransferResult.Partial -> { moved += up.bytes; mbpsOf(up.bytes, up.elapsedMs) }
-            is TransferResult.Failed -> null
-        }
+        val downMbps = downRates.average().takeIf { downRates.isNotEmpty() }
+        val upMbps = upRates.average().takeIf { upRates.isNotEmpty() }
 
         if (downMbps == null && upMbps == null) return null to moved
 
@@ -145,7 +162,7 @@ class ProbeEngine(
             upMbps = upMbps,
             networkType = input.deviceState.networkType,
             tier = tier,
-            partial = down is TransferResult.Partial || up is TransferResult.Partial,
+            partial = partial,
         ) to moved
     }
 }

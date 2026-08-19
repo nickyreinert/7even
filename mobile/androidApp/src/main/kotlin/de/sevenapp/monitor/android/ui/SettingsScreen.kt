@@ -12,26 +12,29 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import de.sevenapp.monitor.core.Format
-import de.sevenapp.monitor.core.NetworkPreference
 import de.sevenapp.monitor.core.NetworkType
 import de.sevenapp.monitor.entitlement.FeatureGate
 import de.sevenapp.monitor.entitlement.Paywall
 import de.sevenapp.monitor.entitlement.Tier
-import de.sevenapp.monitor.probe.LiveTestConfig
 import de.sevenapp.monitor.report.ReportPeriod
 
 @Composable
@@ -71,6 +74,20 @@ fun SettingsScreen(
                         Text("Measure automatically", style = MaterialTheme.typography.bodyLarge)
                         Switch(state.monitoringEnabled, onCheckedChange = viewModel::setMonitoring)
                     }
+
+                    HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                    Text("Use connection", style = MaterialTheme.typography.labelMedium)
+                    ConnectionChoice.entries.forEach { choice ->
+                        RadioRow(
+                            label = choice.label,
+                            selected = state.monitoringNetworks == choice.networks,
+                            onSelect = { viewModel.setMonitoringNetworks(choice.networks) },
+                        )
+                    }
+                    Text(
+                        "Only the selected connection types are measured. Time on another connection is not counted as an outage.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
 
                     if (state.monitoringEnabled) {
                         HorizontalDivider(Modifier.padding(vertical = 8.dp))
@@ -119,52 +136,14 @@ fun SettingsScreen(
         }
 
         item {
-            // "Run a test now" on Monitor stays a single button — everything
-            // that shapes what that button does lives here instead, the same
-            // split "Background monitoring" above draws between the Monitor
-            // toggle and its schedule.
-            SettingsCard("Live test (\"Run a test now\")") {
-                Text(
-                    "How long the test runs, how it moves data, and which " +
-                        "network it uses — the Monitor screen just has the button.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                HorizontalDivider(Modifier.padding(vertical = 8.dp))
-
-                Text("Minimum duration", style = MaterialTheme.typography.labelMedium)
-                LiveTestConfig.DURATION_OPTIONS_MINUTES.forEach { minutes ->
-                    RadioRow(
-                        label = if (minutes == 1) "1 minute" else "$minutes minutes",
-                        selected = state.liveTestMinDurationMs == minutes * 60_000L,
-                        onSelect = { viewModel.setLiveTestDurationMinutes(minutes) },
-                    )
-                }
-
-                HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                CheckRow(
-                    label = "Run chunk-size sweep during the test",
-                    checked = state.liveTestSweepEnabled,
-                    enabled = true,
-                    onCheckedChange = viewModel::setLiveTestSweepEnabled,
-                )
-
-                HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                Text("Network", style = MaterialTheme.typography.labelMedium)
-                Text(
-                    "Wi-Fi/mobile data is a real routing choice, not just a label: " +
-                        "picking one binds the test's connections to that network even if " +
-                        "the phone would otherwise prefer the other one.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                NetworkPreference.entries.forEach { preference ->
-                    RadioRow(
-                        label = networkPreferenceLabel(preference),
-                        selected = state.preferredTestNetwork == preference,
-                        onSelect = { viewModel.setPreferredTestNetwork(preference) },
-                    )
-                }
+            SettingsCard("Measurement sizes") {
+                Text("Select one or more packet sizes for each connection. Every selected size is tested in both directions; more sizes use more battery and data.", style = MaterialTheme.typography.bodySmall)
+                MeasurementSizes("Use Wi-Fi", NetworkType.WIFI, NetworkType.WIFI in state.monitoringNetworks, state.wifiMeasurementSizes, viewModel)
+                MeasurementSizes("Use mobile data", NetworkType.CELLULAR, NetworkType.CELLULAR in state.monitoringNetworks, state.cellularMeasurementSizes, viewModel)
             }
         }
+
+        item { EndpointSettingsCard(state, viewModel) }
 
         item {
             SettingsCard("Data use") {
@@ -229,6 +208,62 @@ fun SettingsScreen(
                 ) { Text("Export as JSON") }
             }
         }
+    }
+}
+
+@Composable
+private fun MeasurementSizes(label: String, network: NetworkType, enabled: Boolean, selected: Set<Int>, viewModel: SettingsViewModel) {
+    HorizontalDivider(Modifier.padding(vertical = 8.dp))
+    CheckRow(label, enabled, true) { viewModel.toggleMonitoringNetwork(network, it) }
+    if (enabled) {
+        val sizes = listOf(16, 32, 64, 128, 256, 512).map { it * 1024 } + listOf(1, 2, 5, 10).map { it * 1024 * 1024 }
+        sizes.chunked(3).forEach { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                row.forEach { bytes ->
+                    FilterChip(
+                        selected = bytes in selected,
+                        onClick = { viewModel.toggleMeasurementSize(network, bytes, bytes !in selected) },
+                        label = { Text(Format.bytes(bytes.toLong())) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EndpointSettingsCard(state: SettingsState, viewModel: SettingsViewModel) {
+    var traceUrl by remember(state.traceUrl) { mutableStateOf(state.traceUrl) }
+    var downUrl by remember(state.downUrlTemplate) { mutableStateOf(state.downUrlTemplate) }
+    var upUrl by remember(state.upUrl) { mutableStateOf(state.upUrl) }
+    var streamUrl by remember(state.streamUrl) { mutableStateOf(state.streamUrl) }
+    var useStream by remember(state.useWebSocketStream) { mutableStateOf(state.useWebSocketStream) }
+
+    SettingsCard("Endpoints") {
+        Text(
+            "Use a trusted HTTPS server you control. Generic websites such as Google are not guaranteed to accept uploads or give stable speed-test results.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        OutlinedTextField(traceUrl, { traceUrl = it }, Modifier.fillMaxWidth(), label = { Text("Latency URL") }, singleLine = true)
+        OutlinedTextField(downUrl, { downUrl = it }, Modifier.fillMaxWidth(), label = { Text("Download URL — include {bytes}") }, singleLine = true)
+        OutlinedTextField(upUrl, { upUrl = it }, Modifier.fillMaxWidth(), label = { Text("HTTP upload URL") }, singleLine = true)
+        CheckRow(
+            label = "Use bounded WebSocket stream tests",
+            checked = useStream,
+            enabled = true,
+            onCheckedChange = { useStream = it },
+        )
+        if (useStream) {
+            OutlinedTextField(streamUrl, { streamUrl = it }, Modifier.fillMaxWidth(), label = { Text("WebSocket URL (wss://)") }, singleLine = true)
+            Text(
+                "The server must implement 7even's down_start/up_start protocol. This is a bounded transfer using the packet size selected on Monitor.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        Button(
+            onClick = { viewModel.setEndpoints(traceUrl, downUrl, upUrl, streamUrl, useStream) },
+            modifier = Modifier.padding(top = 8.dp),
+        ) { Text("Save endpoints") }
     }
 }
 
@@ -324,8 +359,8 @@ private fun intervalLabel(minutes: Int): String = when {
     else -> "Every ${minutes / 60} hours"
 }
 
-private fun networkPreferenceLabel(preference: NetworkPreference): String = when (preference) {
-    NetworkPreference.AUTO -> "Auto (whatever's active)"
-    NetworkPreference.WIFI -> "Wi-Fi"
-    NetworkPreference.CELLULAR -> "Mobile data"
+private enum class ConnectionChoice(val label: String, val networks: Set<NetworkType>) {
+    WIFI("Wi-Fi only", setOf(NetworkType.WIFI)),
+    MOBILE("Mobile data only", setOf(NetworkType.CELLULAR)),
+    BOTH("Wi-Fi and mobile data", setOf(NetworkType.WIFI, NetworkType.CELLULAR)),
 }
