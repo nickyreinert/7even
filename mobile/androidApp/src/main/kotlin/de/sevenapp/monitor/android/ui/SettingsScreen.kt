@@ -153,6 +153,21 @@ fun SettingsScreen(
                     enabled = true,
                     onCheckedChange = viewModel::setAutomaticRequiresCharging,
                 )
+                HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                Text("Manual ping and stream duration", style = MaterialTheme.typography.labelMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(
+                        "10 sec" to 10_000L,
+                        "30 sec" to 30_000L,
+                        "1 min" to 60_000L,
+                        "5 min" to 300_000L,
+                        "15 min" to 900_000L,
+                        "Unlimited" to Long.MAX_VALUE,
+                    ).forEach { (label, duration) ->
+                        FilterChip(selected = state.manualStreamDurationMs == duration, onClick = { viewModel.setManualStreamDuration(duration) }, label = { Text(label) })
+                    }
+                }
+                Text("This controls continuous ping, download streaming, and upload streaming. The connection-specific size sweep runs once per test. Automatic tests use only 10 sec, 30 sec, or 1 min; longer and unlimited choices are capped at 1 min.", style = MaterialTheme.typography.bodySmall)
             }
         }
 

@@ -68,18 +68,14 @@ class LiveTestRunner(
             val httpTransport = KtorTransport(KtorTransport.defaultClient(network))
             val ws = if (runStream || runSweep) WsLiveTestClient(probeConfig.wsUrl, network) else null
 
-            coroutineScope {
-                val pingJob = launch { runPingLoop(httpTransport, onSample) }
-                try {
-                    if (ws != null) {
-                        ws.connect(NativeAuth.header())
-                        if (runStream) runStreamAndSweepLoop(ws, onSample)
-                        else runWebSocketSweep(ws, onSample)
-                    }
-                } finally {
-                    pingJob.cancel()
-                    ws?.close()
+            try {
+                if (ws != null) {
+                    ws.connect(NativeAuth.header())
+                    if (runSweep) runWebSocketSweep(ws, onSample)
+                    if (runStream) runStreamLoop(ws, httpTransport, onSample)
                 }
+            } finally {
+                ws?.close()
             }
         }
     }
@@ -95,14 +91,18 @@ class LiveTestRunner(
         }
     }
 
-    private suspend fun runStreamAndSweepLoop(
+    private suspend fun runStreamLoop(
         ws: WsLiveTestClient,
+        httpTransport: KtorTransport,
         onSample: (LiveSample) -> Unit,
     ) {
         val sessionStart = clock.nowEpochMs()
 
-        do {
-            val down = ws.runDownEpisode(
+        coroutineScope {
+            val pingJob = launch { runPingLoop(httpTransport, onSample) }
+            try {
+                do {
+                    val down = ws.runDownEpisode(
                 roundBytes = liveConfig.downRoundBytes,
                 episodeDurationMs = liveConfig.streamEpisodeDurationMs,
                 roundTimeoutMs = liveConfig.streamRoundTimeoutMs,
@@ -111,7 +111,7 @@ class LiveTestRunner(
                 mbpsOf(bytes, elapsedMs)?.let { onSample(LiveSample.Rate(clock.nowEpochMs(), SweepRunner.Direction.DOWN, it)) }
             }
 
-            val up = ws.runUpEpisode(
+                    val up = ws.runUpEpisode(
                 roundBytes = liveConfig.upRoundBytes,
                 episodeDurationMs = liveConfig.streamEpisodeDurationMs,
                 roundTimeoutMs = liveConfig.streamRoundTimeoutMs,
@@ -120,12 +120,12 @@ class LiveTestRunner(
                 mbpsOf(bytes, elapsedMs)?.let { onSample(LiveSample.Rate(clock.nowEpochMs(), SweepRunner.Direction.UP, it)) }
             }
 
-            persistEpisode(down, up)
-
-            if (liveConfig.sweepEnabled) {
-                runWebSocketSweep(ws, onSample)
+                    persistEpisode(down, up)
+                } while (!LiveTestSchedule.isSessionDone(sessionStart, clock.nowEpochMs(), liveConfig.minDurationMs))
+            } finally {
+                pingJob.cancel()
             }
-        } while (!LiveTestSchedule.isSessionDone(sessionStart, clock.nowEpochMs(), liveConfig.minDurationMs))
+        }
     }
 
     private suspend fun runWebSocketSweep(ws: WsLiveTestClient, onSample: (LiveSample) -> Unit) {

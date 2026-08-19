@@ -73,7 +73,7 @@ class ProbeWorker(
                 LiveTestRunner(
                     context = applicationContext,
                     store = store,
-                    probeConfig = config,
+                    probeConfig = config.copy(liveTestMinDurationMs = config.liveTestMinDurationMs.coerceIn(10_000L, 60_000L)),
                     fallbackNetworkType = deviceState.networkType,
                     wifiSsid = deviceState.ssid,
                     runStream = config.automaticStreamEnabled,

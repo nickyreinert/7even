@@ -161,13 +161,6 @@ fun DashboardScreen(
                         }
                         Switch(state.monitoringEnabled, onCheckedChange = viewModel::setMonitoring)
                     }
-                    Text("Test duration", style = MaterialTheme.typography.labelMedium)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        DurationChip("1 min", LiveTestConfig.MIN_DURATION_MS, state.liveTestDurationMs, viewModel)
-                        DurationChip("5 min", 5 * 60_000L, state.liveTestDurationMs, viewModel)
-                        DurationChip("15 min", 15 * 60_000L, state.liveTestDurationMs, viewModel)
-                        DurationChip("Until stopped", Long.MAX_VALUE, state.liveTestDurationMs, viewModel)
-                    }
                     Text("Use connection", style = MaterialTheme.typography.labelMedium)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         FilterChip(state.manualNetwork == de.sevenapp.monitor.core.NetworkPreference.WIFI, { viewModel.setManualNetwork(de.sevenapp.monitor.core.NetworkPreference.WIFI) }, label = { Text("Wi-Fi") })
@@ -239,14 +232,6 @@ fun DashboardScreen(
     }
 }
 
-@Composable
-private fun DurationChip(label: String, durationMs: Long, selectedDurationMs: Long, viewModel: DashboardViewModel) {
-    FilterChip(
-        selected = selectedDurationMs == durationMs,
-        onClick = { viewModel.setLiveTestDuration(durationMs) },
-        label = { Text(label) },
-    )
-}
 
 @Composable
 private fun SummaryCards(state: DashboardState) {

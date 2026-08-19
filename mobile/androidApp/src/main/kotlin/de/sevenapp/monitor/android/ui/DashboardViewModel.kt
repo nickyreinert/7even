@@ -146,8 +146,8 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
 
         val app = getApplication<Application>()
         val config = store.loadConfig()
-        startManualTimer(System.currentTimeMillis())
         val deviceState = readDeviceState()
+        var streamTimerStarted = false
         try {
             LiveTestRunner(
                 context = app,
@@ -156,6 +156,10 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             fallbackNetworkType = deviceState.networkType,
             wifiSsid = deviceState.ssid,
             ).runSession { sample ->
+                if (!streamTimerStarted && sample !is LiveSample.Sweep) {
+                    streamTimerStarted = true
+                    startManualTimer(System.currentTimeMillis())
+                }
                 _state.update { current ->
                     when (sample) {
                         is LiveSample.Rate -> when (sample.direction) {

@@ -34,6 +34,7 @@ data class SettingsState(
     val automaticStreamEnabled: Boolean = false,
     val automaticSweepEnabled: Boolean = false,
     val automaticRequiresCharging: Boolean = false,
+    val manualStreamDurationMs: Long = 60_000L,
     val traceUrl: String = "",
     val downUrlTemplate: String = "",
     val upUrl: String = "",
@@ -79,6 +80,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             automaticStreamEnabled = config.automaticStreamEnabled,
             automaticSweepEnabled = config.automaticSweepEnabled,
             automaticRequiresCharging = config.automaticRequiresCharging,
+            manualStreamDurationMs = config.liveTestMinDurationMs,
             traceUrl = config.traceUrl,
             downUrlTemplate = config.downUrlTemplate,
             upUrl = config.upUrl,
@@ -197,6 +199,11 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setAutomaticRequiresCharging(enabled: Boolean) = viewModelScope.launch {
         store.saveConfig(store.loadConfig().copy(automaticRequiresCharging = enabled))
+        refresh()
+    }
+
+    fun setManualStreamDuration(durationMs: Long) = viewModelScope.launch {
+        store.saveConfig(store.loadConfig().copy(liveTestMinDurationMs = durationMs))
         refresh()
     }
 
