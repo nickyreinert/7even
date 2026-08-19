@@ -198,7 +198,13 @@ private fun DurationChip(label: String, durationMs: Long, selectedDurationMs: Lo
 
 @Composable
 private fun SummaryCards(state: DashboardState) {
+    val averageDownload = state.recentThroughput.mapNotNull { it.downMbps }.takeIf { it.isNotEmpty() }?.average()
+    val averageUpload = state.recentThroughput.mapNotNull { it.upMbps }.takeIf { it.isNotEmpty() }?.average()
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            MetricCard("Avg download", formatMbps(averageDownload), Modifier.weight(1f))
+            MetricCard("Avg upload", formatMbps(averageUpload), Modifier.weight(1f))
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             MetricCard("Latency", Format.millis(state.latencyMedianMs), Modifier.weight(1f))
             MetricCard("Jitter", Format.millis(state.jitterMs), Modifier.weight(1f))
@@ -233,6 +239,8 @@ private fun SummaryCards(state: DashboardState) {
         }
     }
 }
+
+private fun formatMbps(value: Double?): String = value?.let { "%.1f Mbps".format(it) } ?: "—"
 
 @Composable
 private fun MetricCard(label: String, value: String, modifier: Modifier) {
