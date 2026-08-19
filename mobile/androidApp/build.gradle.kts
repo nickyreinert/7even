@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.androidApplication)
     alias(libs.plugins.kotlinAndroid)
@@ -16,7 +18,7 @@ plugins {
 // defaultConfig {}. An empty value still builds fine — NativeAuth.header()
 // just returns null and the live test's streaming rounds fail closed with a
 // clear error instead of silently connecting unauthenticated.
-val localProperties = java.util.Properties().apply {
+val localProperties = Properties().apply {
     val file = rootProject.file("local.properties")
     if (file.exists()) file.inputStream().use { load(it) }
 }
