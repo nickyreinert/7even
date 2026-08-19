@@ -54,6 +54,8 @@ class ProbeWorker(
 
         val store = RoomMonitorStore.get(applicationContext)
         val deviceState = readDeviceState(applicationContext)
+        val configured = store.loadConfig()
+        if (configured.automaticRequiresCharging && !deviceState.isCharging) return Result.success()
         val coordinator = MonitorCoordinator(
             store = store,
             engine = ProbeEngine(KtorTransport(), Clock { System.currentTimeMillis() }),

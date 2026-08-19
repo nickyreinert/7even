@@ -67,7 +67,7 @@ fun SettingsScreen(
         }
 
         item {
-            SettingsCard("Background monitoring") {
+            SettingsCard("Automatic measurement") {
                 if (Paywall.shouldShowPlanUi() && state.tier == Tier.FREE) {
                     // Explain, don't just grey out. A disabled control with no
                     // reason is the most annoying possible paywall.
@@ -87,19 +87,6 @@ fun SettingsScreen(
                     }
 
                     HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                    Text("Use connection", style = MaterialTheme.typography.labelMedium)
-                    ConnectionChoice.entries.forEach { choice ->
-                        RadioRow(
-                            label = choice.label,
-                            selected = state.monitoringNetworks == choice.networks,
-                            onSelect = { viewModel.setMonitoringNetworks(choice.networks) },
-                        )
-                    }
-                    Text(
-                        "Only the selected connection types are measured. Time on another connection is not counted as an outage.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-
                     if (state.monitoringEnabled) {
                         HorizontalDivider(Modifier.padding(vertical = 8.dp))
                         Text("How often", style = MaterialTheme.typography.labelMedium)
@@ -111,10 +98,7 @@ fun SettingsScreen(
                             )
                         }
                         Text(
-                            // Say the real constraint rather than implying a
-                            // precision Android does not offer.
-                            "Android will not run background work more often than every " +
-                                "15 minutes, and may delay a cycle further to save battery.",
+                            intervalExplanation(state.intervalMinutes),
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
@@ -127,7 +111,15 @@ fun SettingsScreen(
         }
 
         item {
-            SettingsCard("Automatic tests") {
+            SettingsCard("Connections and tests") {
+                Text("Use connection", style = MaterialTheme.typography.labelMedium)
+                CheckRow("Wi-Fi", NetworkType.WIFI in state.monitoringNetworks, true) {
+                    viewModel.toggleMonitoringNetwork(NetworkType.WIFI, it)
+                }
+                CheckRow("Mobile data", NetworkType.CELLULAR in state.monitoringNetworks, true) {
+                    viewModel.toggleMonitoringNetwork(NetworkType.CELLULAR, it)
+                }
+                HorizontalDivider(Modifier.padding(vertical = 8.dp))
                 Text(
                     "Ping runs on every automatic cycle. Choose whether automatic cycles also run the same sustained stream and/or size sweep used by a manual test.",
                     style = MaterialTheme.typography.bodySmall,
@@ -146,6 +138,12 @@ fun SettingsScreen(
                     enabled = true,
                     onCheckedChange = viewModel::setAutomaticSweep,
                 )
+                CheckRow(
+                    label = "When charging only",
+                    checked = state.automaticRequiresCharging,
+                    enabled = true,
+                    onCheckedChange = viewModel::setAutomaticRequiresCharging,
+                )
             }
         }
 
@@ -153,48 +151,6 @@ fun SettingsScreen(
 
         item { EndpointSettingsCard(state, viewModel) }
 
-        item {
-            SettingsCard("Reports") {
-                if (Paywall.shouldShowPlanUi() && state.tier == Tier.FREE) {
-                    Text(
-                        "Scheduled reports are part of Pro — they summarise data collected " +
-                            "in the background, which Free does not collect.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                } else {
-                    ReportPeriod.entries.forEach { period ->
-                        RadioRow(
-                            label = period.name.lowercase().replaceFirstChar { it.uppercase() },
-                            selected = state.reportPeriod == period,
-                            onSelect = { viewModel.setReportPeriod(period) },
-                        )
-                    }
-                    Text("Delivered at 09:00 as a notification.", style = MaterialTheme.typography.bodySmall)
-                }
-            }
-        }
-
-        item {
-            SettingsCard("Your data") {
-                Text(
-                    "Kept for ${FeatureGate.retentionDays(state.tier)} days.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                if (Paywall.shouldShowPlanUi()) {
-                    Text(
-                        // Worth stating explicitly: people reasonably assume
-                        // cancelling destroys their history.
-                        "Export is free on every plan, and your history is never deleted if " +
-                            "Pro lapses — collection stops, the record stays.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                OutlinedButton(
-                    onClick = viewModel::export,
-                    modifier = Modifier.padding(top = 8.dp),
-                ) { Text("Export as JSON") }
-            }
-        }
     }
 }
 
@@ -286,6 +242,19 @@ private data class SweepEditorRow(val repeats: String, val size: String, val uni
 }
 
 private fun <T> List<T>.update(index: Int, transform: (T) -> T): List<T> = mapIndexed { current, item -> if (current == index) transform(item) else item }
+
+private fun intervalExplanation(minutes: Int): String = when (minutes) {
+    15 -> "Runs around :00, :15, :30 and :45 each hour. Android may delay a run to save battery."
+    60 -> "Runs once every hour."
+    120 -> "Runs every second hour."
+    240 -> "Runs every fourth hour."
+    360 -> "Runs every sixth hour."
+    720 -> "Runs every 12 hours."
+    1440 -> "Runs once every 24 hours."
+    2880 -> "Runs once every 48 hours."
+    10080 -> "Runs once a week."
+    else -> "Android may delay automatic work to save battery."
+}
 
 @Composable
 private fun MeasurementSizes(label: String, network: NetworkType, enabled: Boolean, selected: Set<Int>, viewModel: SettingsViewModel) {

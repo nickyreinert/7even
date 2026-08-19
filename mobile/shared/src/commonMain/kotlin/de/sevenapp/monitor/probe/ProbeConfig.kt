@@ -55,6 +55,7 @@ data class ProbeConfig(
     /** Expensive tests explicitly selected for an automatic WorkManager cycle. */
     val automaticStreamEnabled: Boolean = false,
     val automaticSweepEnabled: Boolean = false,
+    val automaticRequiresCharging: Boolean = false,
     val preferredTestNetwork: NetworkPreference = NetworkPreference.AUTO,
 ) {
     fun downUrl(bytes: Int): String = downUrlTemplate.replace("{bytes}", bytes.toString())

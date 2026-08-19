@@ -58,6 +58,7 @@ class RoomMonitorStore(
             liveTestSweepSteps = prefs[KEY_LIVE_SWEEP_PLAN]?.let(SweepPlan::parse) ?: defaults.liveTestSweepSteps,
             automaticStreamEnabled = prefs[KEY_AUTO_STREAM] ?: defaults.automaticStreamEnabled,
             automaticSweepEnabled = prefs[KEY_AUTO_SWEEP] ?: defaults.automaticSweepEnabled,
+            automaticRequiresCharging = prefs[KEY_AUTO_CHARGING] ?: defaults.automaticRequiresCharging,
             preferredTestNetwork = prefs[KEY_PREFERRED_NETWORK]?.let {
                 runCatching { NetworkPreference.valueOf(it) }.getOrNull()
             } ?: defaults.preferredTestNetwork,
@@ -87,6 +88,7 @@ class RoomMonitorStore(
             p[KEY_LIVE_SWEEP_PLAN] = SweepPlan.format(config.liveTestSweepSteps)
             p[KEY_AUTO_STREAM] = config.automaticStreamEnabled
             p[KEY_AUTO_SWEEP] = config.automaticSweepEnabled
+            p[KEY_AUTO_CHARGING] = config.automaticRequiresCharging
             p[KEY_PREFERRED_NETWORK] = config.preferredTestNetwork.name
             p[KEY_LIGHT_DOWN] = config.lightDownBytes
             p[KEY_LIGHT_UP] = config.lightUpBytes
@@ -255,6 +257,7 @@ class RoomMonitorStore(
         private val KEY_LIVE_SWEEP_PLAN = stringPreferencesKey("live_test_sweep_plan")
         private val KEY_AUTO_STREAM = booleanPreferencesKey("automatic_stream_enabled")
         private val KEY_AUTO_SWEEP = booleanPreferencesKey("automatic_sweep_enabled")
+        private val KEY_AUTO_CHARGING = booleanPreferencesKey("automatic_requires_charging")
         private val KEY_LATEST_DOWN_SWEEP = stringPreferencesKey("latest_down_sweep")
         private val KEY_LATEST_UP_SWEEP = stringPreferencesKey("latest_up_sweep")
         private val KEY_PREFERRED_NETWORK = stringPreferencesKey("preferred_test_network")

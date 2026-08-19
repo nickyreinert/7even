@@ -31,6 +31,7 @@ data class SettingsState(
     val monitoringNetworks: Set<NetworkType> = setOf(NetworkType.WIFI, NetworkType.CELLULAR),
     val automaticStreamEnabled: Boolean = false,
     val automaticSweepEnabled: Boolean = false,
+    val automaticRequiresCharging: Boolean = false,
     val traceUrl: String = "",
     val downUrlTemplate: String = "",
     val upUrl: String = "",
@@ -72,6 +73,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             monitoringNetworks = config.monitoringNetworks,
             automaticStreamEnabled = config.automaticStreamEnabled,
             automaticSweepEnabled = config.automaticSweepEnabled,
+            automaticRequiresCharging = config.automaticRequiresCharging,
             traceUrl = config.traceUrl,
             downUrlTemplate = config.downUrlTemplate,
             upUrl = config.upUrl,
@@ -170,6 +172,11 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setAutomaticSweep(enabled: Boolean) = viewModelScope.launch {
         store.saveConfig(store.loadConfig().copy(automaticSweepEnabled = enabled))
+        refresh()
+    }
+
+    fun setAutomaticRequiresCharging(enabled: Boolean) = viewModelScope.launch {
+        store.saveConfig(store.loadConfig().copy(automaticRequiresCharging = enabled))
         refresh()
     }
 

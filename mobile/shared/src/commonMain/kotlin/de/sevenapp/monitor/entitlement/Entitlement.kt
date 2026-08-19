@@ -148,7 +148,7 @@ object FeatureGate {
      */
     fun allowedIntervalMinutes(tier: Tier): List<Int> = when (tier) {
         Tier.FREE -> emptyList()
-        Tier.PRO -> listOf(15, 60, 24 * 60, 7 * 24 * 60)
+        Tier.PRO -> listOf(15, 60, 2 * 60, 4 * 60, 6 * 60, 12 * 60, 24 * 60, 48 * 60, 7 * 24 * 60)
     }
 
     /**
