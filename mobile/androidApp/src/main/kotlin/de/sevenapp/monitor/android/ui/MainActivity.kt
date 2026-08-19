@@ -179,9 +179,9 @@ fun DashboardScreen(
                         Text("Latest completed test", style = MaterialTheme.typography.labelMedium)
                         Text("Ping (ms)", style = MaterialTheme.typography.labelMedium)
                         LatencyChart(state.recentPings)
-                        Text("Download (Mbps)", style = MaterialTheme.typography.labelMedium)
+                        Text("Download rate", style = MaterialTheme.typography.labelMedium)
                         MetricLineChart(state.recentThroughput.map { it.downMbps }, suffix = " Mbps", heightDp = 90)
-                        Text("Upload (Mbps)", style = MaterialTheme.typography.labelMedium)
+                        Text("Upload rate", style = MaterialTheme.typography.labelMedium)
                         MetricLineChart(
                             state.recentThroughput.map { it.upMbps },
                             color = androidx.compose.ui.graphics.Color(0xFFF59E0B),
@@ -195,9 +195,9 @@ fun DashboardScreen(
                         )
                         Text("Ping (ms)", style = MaterialTheme.typography.labelMedium)
                         LatencyChart(state.livePings, heightDp = 90)
-                        Text("Download (Mbps)", style = MaterialTheme.typography.labelMedium)
+                        Text("Download rate", style = MaterialTheme.typography.labelMedium)
                         MetricLineChart(state.liveDownloadMbps.map { it }, suffix = " Mbps", heightDp = 90)
-                        Text("Upload (Mbps)", style = MaterialTheme.typography.labelMedium)
+                        Text("Upload rate", style = MaterialTheme.typography.labelMedium)
                         MetricLineChart(state.liveUploadMbps.map { it }, color = androidx.compose.ui.graphics.Color(0xFFF59E0B), suffix = " Mbps", heightDp = 90)
                     }
                 }
