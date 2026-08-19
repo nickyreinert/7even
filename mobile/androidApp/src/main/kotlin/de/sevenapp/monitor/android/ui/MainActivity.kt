@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
@@ -38,6 +39,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import de.sevenapp.monitor.core.Format
@@ -82,18 +84,41 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                 ) { padding ->
+                    val contentModifier = Modifier.padding(padding).pointerInput(screen) {
+                        var totalDrag = 0f
+                        detectHorizontalDragGestures(
+                            onHorizontalDrag = { _, dragAmount -> totalDrag += dragAmount },
+                            onDragEnd = {
+                                if (totalDrag <= -96f) screen = screen.nextSwipeScreen()
+                                if (totalDrag >= 96f) screen = screen.previousSwipeScreen()
+                                totalDrag = 0f
+                            },
+                        )
+                    }
                     when (screen) {
-                        Screen.MAIN -> DashboardScreen(Modifier.padding(padding))
-                        Screen.HISTORY -> HistoryScreen(Modifier.padding(padding), onRequestSsidPermission = {
+                        Screen.MAIN -> DashboardScreen(contentModifier)
+                        Screen.HISTORY -> HistoryScreen(contentModifier, onRequestSsidPermission = {
                             ssidPermission.launch(Manifest.permission.ACCESS_FINE_LOCATION)
                         })
-                        Screen.SETTINGS -> SettingsScreen(Modifier.padding(padding))
+                        Screen.SETTINGS -> SettingsScreen(contentModifier)
                         Screen.HELP -> HelpScreen(Modifier.padding(padding), onBack = { screen = Screen.MAIN })
                     }
                 }
             }
         }
     }
+}
+
+private fun Screen.nextSwipeScreen(): Screen = when (this) {
+    Screen.MAIN -> Screen.HISTORY
+    Screen.HISTORY -> Screen.SETTINGS
+    else -> this
+}
+
+private fun Screen.previousSwipeScreen(): Screen = when (this) {
+    Screen.SETTINGS -> Screen.HISTORY
+    Screen.HISTORY -> Screen.MAIN
+    else -> this
 }
 
 @Composable
