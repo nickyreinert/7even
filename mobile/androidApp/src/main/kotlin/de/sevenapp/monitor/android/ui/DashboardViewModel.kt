@@ -10,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import de.sevenapp.monitor.android.billing.EntitlementRepository
 import de.sevenapp.monitor.android.data.RoomMonitorStore
 import de.sevenapp.monitor.android.livetest.LiveTestRunner
+import de.sevenapp.monitor.android.net.NetworkBinder
 import de.sevenapp.monitor.android.work.ProbeWorker
 import de.sevenapp.monitor.android.work.ReportWorker
 import de.sevenapp.monitor.core.NetworkType
@@ -44,6 +45,7 @@ data class DashboardState(
     val lightDownBytes: Int = 256 * 1024,
     val lightUpBytes: Int = 128 * 1024,
     val manualTestRunning: Boolean = false,
+    val manualTestError: String? = null,
     val recentPings: List<PingSample> = emptyList(),
     val recentThroughput: List<ThroughputSample> = emptyList(),
     val livePings: List<PingSample> = emptyList(),
@@ -130,6 +132,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
         _state.update {
             it.copy(
             manualTestRunning = true,
+            manualTestError = null,
             livePings = emptyList(),
             liveDownloadMbps = emptyList(),
             liveUploadMbps = emptyList(),
@@ -174,8 +177,16 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         } catch (t: Throwable) {
-            // A failed manual test is itself a measurement — the cycle records
-            // failed probes before it can throw, so there is nothing to undo.
+            val selected = when (config.preferredTestNetwork) {
+                NetworkPreference.CELLULAR -> "Mobile data"
+                NetworkPreference.WIFI -> "Wi-Fi"
+                NetworkPreference.AUTO -> "The selected network"
+            }
+            _state.update {
+                it.copy(manualTestError = if (t is NetworkBinder.RequestedNetworkUnavailable) {
+                    "$selected is unavailable. The test did not fall back to another connection."
+                } else "Test could not start on $selected.")
+            }
         } finally {
             _state.update { it.copy(manualTestRunning = false) }
             refresh()

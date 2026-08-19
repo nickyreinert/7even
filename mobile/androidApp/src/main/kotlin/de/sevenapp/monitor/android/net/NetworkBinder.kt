@@ -7,6 +7,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import de.sevenapp.monitor.core.NetworkPreference
 import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
 
 /**
@@ -22,6 +23,9 @@ import kotlinx.coroutines.suspendCancellableCoroutine
  * route through.
  */
 object NetworkBinder {
+    class RequestedNetworkUnavailable(preference: NetworkPreference) : IllegalStateException(
+        "The requested ${preference.name.lowercase()} network is unavailable",
+    )
 
     /**
      * Requests [preference]'s network (if not [NetworkPreference.AUTO]) and
@@ -35,15 +39,18 @@ object NetworkBinder {
         context: Context,
         preference: NetworkPreference,
         timeoutMs: Long = 5_000,
-        block: suspend (Network?) -> T,
+        block: suspend (Network) -> T,
     ): T {
-        if (preference == NetworkPreference.AUTO) return block(null)
+        if (preference == NetworkPreference.AUTO) {
+            val cm = context.getSystemService(ConnectivityManager::class.java)
+            return block(cm?.activeNetwork ?: throw RequestedNetworkUnavailable(preference))
+        }
 
-        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return block(null)
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: throw RequestedNetworkUnavailable(preference)
         val transport = when (preference) {
             NetworkPreference.WIFI -> NetworkCapabilities.TRANSPORT_WIFI
             NetworkPreference.CELLULAR -> NetworkCapabilities.TRANSPORT_CELLULAR
-            NetworkPreference.AUTO -> return block(null)
+            NetworkPreference.AUTO -> throw RequestedNetworkUnavailable(preference)
         }
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -59,14 +66,14 @@ object NetworkBinder {
                     }
 
                     override fun onUnavailable() {
-                        if (cont.isActive) cont.resume(null)
+                        if (cont.isActive) cont.resumeWithException(RequestedNetworkUnavailable(preference))
                     }
                 }
                 callback = cb
                 try {
                     cm.requestNetwork(request, cb, timeoutMs.toInt())
                 } catch (t: Throwable) {
-                    if (cont.isActive) cont.resume(null)
+                    if (cont.isActive) cont.resumeWithException(RequestedNetworkUnavailable(preference))
                 }
             }
             return block(network)
