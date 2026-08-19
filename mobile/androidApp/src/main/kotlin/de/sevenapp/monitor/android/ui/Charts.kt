@@ -8,6 +8,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.unit.dp
@@ -110,6 +112,64 @@ fun ThroughputBars(
                 padding = padding,
                 plotHeight = plotH,
                 label = { if (it >= 10) "${it.toInt()} Mbps" else "${(it * 10).toInt() / 10.0} Mbps" },
+            )
+        }
+    }
+}
+
+@Composable
+fun LossChart(
+    samples: List<PingSample>,
+    modifier: Modifier = Modifier,
+    heightDp: Int = 100,
+) {
+    Box(modifier.fillMaxWidth().height(heightDp.dp)) {
+        Canvas(Modifier.fillMaxWidth().height(heightDp.dp)) {
+            if (samples.isEmpty()) return@Canvas
+            val padding = 4f
+            val plotH = size.height - padding * 2
+            val plotW = size.width - padding * 2
+            val barW = max(1f, (plotW / samples.size) - 1f)
+            samples.forEachIndexed { index, sample ->
+                if (sample.ok) return@forEachIndexed
+                val x = padding + index * (plotW / samples.size)
+                drawRect(FailRed, Offset(x, padding), androidx.compose.ui.geometry.Size(barW, plotH))
+            }
+        }
+    }
+}
+
+@Composable
+fun MetricLineChart(
+    values: List<Double?>,
+    color: Color = DownBlue,
+    modifier: Modifier = Modifier,
+    heightDp: Int = 140,
+    suffix: String = "",
+) {
+    Box(modifier.fillMaxWidth().height(heightDp.dp)) {
+        Canvas(Modifier.fillMaxWidth().height(heightDp.dp)) {
+            val present = values.filterNotNull()
+            if (present.isEmpty()) return@Canvas
+            val padding = 8f
+            val plotH = size.height - padding * 2
+            val plotW = size.width - padding * 2
+            val maxValue = max(1.0, present.max())
+            val path = Path()
+            var drawing = false
+            values.forEachIndexed { index, value ->
+                if (value == null) { drawing = false; return@forEachIndexed }
+                val x = padding + index * (plotW / max(1, values.lastIndex))
+                val y = (padding + plotH - (value / maxValue) * plotH).toFloat()
+                if (drawing) path.lineTo(x, y) else { path.moveTo(x, y); drawing = true }
+            }
+            drawPath(path, color, style = Stroke(width = 3f))
+            drawAxisTicks(
+                values = present,
+                toY = { value -> (padding + plotH - (value / maxValue) * plotH).toFloat() },
+                padding = padding,
+                plotHeight = plotH,
+                label = { value -> if (value >= 10) "${value.toInt()}$suffix" else "${(value * 10).toInt() / 10.0}$suffix" },
             )
         }
     }

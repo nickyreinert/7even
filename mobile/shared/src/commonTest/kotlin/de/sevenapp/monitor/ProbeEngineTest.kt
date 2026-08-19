@@ -30,6 +30,8 @@ private class FakeTransport(
     var pingCalls = 0
     var downCalls = 0
     var upCalls = 0
+    var webSocketDownCalls = 0
+    var webSocketUpCalls = 0
 
     override suspend fun timedGet(url: String, timeoutMs: Long): TransportResult {
         pingCalls++; return pingResult()
@@ -41,6 +43,14 @@ private class FakeTransport(
 
     override suspend fun upload(url: String, bytes: Int, timeoutMs: Long): TransferResult {
         upCalls++; return upResult()
+    }
+
+    override suspend fun webSocketDownload(url: String, bytes: Int, timeoutMs: Long): TransferResult {
+        webSocketDownCalls++; return downResult()
+    }
+
+    override suspend fun webSocketUpload(url: String, bytes: Int, timeoutMs: Long): TransferResult {
+        webSocketUpCalls++; return upResult()
     }
 }
 
@@ -86,6 +96,19 @@ class ProbeEngineTest {
     }
 
     @Test
+    fun websocketModeUsesBoundedStreamTransfers() = runTest {
+        val t = FakeTransport()
+        ProbeEngine(t, FixedClock()).runCycle(
+            input(config = ProbeConfig(useWebSocketStream = true), cycleIndex = 4),
+        )
+
+        assertEquals(1, t.webSocketDownCalls)
+        assertEquals(1, t.webSocketUpCalls)
+        assertEquals(0, t.downCalls)
+        assertEquals(0, t.upCalls)
+    }
+
+    @Test
     fun throughputIsSkippedWhenEveryPingFailed() = runTest {
         // Spending 400KB measuring the speed of a link that just failed three
         // reachability probes is wasted data and yields a meaningless number.
@@ -113,6 +136,22 @@ class ProbeEngineTest {
         assertTrue(out.pings.single().rttMs == null)
         assertEquals(0, t.pingCalls)
         assertEquals("no network", out.skippedReason)
+    }
+
+    @Test
+    fun excludedConnectionIsSkippedWithoutRecordingAnOutage() = runTest {
+        val t = FakeTransport()
+        val out = ProbeEngine(t, FixedClock()).runCycle(
+            input(
+                config = ProbeConfig(monitoringNetworks = setOf(NetworkType.WIFI)),
+                state = DeviceState(NetworkType.CELLULAR, isCharging = false, isMetered = true),
+            ),
+        )
+
+        assertNull(out.tier)
+        assertTrue(out.pings.isEmpty())
+        assertEquals(0, t.pingCalls)
+        assertEquals("connection type not selected", out.skippedReason)
     }
 
     @Test
@@ -205,6 +244,12 @@ class TierPolicyTest {
         val state = DeviceState(NetworkType.NONE, isCharging = true, isMetered = false)
         assertNull(TierPolicy.tierFor(ProbeConfig(), cycleIndex = 4, state = state, fullSweepsToday = 0))
     }
+
+    @Test
+    fun excludedNetworkYieldsNoTier() {
+        val config = ProbeConfig(monitoringNetworks = setOf(NetworkType.WIFI))
+        assertNull(TierPolicy.tierFor(config, cycleIndex = 4, state = cellular, fullSweepsToday = 0))
+    }
 }
 
 class DataBudgetTest {
@@ -229,6 +274,14 @@ class DataBudgetTest {
             opted.meteredBytesPerMonth > base.meteredBytesPerMonth * 10,
             "expected opting in to be visibly more expensive",
         )
+    }
+
+    @Test
+    fun wifiOnlyMonitoringProjectsNoMobileDataUse() {
+        val projection = DataBudget.project(
+            ProbeConfig(monitoringNetworks = setOf(NetworkType.WIFI)),
+        )
+        assertEquals(0, projection.meteredBytesPerMonth)
     }
 
     @Test

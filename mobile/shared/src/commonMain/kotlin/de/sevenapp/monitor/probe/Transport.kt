@@ -22,6 +22,17 @@ interface Transport {
 
     /** Uploads [bytes] of incompressible data and reports the same. */
     suspend fun upload(url: String, bytes: Int, timeoutMs: Long): TransferResult
+
+    /**
+     * Bounded WebSocket speed tests using the 7even `down_start` / `up_start`
+     * protocol. A custom WebSocket server must implement that protocol; an
+     * arbitrary WebSocket URL cannot be used as a speed-test endpoint.
+     */
+    suspend fun webSocketDownload(url: String, bytes: Int, timeoutMs: Long): TransferResult =
+        TransferResult.Failed(FailureReason.UNKNOWN)
+
+    suspend fun webSocketUpload(url: String, bytes: Int, timeoutMs: Long): TransferResult =
+        TransferResult.Failed(FailureReason.UNKNOWN)
 }
 
 sealed interface TransportResult {

@@ -4,9 +4,11 @@ import de.sevenapp.monitor.probe.FailureReason
 import de.sevenapp.monitor.probe.TransferResult
 import de.sevenapp.monitor.probe.Transport
 import de.sevenapp.monitor.probe.TransportResult
+import de.sevenapp.monitor.probe.mbpsOf
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -15,6 +17,10 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.http.isSuccess
 import io.ktor.utils.io.readAvailable
+import io.ktor.client.plugins.websocket.webSocket
+import io.ktor.websocket.Frame
+import io.ktor.websocket.readBytes
+import io.ktor.websocket.readText
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import java.io.IOException
@@ -32,6 +38,7 @@ import kotlin.system.measureNanoTime
  */
 class KtorTransport(
     private val client: HttpClient = defaultClient(),
+    private val onStreamProgress: (downMbps: Double?, upMbps: Double?) -> Unit = { _, _ -> },
 ) : Transport {
 
     override suspend fun timedGet(url: String, timeoutMs: Long): TransportResult = try {
@@ -46,9 +53,6 @@ class KtorTransport(
             }
         }
         val res = response!!
-        // Drain the body so the timing covers a complete round trip rather than
-        // just the response headers.
-        res.bodyAsChannel().discardRemaining()
         if (res.status.isSuccess()) {
             TransportResult.Ok(nanos / 1_000_000.0)
         } else {
@@ -108,6 +112,59 @@ class KtorTransport(
         }
     }
 
+    override suspend fun webSocketDownload(url: String, bytes: Int, timeoutMs: Long): TransferResult {
+        var received = 0L
+        val started = System.nanoTime()
+        return try {
+            withTimeout(timeoutMs) {
+                client.webSocket(url) {
+                    send(Frame.Text("{\"type\":\"down_start\",\"bytes\":$bytes}"))
+                    while (true) {
+                        when (val frame = incoming.receive()) {
+                            is Frame.Binary -> {
+                                received += frame.readBytes().size
+                                onStreamProgress(mbpsOf(received, elapsedMsSince(started)), null)
+                            }
+                            is Frame.Text -> if (frame.readText().contains("\"down_end\"")) break
+                            else -> Unit
+                        }
+                    }
+                }
+            }
+            if (received > 0) TransferResult.Ok(received, elapsedMsSince(started))
+            else TransferResult.Failed(FailureReason.HTTP_ERROR)
+        } catch (t: Throwable) {
+            if (received > 0) TransferResult.Partial(received, elapsedMsSince(started), t.toFailureReason())
+            else TransferResult.Failed(t.toFailureReason())
+        }
+    }
+
+    override suspend fun webSocketUpload(url: String, bytes: Int, timeoutMs: Long): TransferResult {
+        val started = System.nanoTime()
+        return try {
+            withTimeout(timeoutMs) {
+                client.webSocket(url) {
+                    send(Frame.Text("{\"type\":\"up_start\"}"))
+                    var remaining = bytes
+                    while (remaining > 0) {
+                        val chunk = ByteArray(minOf(64 * 1024, remaining)).also { Random.nextBytes(it) }
+                        send(Frame.Binary(true, chunk))
+                        remaining -= chunk.size
+                        onStreamProgress(null, mbpsOf((bytes - remaining).toLong(), elapsedMsSince(started)))
+                    }
+                    send(Frame.Text("{\"type\":\"up_end\"}"))
+                    while (true) {
+                        val frame = incoming.receive()
+                        if (frame is Frame.Text && frame.readText().contains("\"up_ack\"")) break
+                    }
+                }
+            }
+            TransferResult.Ok(bytes.toLong(), elapsedMsSince(started))
+        } catch (t: Throwable) {
+            TransferResult.Failed(t.toFailureReason())
+        }
+    }
+
     private fun elapsedMsSince(startNanos: Long): Double = (System.nanoTime() - startNanos) / 1_000_000.0
 
     private fun Throwable.toFailureReason(): FailureReason = when (this) {
@@ -121,6 +178,7 @@ class KtorTransport(
     companion object {
         fun defaultClient(): HttpClient = HttpClient(OkHttp) {
             expectSuccess = false
+            install(WebSockets)
             install(HttpTimeout) {
                 // Per-call timeouts are enforced by withTimeout above; these are
                 // a backstop so a wedged socket cannot outlive the worker.

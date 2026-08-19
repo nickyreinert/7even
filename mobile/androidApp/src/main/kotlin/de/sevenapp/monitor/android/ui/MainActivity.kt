@@ -5,66 +5,89 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.item
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import de.sevenapp.monitor.core.Format
-import de.sevenapp.monitor.entitlement.Paywall
-import de.sevenapp.monitor.entitlement.Tier
-import de.sevenapp.monitor.report.Report
+import de.sevenapp.monitor.core.NetworkType
 
-private enum class Screen { DASHBOARD, SETTINGS }
+private enum class Screen { MAIN, HISTORY, SETTINGS, HELP }
 
+private val SevenColors = darkColorScheme(
+    primary = androidx.compose.ui.graphics.Color(0xFF2563EB),
+    secondary = androidx.compose.ui.graphics.Color(0xFFF59E0B),
+    background = androidx.compose.ui.graphics.Color(0xFF0A0A0A),
+    surface = androidx.compose.ui.graphics.Color(0xFF161616),
+    surfaceVariant = androidx.compose.ui.graphics.Color(0xFF202020),
+)
+
+@OptIn(ExperimentalMaterial3Api::class)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme {
-                // Two screens do not justify a navigation library; when a third
-                // arrives, swap this for one rather than growing the enum.
-                var screen by androidx.compose.runtime.saveable.rememberSaveable {
-                    androidx.compose.runtime.mutableStateOf(Screen.DASHBOARD)
-                }
-
+            MaterialTheme(colorScheme = SevenColors) {
+                var screen by rememberSaveable { mutableStateOf(Screen.MAIN) }
                 Scaffold(
+                    topBar = {
+                        TopAppBar(
+                            title = { Text("7even", fontWeight = FontWeight.Bold) },
+                            actions = { TextButton(onClick = { screen = Screen.HELP }) { Text("?") } },
+                        )
+                    },
                     bottomBar = {
-                        androidx.compose.material3.NavigationBar {
-                            androidx.compose.material3.NavigationBarItem(
-                                selected = screen == Screen.DASHBOARD,
-                                onClick = { screen = Screen.DASHBOARD },
-                                icon = {},
-                                label = { Text("Monitor") },
-                            )
-                            androidx.compose.material3.NavigationBarItem(
-                                selected = screen == Screen.SETTINGS,
-                                onClick = { screen = Screen.SETTINGS },
-                                icon = {},
-                                label = { Text("Settings") },
-                            )
+                        if (screen != Screen.HELP) NavigationBar {
+                            Row(Modifier.fillMaxWidth()) {
+                                NavItem("Monitor", screen == Screen.MAIN, Modifier.weight(1f)) { screen = Screen.MAIN }
+                                NavItem("History", screen == Screen.HISTORY, Modifier.weight(1f)) { screen = Screen.HISTORY }
+                                NavItem("Settings", screen == Screen.SETTINGS, Modifier.weight(1f)) { screen = Screen.SETTINGS }
+                            }
                         }
                     },
                 ) { padding ->
                     when (screen) {
-                        Screen.DASHBOARD -> DashboardScreen(Modifier.padding(padding))
+                        Screen.MAIN -> DashboardScreen(Modifier.padding(padding))
+                        Screen.HISTORY -> HistoryScreen(Modifier.padding(padding))
                         Screen.SETTINGS -> SettingsScreen(Modifier.padding(padding))
+                        Screen.HELP -> HelpScreen(Modifier.padding(padding), onBack = { screen = Screen.MAIN })
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun NavItem(label: String, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    TextButton(onClick = onClick, modifier = modifier.padding(horizontal = 4.dp)) {
+        Text(label, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
     }
 }
 
@@ -74,131 +97,189 @@ fun DashboardScreen(
     viewModel: DashboardViewModel = androidx.lifecycle.viewmodel.compose.viewModel(),
 ) {
     val state by viewModel.state.collectAsState()
+    var intervalMenuOpen by rememberSaveable { mutableStateOf(false) }
+    var logOpen by rememberSaveable { mutableStateOf(false) }
 
-    LazyColumn(
-        modifier = modifier.fillMaxSize().padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
+    LazyColumn(modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Button(onClick = viewModel::runManualTest, enabled = !state.manualTestRunning, modifier = Modifier.fillMaxWidth()) {
+                        Text(if (state.manualTestRunning) "Testing…" else "Start monitoring")
+                    }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Measure automatically", style = MaterialTheme.typography.titleMedium)
+                            Text("Battery-aware background checks", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Switch(state.monitoringEnabled, onCheckedChange = viewModel::setMonitoring)
+                    }
+                    Text("Use connection", style = MaterialTheme.typography.labelMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(state.monitoringNetworks == setOf(NetworkType.WIFI), { viewModel.setMonitoringNetworks(setOf(NetworkType.WIFI)) }, label = { Text("Wi-Fi") })
+                        FilterChip(state.monitoringNetworks == setOf(NetworkType.CELLULAR), { viewModel.setMonitoringNetworks(setOf(NetworkType.CELLULAR)) }, label = { Text("Mobile") })
+                        FilterChip(state.monitoringNetworks == setOf(NetworkType.WIFI, NetworkType.CELLULAR), { viewModel.setMonitoringNetworks(setOf(NetworkType.WIFI, NetworkType.CELLULAR)) }, label = { Text("Both") })
+                    }
+                    Text("Recurrence", style = MaterialTheme.typography.labelMedium)
+                    Column {
+                        TextButton(onClick = { intervalMenuOpen = true }) { Text(intervalLabel(state.intervalMinutes) + " ▾") }
+                        DropdownMenu(expanded = intervalMenuOpen, onDismissRequest = { intervalMenuOpen = false }) {
+                            listOf(15, 60, 1440, 10080).forEach { minutes ->
+                                DropdownMenuItem(text = { Text(intervalLabel(minutes)) }, onClick = { viewModel.setInterval(minutes); intervalMenuOpen = false })
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Live — recent probes", style = MaterialTheme.typography.labelMedium)
+                    LatencyChart(state.recentPings)
+                    if (state.manualTestRunning && (state.liveDownloadMbps.isNotEmpty() || state.liveUploadMbps.isNotEmpty())) {
+                        Text("Live stream — download", style = MaterialTheme.typography.labelMedium)
+                        MetricLineChart(state.liveDownloadMbps.map { it }, suffix = " Mbps", heightDp = 90)
+                        Text("Live stream — upload", style = MaterialTheme.typography.labelMedium)
+                        MetricLineChart(state.liveUploadMbps.map { it }, color = androidx.compose.ui.graphics.Color(0xFFF59E0B), suffix = " Mbps", heightDp = 90)
+                    }
+                }
+            }
+        }
+        item {
+            TextButton(onClick = { logOpen = !logOpen }, modifier = Modifier.fillMaxWidth()) { Text(if (logOpen) "Hide probe log" else "Show probe log") }
+            if (logOpen) Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp)) {
+                    state.recentPings.takeLast(20).reversed().forEach { sample ->
+                        Text("${java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(sample.atEpochMs))}  " + (sample.rttMs?.let { "${it.toInt()} ms" } ?: "no reply") + "  ${sample.networkType.name.lowercase()}", style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (state.recentPings.isEmpty()) Text("No probes yet.", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+        item { SummaryCards(state) }
         item {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    // The free action, given top billing rather than buried
-                    // under a locked one. Someone who never pays should still
-                    // find the app immediately useful.
-                    androidx.compose.material3.Button(
-                        onClick = viewModel::runManualTest,
-                        enabled = !state.manualTestRunning,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(if (state.manualTestRunning) "Testing…" else "Run a test now")
-                    }
+                    Text("Connection quality", style = MaterialTheme.typography.titleMedium)
+                    Text("Download — per-check result", style = MaterialTheme.typography.labelMedium)
+                    ThroughputBars(state.recentThroughput.map { it.downMbps }, upload = false)
+                    Text("Upload — per-check result", style = MaterialTheme.typography.labelMedium)
+                    ThroughputBars(state.recentThroughput.map { it.upMbps }, upload = true)
+                    Text("Dropped packets / request loss", style = MaterialTheme.typography.labelMedium)
+                    LossChart(state.recentPings)
+                    Text("Each red bar is a probe that did not receive a reply before its timeout.", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+    }
+}
 
-                    if (state.tier == Tier.PRO || !Paywall.shouldShowPlanUi()) {
-                        androidx.compose.foundation.layout.Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text("Measure automatically", style = MaterialTheme.typography.titleMedium)
-                            Switch(
-                                checked = state.monitoringEnabled,
-                                onCheckedChange = viewModel::setMonitoring,
-                            )
-                        }
-                        if (state.monitoringEnabled) {
-                            Text(
-                                // Say the real cadence, not an aspiration.
-                                // WorkManager clamps to 15 minutes and the OS
-                                // may defer further; implying a tighter
-                                // interval would be a promise the platform
-                                // does not keep.
-                                "Samples roughly every ${state.intervalMinutes} minutes. " +
-                                    "Android may defer cycles to save battery.",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
+@Composable
+private fun SummaryCards(state: DashboardState) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            MetricCard("Latency", Format.millis(state.latencyMedianMs), Modifier.weight(1f))
+            MetricCard("Jitter", Format.millis(state.jitterMs), Modifier.weight(1f))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            MetricCard("Request loss", Format.percent(state.lossPct), Modifier.weight(1f))
+            MetricCard("Drops", state.dropCount.toString(), Modifier.weight(1f))
+        }
+        MetricCard("Mobile data this month", Format.bytes(state.meteredBytesThisMonth), Modifier.fillMaxWidth())
+    }
+}
+
+@Composable
+private fun MetricCard(label: String, value: String, modifier: Modifier) {
+    Card(modifier) { Column(Modifier.padding(12.dp)) {
+        Text(label.uppercase(), style = MaterialTheme.typography.labelSmall)
+        Text(value, style = MaterialTheme.typography.headlineSmall)
+    } }
+}
+
+@Composable
+private fun HistoryScreen(modifier: Modifier, viewModel: HistoryViewModel = androidx.lifecycle.viewmodel.compose.viewModel()) {
+    val state by viewModel.state.collectAsState()
+    LazyColumn(modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        item {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("History", style = MaterialTheme.typography.headlineMedium)
+                    Text("Browse measurements collected over time.", style = MaterialTheme.typography.bodySmall)
+                }
+                TextButton(onClick = viewModel::shareExport) { Text("Export") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(1, 7, 30, 90).forEach { days ->
+                    FilterChip(selected = state.days == days, onClick = { viewModel.setDays(days) }, label = { Text("${days}d") })
+                }
+            }
+            Text("Connection", style = MaterialTheme.typography.labelMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(selected = state.connectionFilter == null, onClick = { viewModel.setConnectionFilter(null) }, label = { Text("All") })
+                FilterChip(selected = state.connectionFilter == NetworkType.WIFI, onClick = { viewModel.setConnectionFilter(NetworkType.WIFI) }, label = { Text("Wi-Fi") })
+                FilterChip(selected = state.connectionFilter == NetworkType.CELLULAR, onClick = { viewModel.setConnectionFilter(NetworkType.CELLULAR) }, label = { Text("Mobile") })
+            }
+        }
+        item { HistoryChartCard("Ping", "Latency per probe", state.samples.map { it.rttMs }, "ms") }
+        item { HistoryChartCard("Download", "Speed-test download", state.throughput.map { it.downMbps }, " Mbps") }
+        item { HistoryChartCard("Upload", "Speed-test upload", state.throughput.map { it.upMbps }, " Mbps") }
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Drop events", style = MaterialTheme.typography.titleMedium)
+                    if (state.drops.isEmpty()) {
+                        Text("No connection drops in this period.", style = MaterialTheme.typography.bodySmall)
                     } else {
-                        Text(
-                            "Automatic background monitoring is part of Pro — see Settings.",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
+                        state.drops.forEach { drop ->
+                            val started = java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(java.util.Date(drop.startedAtEpochMs))
+                            val duration = if (drop.ongoing) "ongoing" else Format.duration(drop.durationMs(System.currentTimeMillis()))
+                            Text("$started · $duration", style = MaterialTheme.typography.bodyMedium)
+                        }
                     }
                 }
             }
         }
+        if (state.samples.isEmpty()) item { Text("No measurements yet. Start monitoring to build your history.") }
+    }
+}
 
-        item { StatRow(state) }
-
-        item {
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("Latency — recent probes", style = MaterialTheme.typography.labelMedium)
-                    LatencyChart(state.recentPings)
-                }
-            }
-        }
-
-        item {
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("Data used this month", style = MaterialTheme.typography.labelMedium)
-                    Text(
-                        "${Format.bytes(state.meteredBytesThisMonth)} on cellular",
-                        style = MaterialTheme.typography.headlineSmall,
-                    )
-                    Text(
-                        "Projected ${Format.bytes(state.projectedMeteredBytesPerMonth)}/month at current settings",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-            }
-        }
-
-        state.latestReport?.let { report ->
-            item { ReportCard(report) }
+@Composable
+private fun HistoryChartCard(title: String, description: String, values: List<Double?>, suffix: String) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(description, style = MaterialTheme.typography.bodySmall)
+            MetricLineChart(values = values, suffix = suffix)
         }
     }
 }
 
 @Composable
-private fun StatRow(state: DashboardState) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Last 24 hours", style = MaterialTheme.typography.labelMedium)
-            Text("Latency  ${Format.millis(state.latencyMedianMs)} median", style = MaterialTheme.typography.bodyMedium)
-            Text("Jitter   ${Format.millis(state.jitterMs)}", style = MaterialTheme.typography.bodyMedium)
-            Text("Loss     ${Format.percent(state.lossPct)}", style = MaterialTheme.typography.bodyMedium)
-            Text("Drops    ${state.dropCount}", style = MaterialTheme.typography.bodyMedium)
-        }
+private fun HelpScreen(modifier: Modifier, onBack: () -> Unit) {
+    LazyColumn(modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        item { Text("Help", style = MaterialTheme.typography.headlineMedium); Text("How 7even measures your connection", style = MaterialTheme.typography.bodyMedium) }
+        item { HelpBlock("What is measured", "7even records latency, jitter, request loss, download and upload throughput, plus sustained connection drops.") }
+        item { HelpBlock("Battery and data", "Background monitoring uses lightweight probes. Speed tests are less frequent, and their size is configurable from the Monitor screen.") }
+        item { HelpBlock("Protocol", "Latency uses an HTTP request to Cloudflare's trace endpoint. Throughput uses download and upload requests to the speed-test service. A timeout means no reply was received in time; it does not prove the whole connection was down.") }
+        item { HelpBlock("Background timing", "Android runs scheduled work approximately, not exactly. It may defer a check to protect battery life, especially in Doze mode.") }
+        item { TextButton(onClick = onBack) { Text("Back to monitor") } }
     }
 }
 
 @Composable
-private fun ReportCard(report: Report) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Latest report", style = MaterialTheme.typography.labelMedium)
-            report.overall.stability?.let {
-                Text("Stability ${it.composite}", style = MaterialTheme.typography.headlineSmall)
-                Text(
-                    "Uptime ${it.uptimePct}% · jitter score ${it.jitterScore} · loss score ${it.lossScore}",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Text(
-                    // Same caveat the web app carries. A composite nobody can
-                    // interrogate is worse than no composite.
-                    "Not a standard metric — a transparent composite of the three " +
-                        "inputs above (weights 50/30/20), shown so you can judge it yourself.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            if (report.coverage.isPartial) {
-                Text(
-                    "Partial: ${report.coverage.samplesCollected} of ~${report.coverage.samplesExpected} " +
-                        "expected samples collected.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-        }
-    }
+private fun HelpBlock(title: String, body: String) {
+    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) {
+        Text(title, style = MaterialTheme.typography.titleMedium)
+        Text(body, style = MaterialTheme.typography.bodySmall)
+    } }
+}
+
+private fun intervalLabel(minutes: Int): String = when (minutes) {
+    15 -> "Every 15 minutes"
+    60 -> "Every hour"
+    1440 -> "Every 24 hours"
+    10080 -> "Once a week"
+    else -> "Every $minutes minutes"
 }

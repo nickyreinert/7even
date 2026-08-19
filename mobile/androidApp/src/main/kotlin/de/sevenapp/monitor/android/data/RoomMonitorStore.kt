@@ -40,23 +40,44 @@ class RoomMonitorStore(
         val defaults = ProbeConfig()
         return defaults.copy(
             cycleIntervalMinutes = prefs[KEY_INTERVAL] ?: defaults.cycleIntervalMinutes,
+            monitoringNetworks = prefs[KEY_MONITORING_NETWORKS]?.toNetworkTypes()
+                ?.takeIf { it.isNotEmpty() } ?: defaults.monitoringNetworks,
             pingsPerCycle = prefs[KEY_PINGS] ?: defaults.pingsPerCycle,
             throughputEveryNCycles = prefs[KEY_TP_EVERY] ?: defaults.throughputEveryNCycles,
             throughputLightNetworks = prefs[KEY_TP_NETWORKS]?.toNetworkTypes()
                 ?: defaults.throughputLightNetworks,
             fullSweepRequiresCharging = prefs[KEY_FULL_CHARGING] ?: defaults.fullSweepRequiresCharging,
             fullSweepsPerDay = prefs[KEY_FULL_PER_DAY] ?: defaults.fullSweepsPerDay,
+            lightDownBytes = prefs[KEY_LIGHT_DOWN_BYTES] ?: defaults.lightDownBytes,
+            lightUpBytes = prefs[KEY_LIGHT_UP_BYTES] ?: defaults.lightUpBytes,
+            wifiMeasurementSizes = prefs[KEY_WIFI_SIZES]?.mapNotNull { it.toIntOrNull() }?.toSet()?.takeIf { it.isNotEmpty() } ?: defaults.wifiMeasurementSizes,
+            cellularMeasurementSizes = prefs[KEY_CELLULAR_SIZES]?.mapNotNull { it.toIntOrNull() }?.toSet()?.takeIf { it.isNotEmpty() } ?: defaults.cellularMeasurementSizes,
+            traceUrl = prefs[KEY_TRACE_URL] ?: defaults.traceUrl,
+            downUrlTemplate = prefs[KEY_DOWN_URL_TEMPLATE] ?: defaults.downUrlTemplate,
+            upUrl = prefs[KEY_UP_URL] ?: defaults.upUrl,
+            streamUrl = prefs[KEY_STREAM_URL] ?: defaults.streamUrl,
+            useWebSocketStream = prefs[KEY_USE_WEBSOCKET_STREAM] ?: defaults.useWebSocketStream,
         )
     }
 
     override suspend fun saveConfig(config: ProbeConfig) {
         context.settings.edit { p ->
             p[KEY_INTERVAL] = config.cycleIntervalMinutes
+            p[KEY_MONITORING_NETWORKS] = config.monitoringNetworks.map { it.name }.toSet()
             p[KEY_PINGS] = config.pingsPerCycle
             p[KEY_TP_EVERY] = config.throughputEveryNCycles
             p[KEY_TP_NETWORKS] = config.throughputLightNetworks.map { it.name }.toSet()
             p[KEY_FULL_CHARGING] = config.fullSweepRequiresCharging
             p[KEY_FULL_PER_DAY] = config.fullSweepsPerDay
+            p[KEY_LIGHT_DOWN_BYTES] = config.lightDownBytes
+            p[KEY_LIGHT_UP_BYTES] = config.lightUpBytes
+            p[KEY_WIFI_SIZES] = config.wifiMeasurementSizes.map(Int::toString).toSet()
+            p[KEY_CELLULAR_SIZES] = config.cellularMeasurementSizes.map(Int::toString).toSet()
+            p[KEY_TRACE_URL] = config.traceUrl
+            p[KEY_DOWN_URL_TEMPLATE] = config.downUrlTemplate
+            p[KEY_UP_URL] = config.upUrl
+            p[KEY_STREAM_URL] = config.streamUrl
+            p[KEY_USE_WEBSOCKET_STREAM] = config.useWebSocketStream
         }
     }
 
@@ -159,6 +180,18 @@ class RoomMonitorStore(
     suspend fun recentPings(limit: Int = 200): List<PingSample> =
         dao.recentPings(limit).map { PingSample(it.atEpochMs, it.rttMs, it.networkType.toNetworkType()) }
 
+    suspend fun recentThroughput(limit: Int = 120): List<ThroughputSample> =
+        dao.recentThroughput(limit).map {
+            ThroughputSample(
+                atEpochMs = it.atEpochMs,
+                downMbps = it.downMbps,
+                upMbps = it.upMbps,
+                networkType = it.networkType.toNetworkType(),
+                tier = runCatching { ProbeTier.valueOf(it.tier) }.getOrDefault(ProbeTier.THROUGHPUT_LIGHT),
+                partial = it.partial,
+            )
+        }
+
     private fun DropEntity.toDomain() = DropEvent(startedAtEpochMs, endedAtEpochMs)
 
     // Unknown enum names must not crash a background worker; an old row from a
@@ -171,11 +204,21 @@ class RoomMonitorStore(
 
     companion object {
         private val KEY_INTERVAL = intPreferencesKey("cycle_interval_minutes")
+        private val KEY_MONITORING_NETWORKS = stringSetPreferencesKey("monitoring_networks")
         private val KEY_PINGS = intPreferencesKey("pings_per_cycle")
         private val KEY_TP_EVERY = intPreferencesKey("throughput_every_n")
         private val KEY_TP_NETWORKS = stringSetPreferencesKey("throughput_networks")
         private val KEY_FULL_CHARGING = booleanPreferencesKey("full_requires_charging")
         private val KEY_FULL_PER_DAY = intPreferencesKey("full_sweeps_per_day")
+        private val KEY_LIGHT_DOWN_BYTES = intPreferencesKey("light_down_bytes")
+        private val KEY_LIGHT_UP_BYTES = intPreferencesKey("light_up_bytes")
+        private val KEY_WIFI_SIZES = stringSetPreferencesKey("wifi_measurement_sizes")
+        private val KEY_CELLULAR_SIZES = stringSetPreferencesKey("cellular_measurement_sizes")
+        private val KEY_TRACE_URL = stringPreferencesKey("trace_url")
+        private val KEY_DOWN_URL_TEMPLATE = stringPreferencesKey("down_url_template")
+        private val KEY_UP_URL = stringPreferencesKey("up_url")
+        private val KEY_STREAM_URL = stringPreferencesKey("stream_url")
+        private val KEY_USE_WEBSOCKET_STREAM = booleanPreferencesKey("use_websocket_stream")
         private val KEY_CYCLE_INDEX = longPreferencesKey("cycle_index")
         private val KEY_CONSECUTIVE_FAILURES = intPreferencesKey("consecutive_failures")
 

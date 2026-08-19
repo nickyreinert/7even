@@ -13,6 +13,9 @@ data class ProbeConfig(
     /** How often the scheduler is asked to run a cycle. Android's floor is 15 min. */
     val cycleIntervalMinutes: Int = 15,
 
+    /** Connections on which this device is allowed to collect measurements. */
+    val monitoringNetworks: Set<NetworkType> = setOf(NetworkType.WIFI, NetworkType.CELLULAR),
+
     /** Reachability probes per cycle. Three gives a median and a jitter figure. */
     val pingsPerCycle: Int = 3,
 
@@ -29,6 +32,8 @@ data class ProbeConfig(
 
     val lightDownBytes: Int = 256 * 1024,
     val lightUpBytes: Int = 128 * 1024,
+    val wifiMeasurementSizes: Set<Int> = setOf(256 * 1024),
+    val cellularMeasurementSizes: Set<Int> = setOf(64 * 1024),
 
     val pingTimeoutMs: Long = 5_000,
     val transferTimeoutMs: Long = 20_000,
@@ -36,10 +41,19 @@ data class ProbeConfig(
     val traceUrl: String = "https://speed.cloudflare.com/cdn-cgi/trace",
     val downUrlTemplate: String = "https://speed.cloudflare.com/__down?bytes={bytes}",
     val upUrl: String = "https://ws-speedtest.nyrt.workers.dev/__up",
+    /** Optional 7even-compatible WebSocket endpoint for bounded stream tests. */
+    val streamUrl: String = "wss://ws-speedtest.nyrt.workers.dev",
+    val useWebSocketStream: Boolean = false,
 ) {
     fun downUrl(bytes: Int): String = downUrlTemplate.replace("{bytes}", bytes.toString())
 
     fun cyclesPerDay(): Int = if (cycleIntervalMinutes <= 0) 0 else (24 * 60) / cycleIntervalMinutes
+
+    fun measurementSizes(network: NetworkType): List<Int> = when (network) {
+        NetworkType.WIFI -> wifiMeasurementSizes
+        NetworkType.CELLULAR -> cellularMeasurementSizes
+        else -> setOf(lightDownBytes)
+    }.filter { it in 16 * 1024..10 * 1024 * 1024 }.sorted().ifEmpty { listOf(lightDownBytes) }
 }
 
 /** Conditions at the moment a cycle runs, supplied by the platform host. */
@@ -66,6 +80,7 @@ object TierPolicy {
         fullSweepsToday: Int,
     ): ProbeTier? {
         if (state.networkType == NetworkType.NONE) return null
+        if (state.networkType !in config.monitoringNetworks) return null
 
         val throughputDue = config.throughputEveryNCycles > 0 &&
             cycleIndex % config.throughputEveryNCycles == 0L
@@ -121,9 +136,19 @@ object DataBudget {
 
         val pingBytesPerCycle = PING_BYTES * config.pingsPerCycle
 
-        // Reachability runs on every cycle regardless of network.
-        var metered = meteredCycles * pingBytesPerCycle
-        var unmetered = unmeteredCycles * pingBytesPerCycle
+        // Reachability runs on every selected connection. If mobile data is
+        // excluded, its projected cost must be zero — otherwise the settings
+        // screen would contradict the user's connection preference.
+        var metered = if (NetworkType.CELLULAR in config.monitoringNetworks) {
+            meteredCycles * pingBytesPerCycle
+        } else {
+            0L
+        }
+        var unmetered = if (NetworkType.WIFI in config.monitoringNetworks) {
+            unmeteredCycles * pingBytesPerCycle
+        } else {
+            0L
+        }
 
         val throughputCycles =
             if (config.throughputEveryNCycles > 0) cycles / config.throughputEveryNCycles else 0
@@ -133,17 +158,25 @@ object DataBudget {
         // cellular is not in that set, it contributes nothing to the metered
         // total no matter how often it is scheduled — which is precisely the
         // property that keeps the default under 10MB/month.
-        val lightOnMetered = NetworkType.CELLULAR in config.throughputLightNetworks
+        val lightOnMetered = NetworkType.CELLULAR in config.monitoringNetworks &&
+            NetworkType.CELLULAR in config.throughputLightNetworks
         val meteredThroughputCycles = (throughputCycles * assumeMeteredNetwork).toLong()
         val unmeteredThroughputCycles = throughputCycles - meteredThroughputCycles
 
         if (lightOnMetered) metered += meteredThroughputCycles * lightBytes
-        unmetered += unmeteredThroughputCycles * lightBytes
+        if (NetworkType.WIFI in config.monitoringNetworks) {
+            unmetered += unmeteredThroughputCycles * lightBytes
+        }
 
         // Full sweeps are charging + allowed-network gated; treat as unmetered
         // unless cellular was explicitly opted in.
         val fullBytes = FULL_SWEEP_BYTES * config.fullSweepsPerDay
-        if (NetworkType.CELLULAR in config.fullSweepNetworks) metered += fullBytes else unmetered += fullBytes
+        when {
+            NetworkType.CELLULAR in config.monitoringNetworks &&
+                NetworkType.CELLULAR in config.fullSweepNetworks -> metered += fullBytes
+            NetworkType.WIFI in config.monitoringNetworks &&
+                NetworkType.WIFI in config.fullSweepNetworks -> unmetered += fullBytes
+        }
 
         return Projection(meteredBytesPerDay = metered, unmeteredBytesPerDay = unmetered)
     }
