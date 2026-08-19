@@ -305,6 +305,7 @@ private fun HistoryScreen(
 ) {
     val state by viewModel.state.collectAsState()
     var ssidMenuOpen by rememberSaveable { mutableStateOf(false) }
+    var aggregationMenuOpen by rememberSaveable { mutableStateOf(false) }
     LazyColumn(modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -352,28 +353,45 @@ private fun HistoryScreen(
         item { HistorySummaryCards(state.summary) }
         item { HistoryEvidenceCard(state.summary) }
         item {
+            Text("Chart aggregation", style = MaterialTheme.typography.labelMedium)
+            Box {
+                OutlinedButton(onClick = { aggregationMenuOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text(state.aggregation.label, modifier = Modifier.weight(1f))
+                    Text("⌄")
+                }
+                DropdownMenu(expanded = aggregationMenuOpen, onDismissRequest = { aggregationMenuOpen = false }) {
+                    HistoryAggregation.entries.forEach { aggregation ->
+                        DropdownMenuItem(text = { Text(aggregation.label) }, onClick = {
+                            aggregationMenuOpen = false
+                            viewModel.setAggregation(aggregation)
+                        })
+                    }
+                }
+            }
+        }
+        item {
             Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) {
                 Text("Ping", style = MaterialTheme.typography.titleMedium)
                 Text("Latency per probe; red bars are timed-out requests.", style = MaterialTheme.typography.bodySmall)
-                LatencyChart(state.samples)
+                LatencyChart(state.chartPings)
             } }
         }
         item {
             Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) {
                 Text("Jitter", style = MaterialTheme.typography.titleMedium)
                 Text("Variation within each probe group. Taller bars mean a less steady connection.", style = MaterialTheme.typography.bodySmall)
-                JitterChart(state.samples)
+                ValueBarChart(state.chartJitterMs, androidx.compose.ui.graphics.Color(0xFFF59E0B), suffix = " ms")
             } }
         }
         item {
             Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) {
                 Text("Request loss", style = MaterialTheme.typography.titleMedium)
                 Text("Failed requests as a percentage of each probe group.", style = MaterialTheme.typography.bodySmall)
-                LossChart(state.samples)
+                ValueBarChart(state.chartLossPct, androidx.compose.ui.graphics.Color(0xFFF87171), suffix = "%")
             } }
         }
-        item { HistoryChartCard("Download", "Each completed stream test. Compare the average with the reliable p10 result above.", state.throughput.map { it.downMbps }, " Mbps") }
-        item { HistoryChartCard("Upload", "Each completed stream test. Gaps mean that direction did not complete.", state.throughput.map { it.upMbps }, " Mbps") }
+        item { HistoryChartCard("Download", "Each completed stream test. Compare the average with the reliable p10 result above.", state.chartThroughput.map { it.downMbps }, " Mbps") }
+        item { HistoryChartCard("Upload", "Each completed stream test. Gaps mean that direction did not complete.", state.chartThroughput.map { it.upMbps }, " Mbps") }
         item {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {

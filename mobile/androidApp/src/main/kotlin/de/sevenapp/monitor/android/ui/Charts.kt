@@ -85,6 +85,17 @@ fun ThroughputBars(
     heightDp: Int = 100,
     suffix: String = " Mbps",
 ) {
+    ValueBarChart(values, if (upload) UpAmber else DownBlue, modifier, heightDp, suffix)
+}
+
+@Composable
+fun ValueBarChart(
+    values: List<Double?>,
+    color: Color,
+    modifier: Modifier = Modifier,
+    heightDp: Int = 100,
+    suffix: String = "",
+) {
     Box(modifier.fillMaxWidth().height(heightDp.dp)) {
         Canvas(Modifier.fillMaxWidth().height(heightDp.dp)) {
             if (values.isEmpty()) return@Canvas
@@ -104,7 +115,7 @@ fun ThroughputBars(
                 val x = padding + i * (plotW / values.size)
                 val h = max(1f, ((v / maxV) * plotH).toFloat())
                 drawRect(
-                    if (upload) UpAmber else DownBlue,
+                    color,
                     Offset(x, padding + plotH - h),
                     androidx.compose.ui.geometry.Size(barW, h),
                 )

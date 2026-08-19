@@ -15,6 +15,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.util.Calendar
+
+enum class HistoryAggregation(val label: String) { NONE("None — every check"), DAY("Day"), WEEK("Week") }
 
 data class HistoryState(
     val historyDays: Int = 0,
@@ -24,6 +27,11 @@ data class HistoryState(
     val connectionFilter: NetworkType = NetworkType.WIFI,
     val ssidFilter: String? = null,
     val ssids: List<String> = emptyList(),
+    val aggregation: HistoryAggregation = HistoryAggregation.NONE,
+    val chartPings: List<PingSample> = emptyList(),
+    val chartThroughput: List<ThroughputSample> = emptyList(),
+    val chartLossPct: List<Double?> = emptyList(),
+    val chartJitterMs: List<Double?> = emptyList(),
     val summary: HistorySummary = HistorySummary(),
 )
 
@@ -61,6 +69,11 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
         refresh()
     }
 
+    fun setAggregation(aggregation: HistoryAggregation) {
+        _state.value = _state.value.copy(aggregation = aggregation)
+        refresh()
+    }
+
     fun refresh() = viewModelScope.launch {
         val now = System.currentTimeMillis()
         val start = store.oldestMeasurementAt() ?: now
@@ -75,6 +88,7 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
         val down = throughput.mapNotNull { it.downMbps }
         val up = throughput.mapNotNull { it.upMbps }
         val loss = if (samples.isEmpty()) null else samples.count { !it.ok } * 100.0 / samples.size
+        val aggregated = aggregateForCharts(samples, throughput, _state.value.aggregation)
         fun consistency(values: List<Double>): Double? {
             val typical = Stats.median(values) ?: return null
             val reliable = Stats.percentile(values, 0.1) ?: return null
@@ -86,6 +100,10 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
             drops = drops,
             historyDays = if (start == now) 0 else ((now - start) / (24L * 60 * 60 * 1000) + 1).toInt().coerceAtLeast(1),
             ssids = allPings.mapNotNull { it.ssid }.distinct().sorted(),
+            chartPings = aggregated.pings,
+            chartThroughput = aggregated.throughput,
+            chartLossPct = aggregated.lossPct,
+            chartJitterMs = aggregated.jitterMs,
             summary = HistorySummary(
                 averageDownloadMbps = down.takeIf { it.isNotEmpty() }?.average(),
                 averageUploadMbps = up.takeIf { it.isNotEmpty() }?.average(),
@@ -104,6 +122,54 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
                     avgLossPct = loss ?: 0.0,
                 ),
             ),
+        )
+    }
+
+    private data class ChartAggregation(
+        val pings: List<PingSample>,
+        val throughput: List<ThroughputSample>,
+        val lossPct: List<Double?>,
+        val jitterMs: List<Double?>,
+    )
+
+    private fun aggregateForCharts(
+        pings: List<PingSample>,
+        throughput: List<ThroughputSample>,
+        aggregation: HistoryAggregation,
+    ): ChartAggregation {
+        if (aggregation == HistoryAggregation.NONE) {
+            return ChartAggregation(
+                pings = pings,
+                throughput = throughput,
+                lossPct = pings.chunked(3).map { group -> group.count { !it.ok } * 100.0 / group.size },
+                jitterMs = pings.chunked(3).map { group -> group.mapNotNull { it.rttMs }.takeIf { it.size >= 2 }?.let(Stats::stdDev) },
+            )
+        }
+        fun bucket(at: Long): Int {
+            val c = Calendar.getInstance().apply { timeInMillis = at }
+            return if (aggregation == HistoryAggregation.DAY) c.get(Calendar.YEAR) * 1000 + c.get(Calendar.DAY_OF_YEAR)
+            else c.get(Calendar.YEAR) * 100 + c.get(Calendar.WEEK_OF_YEAR)
+        }
+        val pingGroups = pings.groupBy { bucket(it.atEpochMs) }.values.toList()
+        val throughputGroups = throughput.groupBy { bucket(it.atEpochMs) }.values.toList()
+        return ChartAggregation(
+            pings = pingGroups.map { group ->
+                val values = group.mapNotNull { it.rttMs }
+                PingSample(group.first().atEpochMs, values.takeIf { it.isNotEmpty() }?.average(), group.first().networkType, group.first().ssid)
+            },
+            throughput = throughputGroups.map { group ->
+                ThroughputSample(
+                    atEpochMs = group.first().atEpochMs,
+                    downMbps = group.mapNotNull { it.downMbps }.takeIf { it.isNotEmpty() }?.average(),
+                    upMbps = group.mapNotNull { it.upMbps }.takeIf { it.isNotEmpty() }?.average(),
+                    networkType = group.first().networkType,
+                    tier = group.first().tier,
+                    partial = group.any { it.partial },
+                    ssid = group.first().ssid,
+                )
+            },
+            lossPct = pingGroups.map { group -> group.count { !it.ok } * 100.0 / group.size },
+            jitterMs = pingGroups.map { group -> group.mapNotNull { it.rttMs }.takeIf { it.size >= 2 }?.let(Stats::stdDev) },
         )
     }
 
