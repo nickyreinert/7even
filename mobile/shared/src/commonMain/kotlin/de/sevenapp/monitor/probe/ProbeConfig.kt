@@ -1,6 +1,7 @@
 package de.sevenapp.monitor.probe
 
 import de.sevenapp.monitor.core.NetworkType
+import de.sevenapp.monitor.core.NetworkPreference
 import de.sevenapp.monitor.core.ProbeTier
 
 /**
@@ -44,6 +45,12 @@ data class ProbeConfig(
     /** Optional 7even-compatible WebSocket endpoint for bounded stream tests. */
     val streamUrl: String = "wss://ws-speedtest.nyrt.workers.dev",
     val useWebSocketStream: Boolean = false,
+
+    /** Endpoint and controls for the one-minute foreground streaming test. */
+    val wsUrl: String = "wss://ws-speedtest.nyrt.workers.dev",
+    val liveTestMinDurationMs: Long = LiveTestConfig.MIN_DURATION_MS,
+    val liveTestSweepEnabled: Boolean = true,
+    val preferredTestNetwork: NetworkPreference = NetworkPreference.AUTO,
 ) {
     fun downUrl(bytes: Int): String = downUrlTemplate.replace("{bytes}", bytes.toString())
 

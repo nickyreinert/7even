@@ -8,10 +8,9 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import de.sevenapp.monitor.android.billing.EntitlementRepository
 import de.sevenapp.monitor.android.data.RoomMonitorStore
-import de.sevenapp.monitor.android.net.KtorTransport
+import de.sevenapp.monitor.android.livetest.LiveTestRunner
 import de.sevenapp.monitor.android.work.ProbeWorker
 import de.sevenapp.monitor.android.work.ReportWorker
-import de.sevenapp.monitor.core.Clock
 import de.sevenapp.monitor.core.NetworkType
 import de.sevenapp.monitor.core.PingSample
 import de.sevenapp.monitor.core.Stats
@@ -20,12 +19,14 @@ import de.sevenapp.monitor.entitlement.FeatureGate
 import de.sevenapp.monitor.entitlement.Tier
 import de.sevenapp.monitor.probe.DataBudget
 import de.sevenapp.monitor.probe.DeviceState
-import de.sevenapp.monitor.probe.MonitorCoordinator
-import de.sevenapp.monitor.probe.ProbeEngine
+import de.sevenapp.monitor.probe.LiveSample
+import de.sevenapp.monitor.probe.LiveTestConfig
+import de.sevenapp.monitor.probe.SweepRunner
 import de.sevenapp.monitor.report.Report
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 data class DashboardState(
@@ -78,7 +79,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             lightDownBytes = config.lightDownBytes,
             lightUpBytes = config.lightUpBytes,
             recentPings = store.recentPings(120).reversed(), // oldest-first for the chart
-            recentThroughput = store.recentThroughput(60).reversed(),
+            recentThroughput = store.throughputBetween(dayAgo, now).takeLast(60),
             latencyMedianMs = Stats.median(rtts),
             jitterMs = if (rtts.size >= 2) Stats.stdDev(rtts) else null,
             lossPct = if (pings.isEmpty()) null else (failures.toDouble() / pings.size) * 100.0,
@@ -99,34 +100,43 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun runManualTest() = viewModelScope.launch {
         if (_state.value.manualTestRunning) return@launch
-        _state.value = _state.value.copy(
+        _state.update {
+            it.copy(
             manualTestRunning = true,
             liveDownloadMbps = emptyList(),
             liveUploadMbps = emptyList(),
-        )
+            )
+        }
 
-        val now = System.currentTimeMillis()
+        val app = getApplication<Application>()
+        val config = store.loadConfig()
+        val deviceState = readDeviceState()
         try {
-            MonitorCoordinator(
+            LiveTestRunner(
+                context = app,
                 store = store,
-                engine = ProbeEngine(
-                    KtorTransport(onStreamProgress = { down, up ->
-                        val current = _state.value
-                        _state.value = current.copy(
-                            liveDownloadMbps = down?.let { (current.liveDownloadMbps + it).takeLast(80) } ?: current.liveDownloadMbps,
-                            liveUploadMbps = up?.let { (current.liveUploadMbps + it).takeLast(80) } ?: current.liveUploadMbps,
-                        )
-                    }),
-                    Clock { System.currentTimeMillis() },
-                ),
-                clock = Clock { System.currentTimeMillis() },
-                retentionDays = entitlements.retentionDays(now),
-            ).runCycle(readDeviceState(), forceSpeedTest = true)
+                probeConfig = config,
+                fallbackNetworkType = deviceState.networkType,
+            ).runSession { sample ->
+                _state.update { current ->
+                    when (sample) {
+                        is LiveSample.Rate -> when (sample.direction) {
+                            SweepRunner.Direction.DOWN -> current.copy(
+                                liveDownloadMbps = (current.liveDownloadMbps + sample.mbps).takeLast(120),
+                            )
+                            SweepRunner.Direction.UP -> current.copy(
+                                liveUploadMbps = (current.liveUploadMbps + sample.mbps).takeLast(120),
+                            )
+                        }
+                        is LiveSample.Ping -> current
+                    }
+                }
+            }
         } catch (t: Throwable) {
             // A failed manual test is itself a measurement — the cycle records
             // failed probes before it can throw, so there is nothing to undo.
         } finally {
-            _state.value = _state.value.copy(manualTestRunning = false)
+            _state.update { it.copy(manualTestRunning = false) }
             refresh()
         }
     }
