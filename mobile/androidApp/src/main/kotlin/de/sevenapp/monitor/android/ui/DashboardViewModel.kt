@@ -140,7 +140,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             manualTestRunning = true,
             manualTestError = null,
             manualTestStep = 1,
-            manualTestStepLabel = "Preparing",
+            manualTestStepLabel = "Connecting to ${if (it.manualNetwork == NetworkPreference.CELLULAR) "mobile data" else "Wi-Fi"}",
             livePings = emptyList(),
             liveDownloadMbps = emptyList(),
             liveUploadMbps = emptyList(),

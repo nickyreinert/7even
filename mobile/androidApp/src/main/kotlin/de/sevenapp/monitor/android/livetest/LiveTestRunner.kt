@@ -71,8 +71,8 @@ class LiveTestRunner(
             try {
                 if (ws != null) {
                     ws.connect(NativeAuth.header())
-                    if (runSweep) runWebSocketSweep(ws, onSample)
                     if (runStream) runStreamLoop(ws, httpTransport, onSample)
+                    if (runSweep) runWebSocketSweep(ws, onSample)
                 }
             } finally {
                 ws?.close()
