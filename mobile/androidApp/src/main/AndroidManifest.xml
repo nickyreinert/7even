@@ -3,6 +3,8 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Required to request and bind a foreground test to the selected transport. -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <!-- Required by Android to read the connected Wi-Fi name. Requested only from History. -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
