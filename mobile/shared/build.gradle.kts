@@ -18,6 +18,10 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             implementation(libs.kotlinx.coroutines.core)
+            // api, not implementation: TimeZone appears in the public
+            // signatures of ReportSchedule and MonitorCoordinator, so
+            // consumers need it on their compile classpath.
+            api(libs.kotlinx.datetime)
         }
         commonTest.dependencies {
             implementation(kotlin("test"))

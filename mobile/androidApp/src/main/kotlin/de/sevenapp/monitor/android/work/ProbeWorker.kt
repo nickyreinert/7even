@@ -11,21 +11,22 @@ import androidx.work.NetworkType as WorkNetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
-import de.sevenapp.monitor.android.data.MonitorRepository
+import de.sevenapp.monitor.android.data.RoomMonitorStore
 import de.sevenapp.monitor.android.net.KtorTransport
 import de.sevenapp.monitor.core.Clock
 import de.sevenapp.monitor.core.NetworkType
 import de.sevenapp.monitor.probe.DeviceState
+import de.sevenapp.monitor.probe.MonitorCoordinator
 import de.sevenapp.monitor.probe.ProbeEngine
 import java.util.concurrent.TimeUnit
 
 /**
  * The Android half of the scheduling story: wakes on WorkManager's cadence,
- * gathers device state, runs exactly one engine cycle, persists the result.
+ * reads device state, hands off to the shared coordinator.
  *
- * All the judgement lives in :shared. This class is deliberately thin — it is
- * the part that cannot be unit-tested off-device, so the less logic it holds
- * the better.
+ * Deliberately thin. This is the part that cannot be unit-tested off-device, so
+ * the less judgement it holds the better — everything else lives in :shared
+ * where it is covered by tests.
  */
 class ProbeWorker(
     appContext: Context,
@@ -33,35 +34,27 @@ class ProbeWorker(
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
-        val repo = MonitorRepository.get(applicationContext)
-        val engine = ProbeEngine(
-            transport = KtorTransport(),
+        val store = RoomMonitorStore.get(applicationContext)
+        val coordinator = MonitorCoordinator(
+            store = store,
+            engine = ProbeEngine(KtorTransport(), Clock { System.currentTimeMillis() }),
             clock = Clock { System.currentTimeMillis() },
         )
 
         return try {
-            val output = engine.runCycle(
-                ProbeEngine.CycleInput(
-                    config = repo.loadConfig(),
-                    cycleIndex = repo.nextCycleIndex(),
-                    deviceState = readDeviceState(applicationContext),
-                    fullSweepsToday = repo.fullSweepsToday(),
-                    dropDetector = repo.loadDropDetector(),
-                ),
-            )
-            repo.persistCycle(output)
+            coordinator.runCycle(readDeviceState(applicationContext))
             Result.success()
         } catch (t: Throwable) {
-            // Retry rather than fail: a transient failure here is usually the
-            // network being unavailable, which is itself data we want, and
-            // Result.failure() would stop the periodic chain entirely.
+            // Retry, not failure: Result.failure() would stop the periodic
+            // chain permanently, and the usual cause here is a transient
+            // network problem — which is itself the thing we are measuring.
             Result.retry()
         }
     }
 
     private fun readDeviceState(context: Context): DeviceState {
         val cm = context.getSystemService(ConnectivityManager::class.java)
-        val caps = cm?.getNetworkCapabilities(cm.activeNetwork)
+        val caps = cm?.activeNetwork?.let { cm.getNetworkCapabilities(it) }
 
         val type = when {
             caps == null -> NetworkType.NONE
@@ -72,13 +65,12 @@ class ProbeWorker(
             else -> NetworkType.OTHER
         }
 
-        // NET_CAPABILITY_NOT_METERED is the system's own answer, which respects
-        // a user marking a Wi-Fi network as metered — inferring from transport
-        // type alone would ignore that and spend their tethered data.
+        // Ask the system rather than inferring from transport type: this
+        // respects a user who has marked their Wi-Fi as metered, which
+        // inferring would ignore and spend their tethered allowance.
         val metered = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) != true
 
-        val bm = context.getSystemService(BatteryManager::class.java)
-        val charging = bm?.isCharging == true
+        val charging = context.getSystemService(BatteryManager::class.java)?.isCharging == true
 
         return DeviceState(networkType = type, isCharging = charging, isMetered = metered)
     }
@@ -87,30 +79,30 @@ class ProbeWorker(
         private const val UNIQUE_NAME = "seven-probe-cycle"
 
         /**
-         * WorkManager's floor is 15 minutes; anything shorter is silently
-         * clamped, so the UI must not offer a smaller value and pretend.
+         * WorkManager silently clamps anything shorter to 15 minutes, so the
+         * settings UI must not offer a smaller value and imply otherwise.
          */
         const val MIN_INTERVAL_MINUTES = 15L
 
         fun schedule(context: Context, intervalMinutes: Long) {
-            val interval = intervalMinutes.coerceAtLeast(MIN_INTERVAL_MINUTES)
-
-            val request = PeriodicWorkRequestBuilder<ProbeWorker>(interval, TimeUnit.MINUTES)
-                .setConstraints(
-                    Constraints.Builder()
-                        // CONNECTED, not UNMETERED: a cycle that finds no network
-                        // is a measurement, not a wasted wakeup. Gating on
-                        // unmetered here would make outages invisible.
-                        .setRequiredNetworkType(WorkNetworkType.CONNECTED)
-                        .build(),
-                )
-                .build()
+            val request = PeriodicWorkRequestBuilder<ProbeWorker>(
+                intervalMinutes.coerceAtLeast(MIN_INTERVAL_MINUTES), TimeUnit.MINUTES,
+            ).setConstraints(
+                Constraints.Builder()
+                    // CONNECTED rather than UNMETERED: a cycle that finds no
+                    // usable network is itself a measurement. Gating on
+                    // unmetered here would make outages invisible, which is
+                    // the opposite of what this app is for.
+                    .setRequiredNetworkType(WorkNetworkType.CONNECTED)
+                    .build(),
+            ).build()
 
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 UNIQUE_NAME,
-                // KEEP, so re-opening the app doesn't reset the schedule and
-                // push the next run 15 minutes out every time.
-                ExistingPeriodicWorkPolicy.KEEP,
+                // UPDATE so an interval change takes effect, without the
+                // schedule-resetting that CANCEL_AND_REENQUEUE would cause on
+                // every app launch.
+                ExistingPeriodicWorkPolicy.UPDATE,
                 request,
             )
         }

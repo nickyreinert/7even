@@ -7,7 +7,7 @@ in [`../app.md`](../app.md); this file covers the code.
 
 | Part | State | Verified how |
 |---|---|---|
-| `:shared` measurement engine | **working** | 56 unit tests, green on JDK 21 |
+| `:shared` measurement engine | **working** | 93 unit tests, green on JDK 21 |
 | `checkNoPlatformImports` gate | **working** | verified to fail on a deliberate `import android.*` |
 | `androidApp` module | **written, never compiled** | ⚠️ no Android SDK in this environment |
 
@@ -117,21 +117,43 @@ month**, because that number is intended for the store listing:
 It holds because throughput tiers are gated to Wi-Fi by default. If you change
 a default and that test fails, the fix is the default, not the test.
 
+## What is here
+
+`:shared` (all tested):
+- `core/` — models, `Stats`, `StabilityScore`, `DropDetector`, `Format`
+- `probe/` — `Transport` interface, `TierPolicy`, `ProbeEngine`, `DataBudget`,
+  `SweepPlan`/`SweepRunner`/`SweepVerdict`, `MonitorCoordinator`
+- `report/` — `ReportBuilder`, `ReportSchedule`
+- `chart/` — `AxisTicks` (the fiddly tick-collision math, tested rather than
+  eyeballed inside a draw block)
+- `data/` — `MonitorStore`, the persistence contract
+
+`androidApp` (uncompiled):
+- Room schema + `RoomMonitorStore` implementing `MonitorStore`
+- `KtorTransport` (OkHttp engine)
+- `ProbeWorker` (WorkManager), `ReportWorker` (report + notification),
+  `BootReceiver`
+- Compose dashboard, `DashboardViewModel`, chart port in `ui/Charts.kt`
+
 ## Not built yet
 
-- Room persistence — `MonitorRepository` is referenced by `ProbeWorker` but not
-  written. It is the next thing to do, and the shape it must satisfy is fully
-  determined by `ProbeEngine.CycleInput` / `CycleOutput`.
-- Compose UI, including the chart port from `index.html`
-- `THROUGHPUT_FULL` — the sweep ladder and WebSocket stream test. The tier
-  exists and is selected correctly; it currently runs the light measurement.
-  Ktor supports WebSocket on both platforms, so the existing protocol carries
-  over unchanged.
+- **`THROUGHPUT_FULL` is selected but not implemented.** `TierPolicy` returns it
+  correctly and `SweepRunner` exists and is tested, but `ProbeEngine` still runs
+  the *light* measurement for that tier — the sweep and the WebSocket stream
+  test are not wired into the cycle yet. Wiring them is the next real task.
+- Settings UI. `ReportWorker` hard-codes `ReportPeriod.WEEKLY` (marked `TODO`);
+  the config is persisted and editable in code but has no screen.
 - Everything iOS.
 
 ## Next step
 
-Phase 0's real question is not whether this code works — it is whether
-`WorkManager` actually fires overnight under OEM battery management. Test on a
-**physical Samsung or Xiaomi**; emulators do not reproduce the aggressive
-battery killers that are the single biggest risk to the premise.
+Two things, in order:
+
+1. **Open it in Android Studio and make it compile.** It never has. Expect
+   import and dependency fixes; the architecture is what to review, not the
+   syntax.
+2. **Then the question that actually matters:** does `WorkManager` fire
+   overnight under OEM battery management? Test on a **physical Samsung or
+   Xiaomi** — emulators do not reproduce the aggressive battery killers that
+   are the single biggest risk to this whole premise. No amount of passing unit
+   tests answers that one.

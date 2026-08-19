@@ -1,0 +1,150 @@
+package de.sevenapp.monitor.android.ui
+
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.unit.dp
+import de.sevenapp.monitor.chart.AxisTicks
+import de.sevenapp.monitor.core.PingSample
+import kotlin.math.max
+
+/**
+ * The chart port from index.html.
+ *
+ * The drawing translates fairly directly from the 2D canvas API to DrawScope;
+ * the fiddly part — min/avg/max tick placement with collision avoidance — lives
+ * in :shared as [AxisTicks] where it is unit-tested, rather than being
+ * eyeballed inside a draw block.
+ */
+
+private val DownBlue = Color(0xFF3B82F6)
+private val UpAmber = Color(0xFFF59E0B)
+private val FailRed = Color(0xFFF87171)
+private val AxisGrey = Color(0xFF888888)
+private val TickGrey = Color(0xFF666666)
+
+@Composable
+fun LatencyChart(
+    samples: List<PingSample>,
+    modifier: Modifier = Modifier,
+    heightDp: Int = 120,
+) {
+    Box(modifier.fillMaxWidth().height(heightDp.dp)) {
+        Canvas(Modifier.fillMaxWidth().height(heightDp.dp)) {
+            if (samples.isEmpty()) return@Canvas
+
+            val padding = 4f
+            val plotH = size.height - padding * 2
+            val plotW = size.width - padding * 2
+            val rtts = samples.mapNotNull { it.rttMs }
+            val maxRtt = max(20.0, rtts.maxOrNull() ?: 20.0)
+
+            val barW = max(1f, (plotW / samples.size) - 1f)
+
+            samples.forEachIndexed { i, sample ->
+                val x = padding + i * (plotW / samples.size)
+                if (sample.rttMs == null) {
+                    // A failed probe is a short red tick at the floor, not a
+                    // zero-height bar — "no answer" must not read as
+                    // "measured near-zero latency".
+                    drawRect(FailRed, Offset(x, padding + plotH - 4f), androidx.compose.ui.geometry.Size(barW, 4f))
+                } else {
+                    val h = max(1f, ((sample.rttMs!! / maxRtt) * plotH).toFloat())
+                    drawRect(DownBlue.copy(alpha = 0.7f), Offset(x, padding + plotH - h), androidx.compose.ui.geometry.Size(barW, h))
+                }
+            }
+
+            drawAxisTicks(
+                values = rtts,
+                toY = { v -> (padding + plotH - (v / maxRtt) * plotH).toFloat() },
+                padding = padding,
+                plotHeight = plotH,
+                label = { "${it.toInt()}ms" },
+            )
+        }
+    }
+}
+
+@Composable
+fun ThroughputBars(
+    values: List<Double?>,
+    upload: Boolean,
+    modifier: Modifier = Modifier,
+    heightDp: Int = 100,
+) {
+    Box(modifier.fillMaxWidth().height(heightDp.dp)) {
+        Canvas(Modifier.fillMaxWidth().height(heightDp.dp)) {
+            if (values.isEmpty()) return@Canvas
+
+            val padding = 4f
+            val plotH = size.height - padding * 2
+            val plotW = size.width - padding * 2
+            val present = values.filterNotNull()
+            if (present.isEmpty()) return@Canvas
+            val maxV = max(1.0, present.max())
+            val barW = max(1f, (plotW / values.size) - 2f)
+
+            values.forEachIndexed { i, v ->
+                // A failed check leaves a gap, not a zero bar — zero would
+                // misleadingly imply "measured zero throughput".
+                if (v == null) return@forEachIndexed
+                val x = padding + i * (plotW / values.size)
+                val h = max(1f, ((v / maxV) * plotH).toFloat())
+                drawRect(
+                    if (upload) UpAmber else DownBlue,
+                    Offset(x, padding + plotH - h),
+                    androidx.compose.ui.geometry.Size(barW, h),
+                )
+            }
+
+            drawAxisTicks(
+                values = present,
+                toY = { v -> (padding + plotH - (v / maxV) * plotH).toFloat() },
+                padding = padding,
+                plotHeight = plotH,
+                label = { if (it >= 10) "${it.toInt()} Mbps" else "${(it * 10).toInt() / 10.0} Mbps" },
+            )
+        }
+    }
+}
+
+private fun DrawScope.drawAxisTicks(
+    values: List<Double>,
+    toY: (Double) -> Float,
+    padding: Float,
+    plotHeight: Float,
+    label: (Double) -> String,
+) {
+    val ticks = AxisTicks.compute(values, toY)
+    if (ticks.isEmpty()) return
+
+    val paint = android.graphics.Paint().apply {
+        color = android.graphics.Color.rgb(136, 136, 136)
+        textSize = 9.dp.toPx()
+        textAlign = android.graphics.Paint.Align.RIGHT
+        isAntiAlias = true
+    }
+
+    ticks.forEach { tick ->
+        drawLine(
+            color = TickGrey,
+            start = Offset(size.width - padding - 3f, tick.y),
+            end = Offset(size.width - padding, tick.y),
+            strokeWidth = 1f,
+        )
+        val y = AxisTicks.labelY(tick.y, padding, plotHeight)
+        drawContext.canvas.nativeCanvas.drawText(
+            label(tick.value),
+            size.width - padding - 5f,
+            y + paint.textSize / 3f,
+            paint,
+        )
+    }
+}
