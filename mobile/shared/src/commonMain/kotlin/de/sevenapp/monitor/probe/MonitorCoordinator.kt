@@ -42,7 +42,10 @@ class MonitorCoordinator(
         forceSpeedTest: Boolean = false,
     ): ProbeEngine.CycleOutput {
         val config = store.loadConfig().let {
-            if (forceSpeedTest) it.copy(throughputEveryNCycles = 1) else it
+            // Automatic throughput is run by the platform foreground-style
+            // stream/sweep runner. The old one-shot HTTP payload path is no
+            // longer a third, competing kind of test.
+            if (forceSpeedTest) it.copy(throughputEveryNCycles = 1) else it.copy(throughputEveryNCycles = 0)
         }
         val dropState = store.loadDropState()
 

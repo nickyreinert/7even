@@ -14,6 +14,7 @@ import androidx.work.WorkerParameters
 import de.sevenapp.monitor.android.billing.EntitlementRepository
 import de.sevenapp.monitor.android.data.RoomMonitorStore
 import de.sevenapp.monitor.android.net.KtorTransport
+import de.sevenapp.monitor.android.livetest.LiveTestRunner
 import de.sevenapp.monitor.core.Clock
 import de.sevenapp.monitor.core.NetworkType
 import de.sevenapp.monitor.entitlement.FeatureGate
@@ -52,6 +53,7 @@ class ProbeWorker(
         }
 
         val store = RoomMonitorStore.get(applicationContext)
+        val deviceState = readDeviceState(applicationContext)
         val coordinator = MonitorCoordinator(
             store = store,
             engine = ProbeEngine(KtorTransport(), Clock { System.currentTimeMillis() }),
@@ -62,7 +64,18 @@ class ProbeWorker(
         )
 
         return try {
-            coordinator.runCycle(readDeviceState(applicationContext))
+            coordinator.runCycle(deviceState)
+            val config = store.loadConfig()
+            if (config.automaticStreamEnabled || config.automaticSweepEnabled) {
+                LiveTestRunner(
+                    context = applicationContext,
+                    store = store,
+                    probeConfig = config,
+                    fallbackNetworkType = deviceState.networkType,
+                    runStream = config.automaticStreamEnabled,
+                    runSweep = config.automaticSweepEnabled,
+                ).runSession { }
+            }
             Result.success()
         } catch (t: Throwable) {
             // Retry, not failure: Result.failure() would stop the periodic

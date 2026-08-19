@@ -29,8 +29,8 @@ data class SettingsState(
     val monitoringEnabled: Boolean = false,
     val intervalMinutes: Int = 15,
     val monitoringNetworks: Set<NetworkType> = setOf(NetworkType.WIFI, NetworkType.CELLULAR),
-    val throughputNetworks: Set<NetworkType> = emptySet(),
-    val fullSweepRequiresCharging: Boolean = true,
+    val automaticStreamEnabled: Boolean = false,
+    val automaticSweepEnabled: Boolean = false,
     val traceUrl: String = "",
     val downUrlTemplate: String = "",
     val upUrl: String = "",
@@ -70,8 +70,8 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             monitoringEnabled = RoomMonitorStore.isMonitoringEnabled(app),
             intervalMinutes = config.cycleIntervalMinutes,
             monitoringNetworks = config.monitoringNetworks,
-            throughputNetworks = config.throughputLightNetworks,
-            fullSweepRequiresCharging = config.fullSweepRequiresCharging,
+            automaticStreamEnabled = config.automaticStreamEnabled,
+            automaticSweepEnabled = config.automaticSweepEnabled,
             traceUrl = config.traceUrl,
             downUrlTemplate = config.downUrlTemplate,
             upUrl = config.upUrl,
@@ -163,17 +163,13 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         refresh()
     }
 
-    fun setCellularThroughput(allowed: Boolean) = viewModelScope.launch {
-        val config = store.loadConfig()
-        val networks = config.throughputLightNetworks.toMutableSet().apply {
-            if (allowed) add(NetworkType.CELLULAR) else remove(NetworkType.CELLULAR)
-        }
-        store.saveConfig(config.copy(throughputLightNetworks = networks))
+    fun setAutomaticStream(enabled: Boolean) = viewModelScope.launch {
+        store.saveConfig(store.loadConfig().copy(automaticStreamEnabled = enabled))
         refresh()
     }
 
-    fun setFullSweepRequiresCharging(required: Boolean) = viewModelScope.launch {
-        store.saveConfig(store.loadConfig().copy(fullSweepRequiresCharging = required))
+    fun setAutomaticSweep(enabled: Boolean) = viewModelScope.launch {
+        store.saveConfig(store.loadConfig().copy(automaticSweepEnabled = enabled))
         refresh()
     }
 

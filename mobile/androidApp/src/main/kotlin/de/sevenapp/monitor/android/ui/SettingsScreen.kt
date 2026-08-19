@@ -127,34 +127,25 @@ fun SettingsScreen(
         }
 
         item {
-            SettingsCard("Speed tests") {
+            SettingsCard("Automatic tests") {
                 Text(
-                    "Latency is measured every cycle and costs almost nothing. " +
-                        "Speed tests move real data, so they are limited by default.",
+                    "Ping runs on every automatic cycle. Choose whether automatic cycles also run the same sustained stream and/or size sweep used by a manual test.",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 HorizontalDivider(Modifier.padding(vertical = 8.dp))
 
                 CheckRow(
-                    label = "Allow speed tests on mobile data",
-                    checked = NetworkType.CELLULAR in state.throughputNetworks,
-                    enabled = state.tier == Tier.PRO,
-                    onCheckedChange = viewModel::setCellularThroughput,
+                    label = "Run continuous download/upload stream",
+                    checked = state.automaticStreamEnabled,
+                    enabled = true,
+                    onCheckedChange = viewModel::setAutomaticStream,
                 )
                 CheckRow(
-                    label = "Full sweeps only while charging",
-                    checked = state.fullSweepRequiresCharging,
-                    enabled = state.tier == Tier.PRO,
-                    onCheckedChange = viewModel::setFullSweepRequiresCharging,
+                    label = "Run upload/download size sweep",
+                    checked = state.automaticSweepEnabled,
+                    enabled = true,
+                    onCheckedChange = viewModel::setAutomaticSweep,
                 )
-            }
-        }
-
-        item {
-            SettingsCard("Background check payloads") {
-                Text("These are the small HTTP download/upload payloads used by automatic background checks. They do not control the live stream or the size sweep below.", style = MaterialTheme.typography.bodySmall)
-                MeasurementSizes("Use Wi-Fi", NetworkType.WIFI, NetworkType.WIFI in state.monitoringNetworks, state.wifiMeasurementSizes, viewModel)
-                MeasurementSizes("Use mobile data", NetworkType.CELLULAR, NetworkType.CELLULAR in state.monitoringNetworks, state.cellularMeasurementSizes, viewModel)
             }
         }
 

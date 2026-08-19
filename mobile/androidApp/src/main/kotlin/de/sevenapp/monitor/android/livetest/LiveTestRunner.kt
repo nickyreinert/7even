@@ -44,12 +44,14 @@ class LiveTestRunner(
     private val probeConfig: ProbeConfig,
     /** Used only when [ProbeConfig.preferredTestNetwork] is [NetworkPreference.AUTO]. */
     private val fallbackNetworkType: NetworkType,
+    private val runStream: Boolean = true,
+    private val runSweep: Boolean = probeConfig.liveTestSweepEnabled,
     private val clock: Clock = Clock { System.currentTimeMillis() },
 ) {
 
     private val liveConfig = LiveTestConfig(
         minDurationMs = probeConfig.liveTestMinDurationMs,
-        sweepEnabled = probeConfig.liveTestSweepEnabled,
+        sweepEnabled = runSweep,
         sweepSteps = probeConfig.liveTestSweepSteps,
     )
 
@@ -62,16 +64,20 @@ class LiveTestRunner(
     suspend fun runSession(onSample: (LiveSample) -> Unit) {
         NetworkBinder.withNetwork(context, probeConfig.preferredTestNetwork) { network ->
             val httpTransport = KtorTransport(KtorTransport.defaultClient(network))
-            val ws = WsLiveTestClient(probeConfig.wsUrl, network)
+            val ws = if (runStream) WsLiveTestClient(probeConfig.wsUrl, network) else null
 
             coroutineScope {
                 val pingJob = launch { runPingLoop(httpTransport, onSample) }
                 try {
-                    ws.connect(NativeAuth.header())
-                    runStreamAndSweepLoop(ws, httpTransport, onSample)
+                    if (ws != null) {
+                        ws.connect(NativeAuth.header())
+                        runStreamAndSweepLoop(ws, httpTransport, onSample)
+                    } else if (runSweep) {
+                        runSweepOnly(httpTransport, onSample)
+                    }
                 } finally {
                     pingJob.cancel()
-                    ws.close()
+                    ws?.close()
                 }
             }
         }
@@ -127,6 +133,17 @@ class LiveTestRunner(
                 onSample(LiveSample.Sweep(clock.nowEpochMs(), SweepRunner.Direction.UP, upSweep))
             }
         } while (!LiveTestSchedule.isSessionDone(sessionStart, clock.nowEpochMs(), liveConfig.minDurationMs))
+    }
+
+    private suspend fun runSweepOnly(transport: KtorTransport, onSample: (LiveSample) -> Unit) {
+        val runner = SweepRunner(transport)
+        val config = probeConfig.copy(transferTimeoutMs = liveConfig.sweepTimeoutMs)
+        val down = runner.run(liveConfig.sweepSteps, SweepRunner.Direction.DOWN, config)
+        store.saveLatestSweep(SweepRunner.Direction.DOWN, down)
+        onSample(LiveSample.Sweep(clock.nowEpochMs(), SweepRunner.Direction.DOWN, down))
+        val up = runner.run(liveConfig.sweepSteps, SweepRunner.Direction.UP, config)
+        store.saveLatestSweep(SweepRunner.Direction.UP, up)
+        onSample(LiveSample.Sweep(clock.nowEpochMs(), SweepRunner.Direction.UP, up))
     }
 
     private suspend fun persistEpisode(down: WsLiveTestClient.EpisodeResult, up: WsLiveTestClient.EpisodeResult) {
