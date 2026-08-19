@@ -4,6 +4,9 @@ import de.sevenapp.monitor.core.DropEvent
 import de.sevenapp.monitor.core.PingSample
 import de.sevenapp.monitor.core.ThroughputSample
 import de.sevenapp.monitor.probe.ProbeConfig
+import de.sevenapp.monitor.probe.LatestSweeps
+import de.sevenapp.monitor.probe.SweepResult
+import de.sevenapp.monitor.probe.SweepRunner
 
 /**
  * Everything the engine needs to persist, expressed as an interface in
@@ -18,6 +21,10 @@ interface MonitorStore {
 
     suspend fun loadConfig(): ProbeConfig
     suspend fun saveConfig(config: ProbeConfig)
+
+    /** Foreground size-sweep results are retained separately from history charts. */
+    suspend fun loadLatestSweeps(): LatestSweeps = LatestSweeps()
+    suspend fun saveLatestSweep(direction: SweepRunner.Direction, results: List<SweepResult>) {}
 
     /** Monotonic counter driving tier selection; must survive process death. */
     suspend fun nextCycleIndex(): Long

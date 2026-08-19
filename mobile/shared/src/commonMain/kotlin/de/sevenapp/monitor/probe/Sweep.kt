@@ -18,6 +18,12 @@ data class SweepResult(
     val ok: Boolean get() = passCount == trials
 }
 
+/** Latest foreground sweep retained for the Monitor screen after an app restart. */
+data class LatestSweeps(
+    val download: List<SweepResult> = emptyList(),
+    val upload: List<SweepResult> = emptyList(),
+)
+
 /**
  * The chunk-size sweep asks a different question from the throughput test:
  * not "how fast" but "does behaviour change with transfer size".

@@ -77,6 +77,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
         val monthStart = now - 30L * 24 * 60 * 60 * 1000
 
         val config = store.loadConfig()
+        val latestSweeps = store.loadLatestSweeps()
         val pings = store.pingsBetween(dayAgo, now)
         val rtts = pings.mapNotNull { it.rttMs }
         val failures = pings.count { !it.ok }
@@ -93,6 +94,8 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             lightUpBytes = config.lightUpBytes,
             recentPings = store.recentPings(120).reversed(), // oldest-first for the chart
             recentThroughput = store.throughputBetween(dayAgo, now).takeLast(8),
+            latestDownloadSweep = latestSweeps.download,
+            latestUploadSweep = latestSweeps.upload,
             latencyMedianMs = Stats.median(rtts),
             jitterMs = if (rtts.size >= 2) Stats.stdDev(rtts) else null,
             lossPct = lossPct,

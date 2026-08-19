@@ -137,8 +137,18 @@ fun DashboardScreen(
                     val hasLatestTest = state.manualTestRunning || state.livePingMs.isNotEmpty() ||
                         state.liveDownloadMbps.isNotEmpty() || state.liveUploadMbps.isNotEmpty()
                     if (!hasLatestTest) {
-                        Text("Ping — latest results (ms)", style = MaterialTheme.typography.labelMedium)
+                        Text("Latest completed test", style = MaterialTheme.typography.labelMedium)
+                        Text("Ping (ms)", style = MaterialTheme.typography.labelMedium)
                         LatencyChart(state.recentPings)
+                        Text("Download (Mbps)", style = MaterialTheme.typography.labelMedium)
+                        MetricLineChart(state.recentThroughput.map { it.downMbps }, suffix = " Mbps", heightDp = 90)
+                        Text("Upload (Mbps)", style = MaterialTheme.typography.labelMedium)
+                        MetricLineChart(
+                            state.recentThroughput.map { it.upMbps },
+                            color = androidx.compose.ui.graphics.Color(0xFFF59E0B),
+                            suffix = " Mbps",
+                            heightDp = 90,
+                        )
                     } else {
                         Text(
                             if (state.manualTestRunning) "Live — current test" else "Latest test result",

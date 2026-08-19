@@ -18,6 +18,9 @@ import de.sevenapp.monitor.core.ThroughputSample
 import de.sevenapp.monitor.data.MonitorStore
 import de.sevenapp.monitor.probe.ProbeConfig
 import de.sevenapp.monitor.probe.SweepPlan
+import de.sevenapp.monitor.probe.LatestSweeps
+import de.sevenapp.monitor.probe.SweepResult
+import de.sevenapp.monitor.probe.SweepRunner
 import de.sevenapp.monitor.report.ReportPeriod
 import kotlinx.coroutines.flow.first
 
@@ -90,6 +93,23 @@ class RoomMonitorStore(
             p[KEY_UP_URL] = config.upUrl
             p[KEY_STREAM_URL] = config.streamUrl
             p[KEY_USE_WS_STREAM] = config.useWebSocketStream
+        }
+    }
+
+    override suspend fun loadLatestSweeps(): LatestSweeps {
+        val prefs = context.settings.data.first()
+        return LatestSweeps(
+            download = prefs[KEY_LATEST_DOWN_SWEEP]?.decodeSweep() ?: emptyList(),
+            upload = prefs[KEY_LATEST_UP_SWEEP]?.decodeSweep() ?: emptyList(),
+        )
+    }
+
+    override suspend fun saveLatestSweep(direction: SweepRunner.Direction, results: List<SweepResult>) {
+        context.settings.edit { prefs ->
+            when (direction) {
+                SweepRunner.Direction.DOWN -> prefs[KEY_LATEST_DOWN_SWEEP] = results.encodeSweep()
+                SweepRunner.Direction.UP -> prefs[KEY_LATEST_UP_SWEEP] = results.encodeSweep()
+            }
         }
     }
 
@@ -204,6 +224,20 @@ class RoomMonitorStore(
 
     private fun Set<String>.toSizes(): Set<Int> = mapNotNull { it.toIntOrNull() }.toSet()
 
+    private fun List<SweepResult>.encodeSweep(): String = joinToString(";") { result ->
+        "${result.bytes},${result.trials},${result.passCount},${result.trialOutcomes.joinToString("") { if (it) "1" else "0" }}"
+    }
+
+    private fun String.decodeSweep(): List<SweepResult> = split(';').mapNotNull { encoded ->
+        val fields = encoded.split(',')
+        val bytes = fields.getOrNull(0)?.toIntOrNull() ?: return@mapNotNull null
+        val trials = fields.getOrNull(1)?.toIntOrNull() ?: return@mapNotNull null
+        val passCount = fields.getOrNull(2)?.toIntOrNull() ?: return@mapNotNull null
+        val outcomes = fields.getOrNull(3)?.map { it == '1' } ?: emptyList()
+        if (bytes <= 0 || trials <= 0 || outcomes.size != trials) return@mapNotNull null
+        SweepResult(bytes, trials, passCount, avgDurationMs = null, lastError = null, trialOutcomes = outcomes)
+    }
+
     companion object {
         private val KEY_INTERVAL = intPreferencesKey("cycle_interval_minutes")
         private val KEY_MONITORING_NETWORKS = stringSetPreferencesKey("monitoring_networks")
@@ -215,6 +249,8 @@ class RoomMonitorStore(
         private val KEY_LIVE_DURATION = longPreferencesKey("live_test_min_duration_ms")
         private val KEY_LIVE_SWEEP = booleanPreferencesKey("live_test_sweep_enabled")
         private val KEY_LIVE_SWEEP_PLAN = stringPreferencesKey("live_test_sweep_plan")
+        private val KEY_LATEST_DOWN_SWEEP = stringPreferencesKey("latest_down_sweep")
+        private val KEY_LATEST_UP_SWEEP = stringPreferencesKey("latest_up_sweep")
         private val KEY_PREFERRED_NETWORK = stringPreferencesKey("preferred_test_network")
         private val KEY_LIGHT_DOWN = intPreferencesKey("light_down_bytes")
         private val KEY_LIGHT_UP = intPreferencesKey("light_up_bytes")
