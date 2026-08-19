@@ -1,6 +1,7 @@
 package de.sevenapp.monitor.android.ui
 
 import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -35,10 +36,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -63,9 +67,13 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = SevenColors) {
                 var screen by rememberSaveable { mutableStateOf(Screen.MAIN) }
+                val context = LocalContext.current
+                var ssidPermissionGranted by remember {
+                    mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED)
+                }
                 val ssidPermission = androidx.activity.compose.rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission(),
-                ) { }
+                ) { granted -> ssidPermissionGranted = granted }
                 BackHandler(enabled = screen == Screen.HELP) { screen = Screen.MAIN }
                 Scaffold(
                     topBar = {
@@ -99,7 +107,7 @@ class MainActivity : ComponentActivity() {
                         Screen.MAIN -> DashboardScreen(contentModifier)
                         Screen.HISTORY -> HistoryScreen(contentModifier, onRequestSsidPermission = {
                             ssidPermission.launch(Manifest.permission.ACCESS_FINE_LOCATION)
-                        })
+                        }, ssidPermissionGranted = ssidPermissionGranted)
                         Screen.SETTINGS -> SettingsScreen(contentModifier)
                         Screen.HELP -> HelpScreen(Modifier.padding(padding), onBack = { screen = Screen.MAIN })
                     }
@@ -301,6 +309,7 @@ private fun MetricCard(label: String, value: String, modifier: Modifier) {
 private fun HistoryScreen(
     modifier: Modifier,
     onRequestSsidPermission: () -> Unit,
+    ssidPermissionGranted: Boolean,
     viewModel: HistoryViewModel = androidx.lifecycle.viewmodel.compose.viewModel(),
 ) {
     val state by viewModel.state.collectAsState()
@@ -326,8 +335,12 @@ private fun HistoryScreen(
             if (state.connectionFilter == NetworkType.WIFI) {
                 Text("Wi-Fi network", style = MaterialTheme.typography.labelMedium)
                 if (state.ssids.isEmpty()) {
-                    TextButton(onClick = onRequestSsidPermission) { Text("Allow Wi-Fi name access") }
-                    Text("New Wi-Fi checks can be filtered by network after permission is allowed.", style = MaterialTheme.typography.bodySmall)
+                    if (ssidPermissionGranted) {
+                        Text("No named Wi-Fi checks recorded yet. Run a new Wi-Fi measurement to add this network.", style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        TextButton(onClick = onRequestSsidPermission) { Text("Allow Wi-Fi name access") }
+                        Text("New Wi-Fi checks can be filtered by network after permission is allowed.", style = MaterialTheme.typography.bodySmall)
+                    }
                 } else {
                     Box {
                         OutlinedButton(onClick = { ssidMenuOpen = true }, modifier = Modifier.fillMaxWidth()) {
