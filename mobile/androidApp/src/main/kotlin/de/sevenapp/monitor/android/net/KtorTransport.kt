@@ -47,9 +47,6 @@ class KtorTransport(
             }
         }
         val res = response!!
-        // Drain the body so the timing covers a complete round trip rather than
-        // just the response headers.
-        res.bodyAsChannel().discardRemaining()
         if (res.status.isSuccess()) {
             TransportResult.Ok(nanos / 1_000_000.0)
         } else {

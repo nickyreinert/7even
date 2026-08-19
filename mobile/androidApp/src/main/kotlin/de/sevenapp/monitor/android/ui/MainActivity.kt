@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.item
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -43,18 +42,10 @@ class MainActivity : ComponentActivity() {
                 Scaffold(
                     bottomBar = {
                         androidx.compose.material3.NavigationBar {
-                            androidx.compose.material3.NavigationBarItem(
-                                selected = screen == Screen.DASHBOARD,
-                                onClick = { screen = Screen.DASHBOARD },
-                                icon = {},
-                                label = { Text("Monitor") },
-                            )
-                            androidx.compose.material3.NavigationBarItem(
-                                selected = screen == Screen.SETTINGS,
-                                onClick = { screen = Screen.SETTINGS },
-                                icon = {},
-                                label = { Text("Settings") },
-                            )
+                            androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth()) {
+                                androidx.compose.material3.TextButton({ screen = Screen.DASHBOARD }, Modifier.weight(1f)) { Text("Monitor") }
+                                androidx.compose.material3.TextButton({ screen = Screen.SETTINGS }, Modifier.weight(1f)) { Text("Settings") }
+                            }
                         }
                     },
                 ) { padding ->

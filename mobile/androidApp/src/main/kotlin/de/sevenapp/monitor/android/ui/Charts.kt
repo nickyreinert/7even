@@ -173,7 +173,8 @@ fun LiveRateChart(
                 if (ping.rttMs == null) {
                     drawRect(FailRed, Offset(x, rateH + padding + pingH - 4f), androidx.compose.ui.geometry.Size(barW, 4f))
                 } else {
-                    val h = max(1f, ((ping.rttMs / maxRtt) * pingH).toFloat())
+                    val rttMs = ping.rttMs ?: return@forEach
+                    val h = max(1f, ((rttMs / maxRtt) * pingH).toFloat())
                     drawRect(AxisGrey.copy(alpha = 0.8f), Offset(x, rateH + padding + pingH - h), androidx.compose.ui.geometry.Size(barW, h))
                 }
             }
