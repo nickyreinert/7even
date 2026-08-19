@@ -51,17 +51,17 @@ class LiveTestRunner(
     private val clock: Clock = Clock { System.currentTimeMillis() },
 ) {
 
-    private val liveConfig = LiveTestConfig(
-        minDurationMs = probeConfig.liveTestMinDurationMs,
-        sweepEnabled = runSweep,
-        sweepSteps = probeConfig.liveTestSweepSteps,
-    )
-
     private val effectiveNetworkType: NetworkType = when (probeConfig.preferredTestNetwork) {
         NetworkPreference.WIFI -> NetworkType.WIFI
         NetworkPreference.CELLULAR -> NetworkType.CELLULAR
         NetworkPreference.AUTO -> fallbackNetworkType
     }
+
+    private val liveConfig = LiveTestConfig(
+        minDurationMs = probeConfig.liveTestMinDurationMs,
+        sweepEnabled = runSweep,
+        sweepSteps = if (effectiveNetworkType == NetworkType.CELLULAR) probeConfig.mobileLiveTestSweepSteps else probeConfig.wifiLiveTestSweepSteps,
+    )
 
     suspend fun runSession(onSample: (LiveSample) -> Unit) {
         NetworkBinder.withNetwork(context, probeConfig.preferredTestNetwork) { network ->

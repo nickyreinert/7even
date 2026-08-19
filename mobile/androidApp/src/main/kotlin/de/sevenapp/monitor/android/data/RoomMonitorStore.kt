@@ -60,6 +60,8 @@ class RoomMonitorStore(
             liveTestMinDurationMs = prefs[KEY_LIVE_DURATION] ?: defaults.liveTestMinDurationMs,
             liveTestSweepEnabled = prefs[KEY_LIVE_SWEEP] ?: defaults.liveTestSweepEnabled,
             liveTestSweepSteps = prefs[KEY_LIVE_SWEEP_PLAN]?.let(SweepPlan::parse) ?: defaults.liveTestSweepSteps,
+            wifiLiveTestSweepSteps = prefs[KEY_WIFI_LIVE_SWEEP_PLAN]?.let(SweepPlan::parse) ?: defaults.wifiLiveTestSweepSteps,
+            mobileLiveTestSweepSteps = prefs[KEY_MOBILE_LIVE_SWEEP_PLAN]?.let(SweepPlan::parse) ?: defaults.mobileLiveTestSweepSteps,
             automaticStreamEnabled = prefs[KEY_AUTO_STREAM] ?: defaults.automaticStreamEnabled,
             automaticSweepEnabled = prefs[KEY_AUTO_SWEEP] ?: defaults.automaticSweepEnabled,
             automaticRequiresCharging = prefs[KEY_AUTO_CHARGING] ?: defaults.automaticRequiresCharging,
@@ -92,6 +94,8 @@ class RoomMonitorStore(
             p[KEY_LIVE_DURATION] = config.liveTestMinDurationMs
             p[KEY_LIVE_SWEEP] = config.liveTestSweepEnabled
             p[KEY_LIVE_SWEEP_PLAN] = SweepPlan.format(config.liveTestSweepSteps)
+            p[KEY_WIFI_LIVE_SWEEP_PLAN] = SweepPlan.format(config.wifiLiveTestSweepSteps)
+            p[KEY_MOBILE_LIVE_SWEEP_PLAN] = SweepPlan.format(config.mobileLiveTestSweepSteps)
             p[KEY_AUTO_STREAM] = config.automaticStreamEnabled
             p[KEY_AUTO_SWEEP] = config.automaticSweepEnabled
             p[KEY_AUTO_CHARGING] = config.automaticRequiresCharging
@@ -267,6 +271,8 @@ class RoomMonitorStore(
         private val KEY_LIVE_DURATION = longPreferencesKey("live_test_min_duration_ms")
         private val KEY_LIVE_SWEEP = booleanPreferencesKey("live_test_sweep_enabled")
         private val KEY_LIVE_SWEEP_PLAN = stringPreferencesKey("live_test_sweep_plan")
+        private val KEY_WIFI_LIVE_SWEEP_PLAN = stringPreferencesKey("wifi_live_test_sweep_plan")
+        private val KEY_MOBILE_LIVE_SWEEP_PLAN = stringPreferencesKey("mobile_live_test_sweep_plan")
         private val KEY_AUTO_STREAM = booleanPreferencesKey("automatic_stream_enabled")
         private val KEY_AUTO_SWEEP = booleanPreferencesKey("automatic_sweep_enabled")
         private val KEY_AUTO_CHARGING = booleanPreferencesKey("automatic_requires_charging")

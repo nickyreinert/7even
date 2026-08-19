@@ -35,6 +35,11 @@ data class LatestSweeps(
  * per-rung.
  */
 object SweepPlan {
+    /** Conservative default for cellular: deliberately no multi-megabyte rung. */
+    val MOBILE_DEFAULT: List<SweepStep> = listOf(
+        SweepStep(16_000, 3), SweepStep(32_000, 3), SweepStep(64_000, 2),
+        SweepStep(256_000, 2), SweepStep(1_000_000, 1),
+    )
 
     /**
      * Default ladder, matching the web app: small sizes get more trials because

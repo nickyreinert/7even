@@ -56,6 +56,8 @@ data class ProbeConfig(
     val liveTestSweepEnabled: Boolean = true,
     /** Packet sizes and repeats for the foreground send/receive reliability sweep. */
     val liveTestSweepSteps: List<SweepStep> = SweepPlan.DEFAULT,
+    val wifiLiveTestSweepSteps: List<SweepStep> = SweepPlan.DEFAULT,
+    val mobileLiveTestSweepSteps: List<SweepStep> = SweepPlan.MOBILE_DEFAULT,
     /** Expensive tests explicitly selected for an automatic WorkManager cycle. */
     val automaticStreamEnabled: Boolean = false,
     val automaticSweepEnabled: Boolean = false,

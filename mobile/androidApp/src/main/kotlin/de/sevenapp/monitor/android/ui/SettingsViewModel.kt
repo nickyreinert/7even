@@ -40,7 +40,8 @@ data class SettingsState(
     val streamUrl: String = "",
     val useWebSocketStream: Boolean = false,
     val liveTestSweepEnabled: Boolean = true,
-    val sweepSteps: List<SweepStep> = SweepPlan.DEFAULT,
+    val wifiSweepSteps: List<SweepStep> = SweepPlan.DEFAULT,
+    val mobileSweepSteps: List<SweepStep> = SweepPlan.MOBILE_DEFAULT,
     val wifiMeasurementSizes: Set<Int> = emptySet(),
     val cellularMeasurementSizes: Set<Int> = emptySet(),
     val reportPeriod: ReportPeriod = ReportPeriod.WEEKLY,
@@ -84,7 +85,8 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             streamUrl = config.streamUrl,
             useWebSocketStream = config.useWebSocketStream,
             liveTestSweepEnabled = config.liveTestSweepEnabled,
-            sweepSteps = config.liveTestSweepSteps,
+            wifiSweepSteps = config.wifiLiveTestSweepSteps,
+            mobileSweepSteps = config.mobileLiveTestSweepSteps,
             wifiMeasurementSizes = config.wifiMeasurementSizes,
             cellularMeasurementSizes = config.cellularMeasurementSizes,
             reportPeriod = RoomMonitorStore.reportPeriod(app),
@@ -203,10 +205,12 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         refresh()
     }
 
-    fun setSweepSteps(steps: List<SweepStep>) = viewModelScope.launch {
+    fun setSweepSteps(network: NetworkType, steps: List<SweepStep>) = viewModelScope.launch {
         val valid = steps.filter { it.bytes in 1..SweepPlan.MAX_BYTES && it.trials in 1..SweepPlan.MAX_TRIALS }
             .ifEmpty { SweepPlan.DEFAULT }
-        store.saveConfig(store.loadConfig().copy(liveTestSweepSteps = valid))
+        val config = store.loadConfig()
+        store.saveConfig(if (network == NetworkType.CELLULAR) config.copy(mobileLiveTestSweepSteps = valid)
+        else config.copy(wifiLiveTestSweepSteps = valid))
         refresh()
     }
 

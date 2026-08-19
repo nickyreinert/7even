@@ -31,6 +31,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -222,9 +223,12 @@ private fun dayOfWeekLabel(day: Int): String = listOf(
 
 @Composable
 private fun SweepSettingsCard(state: SettingsState, viewModel: SettingsViewModel) {
-    var rows by remember(state.sweepSteps) { mutableStateOf(state.sweepSteps.map { SweepEditorRow.from(it) }) }
+    var editMobile by rememberSaveable { mutableStateOf(false) }
+    val network = if (editMobile) NetworkType.CELLULAR else NetworkType.WIFI
+    val plan = if (editMobile) state.mobileSweepSteps else state.wifiSweepSteps
+    var rows by remember(plan) { mutableStateOf(plan.map { SweepEditorRow.from(it) }) }
     var openUnitMenuFor by remember { mutableStateOf<Int?>(null) }
-    SettingsCard("Size sweep") {
+    SettingsCard("Size sweeps by connection") {
         CheckRow(
             label = "Run send and receive size checks",
             checked = state.liveTestSweepEnabled,
@@ -232,9 +236,13 @@ private fun SweepSettingsCard(state: SettingsState, viewModel: SettingsViewModel
             onCheckedChange = viewModel::setLiveSweep,
         )
         Text(
-            "Every row sends and receives that size the requested number of times. Each try becomes one green or red block in the charts.",
+            "Set separate send/receive checks for Wi-Fi and mobile. The selected plan is used for both manual and automatic tests on that connection.",
             style = MaterialTheme.typography.bodySmall,
         )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = !editMobile, onClick = { editMobile = false }, label = { Text("Wi-Fi") })
+            FilterChip(selected = editMobile, onClick = { editMobile = true }, label = { Text("Mobile") })
+        }
         rows.forEachIndexed { index, row ->
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 OutlinedTextField(
@@ -270,10 +278,11 @@ private fun SweepSettingsCard(state: SettingsState, viewModel: SettingsViewModel
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = { rows = rows + SweepEditorRow("1", "16", "KB") }) { Text("Add row") }
-            Button(onClick = { viewModel.setSweepSteps(rows.mapNotNull { it.toStep() }) }) { Text("Save sweep") }
+            Button(onClick = { viewModel.setSweepSteps(network, rows.mapNotNull { it.toStep() }) }) { Text("Save ${if (editMobile) "mobile" else "Wi-Fi"} sweep") }
             OutlinedButton(onClick = {
-                rows = SweepPlan.DEFAULT.map { SweepEditorRow.from(it) }
-                viewModel.setSweepSteps(SweepPlan.DEFAULT)
+                val defaults = if (editMobile) SweepPlan.MOBILE_DEFAULT else SweepPlan.DEFAULT
+                rows = defaults.map { SweepEditorRow.from(it) }
+                viewModel.setSweepSteps(network, defaults)
             }) { Text("Use defaults") }
         }
     }
