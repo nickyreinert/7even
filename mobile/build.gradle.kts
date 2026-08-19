@@ -9,4 +9,11 @@
 // settings.gradle.kts's `hasAndroidSdk` gate exists to prevent.
 plugins {
     alias(libs.plugins.kotlinMultiplatform) apply false
+    // Resolve all Kotlin plugin variants once at the root. Without this,
+    // :shared can put the Kotlin plugin on the classpath before :androidApp
+    // resolves kotlin-android, leaving Gradle unable to verify its version.
+    alias(libs.plugins.kotlinAndroid) apply false
+    alias(libs.plugins.androidApplication) apply false
+    alias(libs.plugins.composeCompilerPlugin) apply false
+    alias(libs.plugins.ksp) apply false
 }
