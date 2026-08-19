@@ -47,6 +47,7 @@ class LiveTestRunner(
     private val fallbackNetworkType: NetworkType,
     private val runStream: Boolean = true,
     private val runSweep: Boolean = probeConfig.liveTestSweepEnabled,
+    private val wifiSsid: String? = null,
     private val clock: Clock = Clock { System.currentTimeMillis() },
 ) {
 
@@ -89,7 +90,7 @@ class LiveTestRunner(
             val rtt = (result as? TransportResult.Ok)?.rttMs
             val at = clock.nowEpochMs()
             onSample(LiveSample.Ping(at, rtt))
-            store.appendPings(listOf(PingSample(at, rtt, effectiveNetworkType)))
+            store.appendPings(listOf(PingSample(at, rtt, effectiveNetworkType, wifiSsid.takeIf { effectiveNetworkType == NetworkType.WIFI })))
             delay(liveConfig.pingIntervalMs)
         }
     }
@@ -184,6 +185,7 @@ class LiveTestRunner(
                     networkType = effectiveNetworkType,
                     tier = ProbeTier.THROUGHPUT_FULL,
                     partial = down is WsLiveTestClient.EpisodeResult.Failed || up is WsLiveTestClient.EpisodeResult.Failed,
+                    ssid = wifiSsid.takeIf { effectiveNetworkType == NetworkType.WIFI },
                 ),
             )
         }

@@ -22,6 +22,8 @@ data class HistoryState(
     val throughput: List<ThroughputSample> = emptyList(),
     val drops: List<DropEvent> = emptyList(),
     val connectionFilter: NetworkType? = null,
+    val ssidFilter: String? = null,
+    val ssids: List<String> = emptyList(),
     val summary: HistorySummary = HistorySummary(),
 )
 
@@ -59,12 +61,20 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
         refresh()
     }
 
+    fun setSsidFilter(ssid: String?) {
+        _state.value = _state.value.copy(ssidFilter = ssid)
+        refresh()
+    }
+
     fun refresh() = viewModelScope.launch {
         val now = System.currentTimeMillis()
         val start = now - _state.value.days * 24L * 60 * 60 * 1000
         val filter = _state.value.connectionFilter
-        val samples = store.pingsBetween(start, now).filter { filter == null || it.networkType == filter }.reversed()
-        val throughput = store.throughputBetween(start, now).filter { filter == null || it.networkType == filter }.reversed()
+        val ssidFilter = _state.value.ssidFilter
+        val allPings = store.pingsBetween(start, now)
+        val allThroughput = store.throughputBetween(start, now)
+        val samples = allPings.filter { (filter == null || it.networkType == filter) && (ssidFilter == null || it.ssid == ssidFilter) }.reversed()
+        val throughput = allThroughput.filter { (filter == null || it.networkType == filter) && (ssidFilter == null || it.ssid == ssidFilter) }.reversed()
         val drops = store.dropsOverlapping(start, now).reversed()
         val rtts = samples.mapNotNull { it.rttMs }
         val down = throughput.mapNotNull { it.downMbps }
@@ -79,6 +89,7 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
             samples = samples,
             throughput = throughput,
             drops = drops,
+            ssids = allPings.mapNotNull { it.ssid }.distinct().sorted(),
             summary = HistorySummary(
                 averageDownloadMbps = down.takeIf { it.isNotEmpty() }?.average(),
                 averageUploadMbps = up.takeIf { it.isNotEmpty() }?.average(),

@@ -3,6 +3,7 @@ package de.sevenapp.monitor.android.ui
 import android.app.Application
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -144,8 +145,9 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             LiveTestRunner(
                 context = app,
                 store = store,
-                probeConfig = config,
-                fallbackNetworkType = deviceState.networkType,
+            probeConfig = config,
+            fallbackNetworkType = deviceState.networkType,
+            wifiSsid = deviceState.ssid,
             ).runSession { sample ->
                 _state.update { current ->
                     when (sample) {
@@ -272,6 +274,10 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
         val metered = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) != true
         val charging = context.getSystemService(BatteryManager::class.java)?.isCharging == true
 
-        return DeviceState(networkType = type, isCharging = charging, isMetered = metered)
+        val ssid = if (type == NetworkType.WIFI) {
+            context.getSystemService(WifiManager::class.java)?.connectionInfo?.ssid
+                ?.removeSurrounding("\"")?.takeUnless { it == "<unknown ssid>" }
+        } else null
+        return DeviceState(networkType = type, isCharging = charging, isMetered = metered, ssid = ssid)
     }
 }

@@ -9,6 +9,8 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.room.Room
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import de.sevenapp.monitor.core.DropEvent
 import de.sevenapp.monitor.core.NetworkPreference
 import de.sevenapp.monitor.core.NetworkType
@@ -135,7 +137,7 @@ class RoomMonitorStore(
     override suspend fun appendPings(samples: List<PingSample>) {
         if (samples.isEmpty()) return
         dao.insertPings(
-            samples.map { PingEntity(atEpochMs = it.atEpochMs, rttMs = it.rttMs, networkType = it.networkType.name) },
+            samples.map { PingEntity(atEpochMs = it.atEpochMs, rttMs = it.rttMs, networkType = it.networkType.name, ssid = it.ssid) },
         )
     }
 
@@ -148,6 +150,7 @@ class RoomMonitorStore(
                 networkType = sample.networkType.name,
                 tier = sample.tier.name,
                 partial = sample.partial,
+                ssid = sample.ssid,
             ),
         )
     }
@@ -182,7 +185,7 @@ class RoomMonitorStore(
 
     override suspend fun pingsBetween(startEpochMs: Long, endEpochMs: Long): List<PingSample> =
         dao.pingsBetween(startEpochMs, endEpochMs).map {
-            PingSample(it.atEpochMs, it.rttMs, it.networkType.toNetworkType())
+            PingSample(it.atEpochMs, it.rttMs, it.networkType.toNetworkType(), it.ssid)
         }
 
     override suspend fun throughputBetween(startEpochMs: Long, endEpochMs: Long): List<ThroughputSample> =
@@ -194,6 +197,7 @@ class RoomMonitorStore(
                 networkType = it.networkType.toNetworkType(),
                 tier = runCatching { ProbeTier.valueOf(it.tier) }.getOrDefault(ProbeTier.THROUGHPUT_LIGHT),
                 partial = it.partial,
+                ssid = it.ssid,
             )
         }
 
@@ -220,7 +224,7 @@ class RoomMonitorStore(
 
     /** Recent samples for the live dashboard, newest first. */
     suspend fun recentPings(limit: Int = 200): List<PingSample> =
-        dao.recentPings(limit).map { PingSample(it.atEpochMs, it.rttMs, it.networkType.toNetworkType()) }
+        dao.recentPings(limit).map { PingSample(it.atEpochMs, it.rttMs, it.networkType.toNetworkType(), it.ssid) }
 
     private fun DropEntity.toDomain() = DropEvent(startedAtEpochMs, endedAtEpochMs)
 
@@ -292,8 +296,15 @@ class RoomMonitorStore(
                     context.applicationContext,
                     MonitorDatabase::class.java,
                     "seven-monitor.db",
-                ).build(),
+                ).addMigrations(MIGRATION_1_2).build(),
             ).also { instance = it }
+        }
+
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE ping_samples ADD COLUMN ssid TEXT")
+                db.execSQL("ALTER TABLE throughput_samples ADD COLUMN ssid TEXT")
+            }
         }
 
         suspend fun isMonitoringEnabled(context: Context): Boolean =

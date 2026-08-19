@@ -78,6 +78,7 @@ data class DeviceState(
     val networkType: NetworkType,
     val isCharging: Boolean,
     val isMetered: Boolean,
+    val ssid: String? = null,
 )
 
 /**

@@ -44,6 +44,8 @@ data class PingSample(
     val atEpochMs: Long,
     val rttMs: Double?,
     val networkType: NetworkType,
+    /** Wi-Fi name when Android location permission was granted; never recorded for mobile data. */
+    val ssid: String? = null,
 ) {
     val ok: Boolean get() = rttMs != null
 }
@@ -57,6 +59,7 @@ data class ThroughputSample(
     val tier: ProbeTier,
     /** True when the number came from a run that stalled or was cut short. */
     val partial: Boolean = false,
+    val ssid: String? = null,
 )
 
 /**

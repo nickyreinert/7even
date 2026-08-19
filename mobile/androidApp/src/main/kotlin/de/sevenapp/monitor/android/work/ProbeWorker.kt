@@ -3,6 +3,7 @@ package de.sevenapp.monitor.android.work
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import androidx.work.CoroutineWorker
 import androidx.work.Constraints
@@ -74,6 +75,7 @@ class ProbeWorker(
                     store = store,
                     probeConfig = config,
                     fallbackNetworkType = deviceState.networkType,
+                    wifiSsid = deviceState.ssid,
                     runStream = config.automaticStreamEnabled,
                     runSweep = config.automaticSweepEnabled,
                 ).runSession { }
@@ -107,7 +109,13 @@ class ProbeWorker(
 
         val charging = context.getSystemService(BatteryManager::class.java)?.isCharging == true
 
-        return DeviceState(networkType = type, isCharging = charging, isMetered = metered)
+        return DeviceState(networkType = type, isCharging = charging, isMetered = metered, ssid = context.wifiSsid(type))
+    }
+
+    private fun Context.wifiSsid(networkType: NetworkType): String? {
+        if (networkType != NetworkType.WIFI) return null
+        val value = getSystemService(WifiManager::class.java)?.connectionInfo?.ssid
+        return value?.removeSurrounding("\"")?.takeUnless { it == "<unknown ssid>" }
     }
 
     companion object {

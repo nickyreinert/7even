@@ -70,7 +70,7 @@ class ProbeEngine(
             // silently skipping: "the phone had no connection" is exactly the
             // event a connection monitor exists to capture, and dropping it
             // would make the report claim uptime it did not observe.
-            val sample = PingSample(clock.nowEpochMs(), null, input.deviceState.networkType)
+            val sample = PingSample(clock.nowEpochMs(), null, input.deviceState.networkType, input.deviceState.ssid)
             val transition = input.dropDetector.onSample(sample)
             return CycleOutput(
                 tier = null,
@@ -92,6 +92,7 @@ class ProbeEngine(
                 atEpochMs = clock.nowEpochMs(),
                 rttMs = (result as? TransportResult.Ok)?.rttMs,
                 networkType = input.deviceState.networkType,
+                ssid = input.deviceState.ssid,
             )
             pings += sample
             transitions += input.dropDetector.onSample(sample)
@@ -163,6 +164,7 @@ class ProbeEngine(
             networkType = input.deviceState.networkType,
             tier = tier,
             partial = partial,
+            ssid = input.deviceState.ssid,
         ) to moved
     }
 }

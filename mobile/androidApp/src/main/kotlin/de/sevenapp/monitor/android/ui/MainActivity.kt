@@ -1,10 +1,13 @@
 package de.sevenapp.monitor.android.ui
 
+import android.Manifest
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,6 +20,9 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
@@ -55,6 +61,9 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = SevenColors) {
                 var screen by rememberSaveable { mutableStateOf(Screen.MAIN) }
+                val ssidPermission = androidx.activity.compose.rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission(),
+                ) { }
                 BackHandler(enabled = screen == Screen.HELP) { screen = Screen.MAIN }
                 Scaffold(
                     topBar = {
@@ -75,7 +84,9 @@ class MainActivity : ComponentActivity() {
                 ) { padding ->
                     when (screen) {
                         Screen.MAIN -> DashboardScreen(Modifier.padding(padding))
-                        Screen.HISTORY -> HistoryScreen(Modifier.padding(padding))
+                        Screen.HISTORY -> HistoryScreen(Modifier.padding(padding), onRequestSsidPermission = {
+                            ssidPermission.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+                        })
                         Screen.SETTINGS -> SettingsScreen(Modifier.padding(padding))
                         Screen.HELP -> HelpScreen(Modifier.padding(padding), onBack = { screen = Screen.MAIN })
                     }
@@ -261,8 +272,13 @@ private fun MetricCard(label: String, value: String, modifier: Modifier) {
 }
 
 @Composable
-private fun HistoryScreen(modifier: Modifier, viewModel: HistoryViewModel = androidx.lifecycle.viewmodel.compose.viewModel()) {
+private fun HistoryScreen(
+    modifier: Modifier,
+    onRequestSsidPermission: () -> Unit,
+    viewModel: HistoryViewModel = androidx.lifecycle.viewmodel.compose.viewModel(),
+) {
     val state by viewModel.state.collectAsState()
+    var ssidMenuOpen by rememberSaveable { mutableStateOf(false) }
     LazyColumn(modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -283,10 +299,42 @@ private fun HistoryScreen(modifier: Modifier, viewModel: HistoryViewModel = andr
                 FilterChip(selected = state.connectionFilter == NetworkType.WIFI, onClick = { viewModel.setConnectionFilter(NetworkType.WIFI) }, label = { Text("Wi-Fi") })
                 FilterChip(selected = state.connectionFilter == NetworkType.CELLULAR, onClick = { viewModel.setConnectionFilter(NetworkType.CELLULAR) }, label = { Text("Mobile") })
             }
+            if (state.connectionFilter != NetworkType.CELLULAR) {
+                Text("Wi-Fi network", style = MaterialTheme.typography.labelMedium)
+                if (state.ssids.isEmpty()) {
+                    TextButton(onClick = onRequestSsidPermission) { Text("Allow Wi-Fi name access") }
+                    Text("New Wi-Fi checks can be filtered by network after permission is allowed.", style = MaterialTheme.typography.bodySmall)
+                } else {
+                    Box {
+                        OutlinedButton(onClick = { ssidMenuOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                            Text(state.ssidFilter ?: "All Wi-Fi networks", modifier = Modifier.weight(1f))
+                            Text("⌄")
+                        }
+                        DropdownMenu(expanded = ssidMenuOpen, onDismissRequest = { ssidMenuOpen = false }) {
+                            DropdownMenuItem(text = { Text("All Wi-Fi networks") }, onClick = {
+                                ssidMenuOpen = false
+                                viewModel.setSsidFilter(null)
+                            })
+                            state.ssids.forEach { ssid ->
+                                DropdownMenuItem(text = { Text(ssid) }, onClick = {
+                                    ssidMenuOpen = false
+                                    viewModel.setSsidFilter(ssid)
+                                })
+                            }
+                        }
+                    }
+                }
+            }
         }
         item { HistorySummaryCards(state.summary) }
         item { HistoryEvidenceCard(state.summary) }
-        item { HistoryChartCard("Ping", "Latency per probe; red bars are timed-out requests.", state.samples.map { it.rttMs }, " ms") }
+        item {
+            Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) {
+                Text("Ping", style = MaterialTheme.typography.titleMedium)
+                Text("Latency per probe; red bars are timed-out requests.", style = MaterialTheme.typography.bodySmall)
+                LatencyChart(state.samples)
+            } }
+        }
         item {
             Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) {
                 Text("Jitter", style = MaterialTheme.typography.titleMedium)

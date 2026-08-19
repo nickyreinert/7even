@@ -23,6 +23,7 @@ data class PingEntity(
     /** Null means the probe failed — the distinction reports depend on. */
     val rttMs: Double?,
     val networkType: String,
+    val ssid: String?,
 )
 
 @Entity(tableName = "throughput_samples", indices = [androidx.room.Index("atEpochMs")])
@@ -34,6 +35,7 @@ data class ThroughputEntity(
     val networkType: String,
     val tier: String,
     val partial: Boolean,
+    val ssid: String?,
 )
 
 @Entity(tableName = "drop_events")
@@ -132,7 +134,7 @@ interface MonitorDao {
         FullSweepEntity::class,
         DataUsageEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 abstract class MonitorDatabase : RoomDatabase() {
