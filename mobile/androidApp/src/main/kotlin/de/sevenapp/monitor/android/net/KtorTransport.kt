@@ -1,5 +1,6 @@
 package de.sevenapp.monitor.android.net
 
+import android.net.Network
 import de.sevenapp.monitor.probe.FailureReason
 import de.sevenapp.monitor.probe.TransferResult
 import de.sevenapp.monitor.probe.Transport
@@ -119,8 +120,23 @@ class KtorTransport(
     }
 
     companion object {
-        fun defaultClient(): HttpClient = HttpClient(OkHttp) {
+        /**
+         * @param network when non-null, every socket this client opens is bound to
+         *   that specific network (via [Network.socketFactory]) rather than
+         *   whichever one the OS currently has active — see
+         *   [de.sevenapp.monitor.android.net.NetworkBinder], which is how a
+         *   user's explicit Wi-Fi/mobile choice becomes a real routing
+         *   decision instead of just a label on the result.
+         */
+        fun defaultClient(network: Network? = null): HttpClient = HttpClient(OkHttp) {
             expectSuccess = false
+            engine {
+                if (network != null) {
+                    config {
+                        socketFactory(network.socketFactory)
+                    }
+                }
+            }
             install(HttpTimeout) {
                 // Per-call timeouts are enforced by withTimeout above; these are
                 // a backstop so a wedged socket cannot outlive the worker.

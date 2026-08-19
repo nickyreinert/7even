@@ -21,14 +21,85 @@ function isAllowedOrigin(originHeader) {
   return hostname === '7.1-1-1.de' || hostname.endsWith('.pages.dev');
 }
 
+// Native clients (the Android app) have no browser Origin at all — there is
+// no page, no tab, nothing for the OS to stamp one from. Simply allowing a
+// missing Origin would let anyone drop the header and connect for free,
+// which is exactly the abuse isAllowedOrigin above exists to stop. Instead,
+// a request with no Origin must carry a short-lived HMAC token in
+// NATIVE_AUTH_HEADER, signed with a secret that only lives in this Worker's
+// bindings (`wrangler secret put NATIVE_WS_HMAC_SECRET`) and in the app's
+// build-time signing key — never a value checked into source or baked into
+// this file.
+//
+// This is safe to gate independently of the Origin check, rather than
+// weakening it, because the two paths are structurally disjoint: a browser
+// tab's `new WebSocket(url)` call cannot omit or spoof its own Origin header
+// (the browser sets it, unscriptable by page JS), and the WebSocket API
+// gives page JS no way to attach a custom header to the handshake at all —
+// so NATIVE_AUTH_HEADER can never arrive from a real browser page. A request
+// with an Origin header is always required to pass isAllowedOrigin above,
+// regardless of whether it also happens to carry a native-auth header.
+const NATIVE_AUTH_HEADER = 'X-Seven-Auth';
+// Wide enough to absorb real clock drift on a phone that hasn't synced NTP
+// recently, narrow enough that a token pulled from a decompiled APK or a
+// captured request is useless within a couple of minutes — the "short-lived"
+// half of "Worker secret plus a short-lived signed token".
+const NATIVE_AUTH_MAX_SKEW_MS = 2 * 60 * 1000;
+
+function timingSafeEqualHex(a, b) {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+async function isValidNativeAuth(headerValue, secret) {
+  if (!headerValue || !secret) return false;
+
+  const sep = headerValue.indexOf(':');
+  if (sep < 0) return false;
+  const timestampPart = headerValue.slice(0, sep);
+  const signaturePart = headerValue.slice(sep + 1);
+
+  const timestamp = Number(timestampPart);
+  if (!Number.isFinite(timestamp)) return false;
+  if (Math.abs(Date.now() - timestamp) > NATIVE_AUTH_MAX_SKEW_MS) return false;
+
+  let expectedSignature;
+  try {
+    const key = await crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign'],
+    );
+    const mac = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(timestampPart));
+    expectedSignature = [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  } catch (e) {
+    return false;
+  }
+
+  return timingSafeEqualHex(expectedSignature, signaturePart.toLowerCase());
+}
+
 export default {
-  async fetch(request) {
+  async fetch(request, env) {
     const upgradeHeader = request.headers.get('Upgrade');
     if (!upgradeHeader || upgradeHeader.toLowerCase() !== 'websocket') {
       return new Response('Expected WebSocket upgrade', { status: 426 });
     }
-    if (!isAllowedOrigin(request.headers.get('Origin'))) {
-      return new Response('Forbidden origin', { status: 403 });
+
+    const origin = request.headers.get('Origin');
+    if (origin) {
+      if (!isAllowedOrigin(origin)) {
+        return new Response('Forbidden origin', { status: 403 });
+      }
+    } else {
+      const authed = await isValidNativeAuth(request.headers.get(NATIVE_AUTH_HEADER), env.NATIVE_WS_HMAC_SECRET);
+      if (!authed) {
+        return new Response('Forbidden', { status: 403 });
+      }
     }
 
     const pair = new WebSocketPair();

@@ -5,6 +5,25 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+// The key the app uses to sign short-lived WebSocket handshake tokens for the
+// ws-speedtest Worker (see src/index.js's isValidNativeAuth). Read from
+// mobile/local.properties (gitignored, same file Android Studio writes
+// sdk.dir into — Gradle does NOT load it as project properties on its own,
+// unlike gradle.properties, so it's parsed explicitly here) or an env var, so
+// the value never lands in source control. Computed at the top level,
+// outside the android {} DSL, so it's a plain Kotlin val rather than
+// something depending on which implicit receiver is in scope down in
+// defaultConfig {}. An empty value still builds fine — NativeAuth.header()
+// just returns null and the live test's streaming rounds fail closed with a
+// clear error instead of silently connecting unauthenticated.
+val localProperties = java.util.Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+val nativeWsSecret: String = localProperties.getProperty("sevenNativeWsSecret")
+    ?: System.getenv("SEVEN_NATIVE_WS_SECRET")
+    ?: ""
+
 android {
     namespace = "de.sevenapp.monitor.android"
     compileSdk = 35
@@ -15,10 +34,13 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+
+        buildConfigField("String", "SEVEN_WS_HMAC_SECRET", "\"$nativeWsSecret\"")
     }
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     compileOptions {

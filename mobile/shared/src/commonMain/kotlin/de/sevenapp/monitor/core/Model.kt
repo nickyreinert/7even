@@ -11,6 +11,18 @@ package de.sevenapp.monitor.core
 enum class NetworkType { WIFI, CELLULAR, ETHERNET, OTHER, NONE }
 
 /**
+ * Which network a user-triggered test should run on.
+ *
+ * AUTO defers to whatever the OS currently has active — the historical
+ * behaviour. WIFI/CELLULAR mean the platform must actually bind the test's
+ * sockets to that transport (Android's ConnectivityManager.requestNetwork),
+ * not just read which one happens to be active: someone testing "is my
+ * mobile data slow right now" while sitting on home Wi-Fi needs the app to
+ * genuinely route over cellular, not silently measure Wi-Fi instead.
+ */
+enum class NetworkPreference { AUTO, WIFI, CELLULAR }
+
+/**
  * Probe tiers, cheapest first. The foreground web app can afford to stream
  * continuously for 30s; a background job running every 15 minutes cannot —
  * it would cost gigabytes of cellular data a month. So background measurement

@@ -27,10 +27,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import de.sevenapp.monitor.core.Format
+import de.sevenapp.monitor.core.NetworkPreference
 import de.sevenapp.monitor.core.NetworkType
 import de.sevenapp.monitor.entitlement.FeatureGate
 import de.sevenapp.monitor.entitlement.Paywall
 import de.sevenapp.monitor.entitlement.Tier
+import de.sevenapp.monitor.probe.LiveTestConfig
 import de.sevenapp.monitor.report.ReportPeriod
 
 @Composable
@@ -114,6 +116,54 @@ fun SettingsScreen(
                     enabled = state.tier == Tier.PRO,
                     onCheckedChange = viewModel::setFullSweepRequiresCharging,
                 )
+            }
+        }
+
+        item {
+            // "Run a test now" on Monitor stays a single button — everything
+            // that shapes what that button does lives here instead, the same
+            // split "Background monitoring" above draws between the Monitor
+            // toggle and its schedule.
+            SettingsCard("Live test (\"Run a test now\")") {
+                Text(
+                    "How long the test runs, how it moves data, and which " +
+                        "network it uses — the Monitor screen just has the button.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                HorizontalDivider(Modifier.padding(vertical = 8.dp))
+
+                Text("Minimum duration", style = MaterialTheme.typography.labelMedium)
+                LiveTestConfig.DURATION_OPTIONS_MINUTES.forEach { minutes ->
+                    RadioRow(
+                        label = if (minutes == 1) "1 minute" else "$minutes minutes",
+                        selected = state.liveTestMinDurationMs == minutes * 60_000L,
+                        onSelect = { viewModel.setLiveTestDurationMinutes(minutes) },
+                    )
+                }
+
+                HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                CheckRow(
+                    label = "Run chunk-size sweep during the test",
+                    checked = state.liveTestSweepEnabled,
+                    enabled = true,
+                    onCheckedChange = viewModel::setLiveTestSweepEnabled,
+                )
+
+                HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                Text("Network", style = MaterialTheme.typography.labelMedium)
+                Text(
+                    "Wi-Fi/mobile data is a real routing choice, not just a label: " +
+                        "picking one binds the test's connections to that network even if " +
+                        "the phone would otherwise prefer the other one.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                NetworkPreference.entries.forEach { preference ->
+                    RadioRow(
+                        label = networkPreferenceLabel(preference),
+                        selected = state.preferredTestNetwork == preference,
+                        onSelect = { viewModel.setPreferredTestNetwork(preference) },
+                    )
+                }
             }
         }
 
@@ -273,4 +323,10 @@ private fun intervalLabel(minutes: Int): String = when {
     minutes < 60 -> "Every $minutes minutes"
     minutes == 60 -> "Every hour"
     else -> "Every ${minutes / 60} hours"
+}
+
+private fun networkPreferenceLabel(preference: NetworkPreference): String = when (preference) {
+    NetworkPreference.AUTO -> "Auto (whatever's active)"
+    NetworkPreference.WIFI -> "Wi-Fi"
+    NetworkPreference.CELLULAR -> "Mobile data"
 }

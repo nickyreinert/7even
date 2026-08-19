@@ -1,0 +1,77 @@
+package de.sevenapp.monitor.android.net
+
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import de.sevenapp.monitor.core.NetworkPreference
+import kotlinx.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
+
+/**
+ * Turns a user's Wi-Fi/mobile choice into an actually-bound [Network],
+ * instead of just reading whichever network the OS currently has active.
+ *
+ * `ConnectivityManager.activeNetwork` reflects the *system's* current
+ * preference — asking to test "mobile data" while the phone is happily on
+ * Wi-Fi would still measure Wi-Fi, silently. Explicitly requesting the
+ * transport and handing back its [Network] lets the caller build an OkHttp
+ * client whose sockets are opened on that network specifically (via
+ * [Network.socketFactory]), regardless of what the system would otherwise
+ * route through.
+ */
+object NetworkBinder {
+
+    /**
+     * Requests [preference]'s network (if not [NetworkPreference.AUTO]) and
+     * keeps it alive for the duration of [block], so a network kept up only
+     * because of this request — cellular while Wi-Fi is the system default,
+     * say — doesn't get torn down mid-test. Falls back to `null` (meaning
+     * "whatever's active") on [NetworkPreference.AUTO], a missing
+     * ConnectivityManager, or a request that times out with no match.
+     */
+    suspend fun <T> withNetwork(
+        context: Context,
+        preference: NetworkPreference,
+        timeoutMs: Long = 5_000,
+        block: suspend (Network?) -> T,
+    ): T {
+        if (preference == NetworkPreference.AUTO) return block(null)
+
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return block(null)
+        val transport = when (preference) {
+            NetworkPreference.WIFI -> NetworkCapabilities.TRANSPORT_WIFI
+            NetworkPreference.CELLULAR -> NetworkCapabilities.TRANSPORT_CELLULAR
+            NetworkPreference.AUTO -> return block(null)
+        }
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addTransportType(transport)
+            .build()
+
+        var callback: ConnectivityManager.NetworkCallback? = null
+        try {
+            val network = suspendCancellableCoroutine { cont ->
+                val cb = object : ConnectivityManager.NetworkCallback() {
+                    override fun onAvailable(network: Network) {
+                        if (cont.isActive) cont.resume(network)
+                    }
+
+                    override fun onUnavailable() {
+                        if (cont.isActive) cont.resume(null)
+                    }
+                }
+                callback = cb
+                try {
+                    cm.requestNetwork(request, cb, timeoutMs.toInt())
+                } catch (t: Throwable) {
+                    if (cont.isActive) cont.resume(null)
+                }
+            }
+            return block(network)
+        } finally {
+            callback?.let { runCatching { cm.unregisterNetworkCallback(it) } }
+        }
+    }
+}

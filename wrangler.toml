@@ -1,3 +1,11 @@
 name = "ws-speedtest"
 main = "src/index.js"
 compatibility_date = "2026-08-01"
+
+# NATIVE_WS_HMAC_SECRET is a Worker secret, not a var: it must never appear in
+# this file or in source control. Set it once with:
+#   npx wrangler secret put NATIVE_WS_HMAC_SECRET
+# and put the same value in mobile's local.properties (sevenNativeWsSecret=...)
+# or the SEVEN_NATIVE_WS_SECRET env var used by androidApp/build.gradle.kts,
+# so the app's signed handshake tokens verify against it. See src/index.js's
+# isValidNativeAuth for how it's used.

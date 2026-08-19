@@ -8,10 +8,9 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import de.sevenapp.monitor.android.billing.EntitlementRepository
 import de.sevenapp.monitor.android.data.RoomMonitorStore
-import de.sevenapp.monitor.android.net.KtorTransport
+import de.sevenapp.monitor.android.livetest.LiveTestRunner
 import de.sevenapp.monitor.android.work.ProbeWorker
 import de.sevenapp.monitor.android.work.ReportWorker
-import de.sevenapp.monitor.core.Clock
 import de.sevenapp.monitor.core.NetworkType
 import de.sevenapp.monitor.core.PingSample
 import de.sevenapp.monitor.core.Stats
@@ -19,8 +18,8 @@ import de.sevenapp.monitor.entitlement.FeatureGate
 import de.sevenapp.monitor.entitlement.Tier
 import de.sevenapp.monitor.probe.DataBudget
 import de.sevenapp.monitor.probe.DeviceState
-import de.sevenapp.monitor.probe.MonitorCoordinator
-import de.sevenapp.monitor.probe.ProbeEngine
+import de.sevenapp.monitor.probe.LiveSample
+import de.sevenapp.monitor.probe.LiveTestConfig
 import de.sevenapp.monitor.report.Report
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -33,6 +32,7 @@ data class DashboardState(
     val intervalMinutes: Int = 15,
     val manualTestRunning: Boolean = false,
     val recentPings: List<PingSample> = emptyList(),
+    val liveSamples: List<LiveSample> = emptyList(),
     val latencyMedianMs: Double? = null,
     val jitterMs: Double? = null,
     val lossPct: Double? = null,
@@ -78,7 +78,10 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Run one cycle right now, on demand.
+     * Run the web-style foreground test right now, on demand: continuous
+     * pings, back-to-back streaming download/upload episodes over one
+     * WebSocket, and (if enabled in Settings) a chunk-size sweep, for at
+     * least the configured minimum duration — see [LiveTestRunner].
      *
      * Free at every tier, deliberately — this is the whole app for someone who
      * just wants to check their connection, and it costs nothing per run since
@@ -88,19 +91,27 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun runManualTest() = viewModelScope.launch {
         if (_state.value.manualTestRunning) return@launch
-        _state.value = _state.value.copy(manualTestRunning = true)
+        _state.value = _state.value.copy(manualTestRunning = true, liveSamples = emptyList())
 
-        val now = System.currentTimeMillis()
+        val app = getApplication<Application>()
+        val config = store.loadConfig()
+        val deviceState = readDeviceState()
+
         try {
-            MonitorCoordinator(
+            LiveTestRunner(
+                context = app,
                 store = store,
-                engine = ProbeEngine(KtorTransport(), Clock { System.currentTimeMillis() }),
-                clock = Clock { System.currentTimeMillis() },
-                retentionDays = entitlements.retentionDays(now),
-            ).runCycle(readDeviceState())
+                probeConfig = config,
+                fallbackNetworkType = deviceState.networkType,
+            ).runSession { sample ->
+                val cutoff = sample.atEpochMs - LiveTestConfig.LIVE_WINDOW_MS
+                _state.value = _state.value.copy(
+                    liveSamples = (_state.value.liveSamples + sample).filter { it.atEpochMs >= cutoff },
+                )
+            }
         } catch (t: Throwable) {
-            // A failed manual test is itself a measurement — the cycle records
-            // failed probes before it can throw, so there is nothing to undo.
+            // A failed test still recorded whatever pings/episodes completed
+            // before it threw — there is nothing further to undo here.
         } finally {
             _state.value = _state.value.copy(manualTestRunning = false)
             refresh()

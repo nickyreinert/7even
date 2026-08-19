@@ -129,11 +129,29 @@ fun DashboardScreen(
 
         item { StatRow(state) }
 
-        item {
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("Latency — recent probes", style = MaterialTheme.typography.labelMedium)
-                    LatencyChart(state.recentPings)
+        if (state.manualTestRunning || state.liveSamples.isNotEmpty()) {
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text(
+                            if (state.manualTestRunning) "Live — testing now" else "Live — last test",
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                        LiveRateChart(state.liveSamples)
+                        Text(
+                            "Down/up streaming rate (line) and ping (bars), last 65s.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+        } else {
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("Latency — recent probes", style = MaterialTheme.typography.labelMedium)
+                        LatencyChart(state.recentPings)
+                    }
                 }
             }
         }

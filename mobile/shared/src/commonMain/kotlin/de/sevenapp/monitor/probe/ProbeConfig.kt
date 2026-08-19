@@ -1,5 +1,6 @@
 package de.sevenapp.monitor.probe
 
+import de.sevenapp.monitor.core.NetworkPreference
 import de.sevenapp.monitor.core.NetworkType
 import de.sevenapp.monitor.core.ProbeTier
 
@@ -36,6 +37,18 @@ data class ProbeConfig(
     val traceUrl: String = "https://speed.cloudflare.com/cdn-cgi/trace",
     val downUrlTemplate: String = "https://speed.cloudflare.com/__down?bytes={bytes}",
     val upUrl: String = "https://ws-speedtest.nyrt.workers.dev/__up",
+
+    /** Same Worker as [upUrl], over WebSocket — used by the foreground live test's streaming rounds. */
+    val wsUrl: String = "wss://ws-speedtest.nyrt.workers.dev",
+
+    /** How long a user-triggered foreground test runs, at minimum. Matches the web app's "1 minute" floor. */
+    val liveTestMinDurationMs: Long = LiveTestConfig.MIN_DURATION_MS,
+
+    /** Whether the foreground test's cycle includes a chunk-size sweep, same as the web app's toggle. */
+    val liveTestSweepEnabled: Boolean = true,
+
+    /** Which network a user-triggered foreground test binds to. See [NetworkPreference]. */
+    val preferredTestNetwork: NetworkPreference = NetworkPreference.AUTO,
 ) {
     fun downUrl(bytes: Int): String = downUrlTemplate.replace("{bytes}", bytes.toString())
 

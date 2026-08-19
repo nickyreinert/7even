@@ -13,6 +13,9 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.unit.dp
 import de.sevenapp.monitor.chart.AxisTicks
 import de.sevenapp.monitor.core.PingSample
+import de.sevenapp.monitor.probe.LiveSample
+import de.sevenapp.monitor.probe.LiveTestConfig
+import de.sevenapp.monitor.probe.SweepRunner
 import kotlin.math.max
 
 /**
@@ -110,6 +113,76 @@ fun ThroughputBars(
                 padding = padding,
                 plotHeight = plotH,
                 label = { if (it >= 10) "${it.toInt()} Mbps" else "${(it * 10).toInt() / 10.0} Mbps" },
+            )
+        }
+    }
+}
+
+/**
+ * The foreground live test's chart: down/up streaming rate as scrolling
+ * lines, ping RTT as bars underneath, both on one shared real-time axis
+ * spanning [LiveTestConfig.LIVE_WINDOW_MS] — the mobile port of the web
+ * app's combined "Live — last 65s" chart. Genuinely live: it redraws as
+ * [samples] grows during the run, not just once at the end.
+ */
+@Composable
+fun LiveRateChart(
+    samples: List<LiveSample>,
+    modifier: Modifier = Modifier,
+    heightDp: Int = 160,
+) {
+    Box(modifier.fillMaxWidth().height(heightDp.dp)) {
+        Canvas(Modifier.fillMaxWidth().height(heightDp.dp)) {
+            if (samples.isEmpty()) return@Canvas
+
+            val padding = 4f
+            val pingH = size.height * 0.28f
+            val rateH = size.height - pingH - padding
+            val plotW = size.width - padding * 2
+
+            val now = samples.maxOf { it.atEpochMs }
+            val windowStart = now - LiveTestConfig.LIVE_WINDOW_MS
+            fun xFor(atEpochMs: Long): Float =
+                padding + ((atEpochMs - windowStart).toFloat() / LiveTestConfig.LIVE_WINDOW_MS) * plotW
+
+            val rates = samples.filterIsInstance<LiveSample.Rate>()
+            val maxMbps = max(1.0, rates.maxOfOrNull { it.mbps } ?: 1.0)
+
+            fun drawRateLine(direction: SweepRunner.Direction, color: Color) {
+                val points = rates.filter { it.direction == direction }.sortedBy { it.atEpochMs }
+                if (points.size < 2) return
+                for (i in 1 until points.size) {
+                    val p0 = points[i - 1]
+                    val p1 = points[i]
+                    drawLine(
+                        color = color,
+                        start = Offset(xFor(p0.atEpochMs), (rateH - (p0.mbps / maxMbps) * rateH).toFloat()),
+                        end = Offset(xFor(p1.atEpochMs), (rateH - (p1.mbps / maxMbps) * rateH).toFloat()),
+                        strokeWidth = 3f,
+                    )
+                }
+            }
+            drawRateLine(SweepRunner.Direction.DOWN, DownBlue)
+            drawRateLine(SweepRunner.Direction.UP, UpAmber)
+
+            val pings = samples.filterIsInstance<LiveSample.Ping>()
+            val maxRtt = max(20.0, pings.mapNotNull { it.rttMs }.maxOrNull() ?: 20.0)
+            val barW = 3f
+            pings.forEach { ping ->
+                val x = xFor(ping.atEpochMs)
+                if (ping.rttMs == null) {
+                    drawRect(FailRed, Offset(x, rateH + padding + pingH - 4f), androidx.compose.ui.geometry.Size(barW, 4f))
+                } else {
+                    val h = max(1f, ((ping.rttMs / maxRtt) * pingH).toFloat())
+                    drawRect(AxisGrey.copy(alpha = 0.8f), Offset(x, rateH + padding + pingH - h), androidx.compose.ui.geometry.Size(barW, h))
+                }
+            }
+
+            drawLine(
+                color = TickGrey,
+                start = Offset(padding, rateH + padding / 2),
+                end = Offset(size.width - padding, rateH + padding / 2),
+                strokeWidth = 1f,
             )
         }
     }

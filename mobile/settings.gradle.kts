@@ -19,7 +19,17 @@ rootProject.name = "seven-monitor"
 // See mobile/README.md for why that boundary is enforced rather than merely intended.
 include(":shared")
 
-// :androidApp is added once an Android SDK is available in the build environment.
-// It is deliberately NOT included here so that `./gradlew build` stays green on a
-// machine without the SDK — the shared engine is the part that must always build.
-// include(":androidApp")
+// :androidApp needs an Android SDK to configure at all (AGP resolves
+// platform/build-tools during evaluation, before any task runs) — including
+// it unconditionally would break `./gradlew build` on a machine without one,
+// and the shared engine is the part that must always build there. So it's
+// included only when an SDK is actually findable, the same way AGP itself
+// would look for one: ANDROID_HOME/ANDROID_SDK_ROOT, or sdk.dir in
+// local.properties (what Android Studio writes there for you).
+val hasAndroidSdk = System.getenv("ANDROID_HOME") != null ||
+    System.getenv("ANDROID_SDK_ROOT") != null ||
+    file("local.properties").let { it.isFile && it.readText().contains("sdk.dir") }
+
+if (hasAndroidSdk) {
+    include(":androidApp")
+}

@@ -9,6 +9,7 @@ import de.sevenapp.monitor.android.billing.EntitlementRepository
 import de.sevenapp.monitor.android.data.RoomMonitorStore
 import de.sevenapp.monitor.android.work.ProbeWorker
 import de.sevenapp.monitor.android.work.ReportWorker
+import de.sevenapp.monitor.core.NetworkPreference
 import de.sevenapp.monitor.core.NetworkType
 import de.sevenapp.monitor.entitlement.FeatureGate
 import de.sevenapp.monitor.entitlement.Tier
@@ -27,6 +28,9 @@ data class SettingsState(
     val intervalMinutes: Int = 15,
     val throughputNetworks: Set<NetworkType> = emptySet(),
     val fullSweepRequiresCharging: Boolean = true,
+    val liveTestMinDurationMs: Long = 60_000,
+    val liveTestSweepEnabled: Boolean = true,
+    val preferredTestNetwork: NetworkPreference = NetworkPreference.AUTO,
     val reportPeriod: ReportPeriod = ReportPeriod.WEEKLY,
     val projectedMeteredBytesPerMonth: Long = 0,
     val meteredBytesThisMonth: Long = 0,
@@ -58,6 +62,9 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             intervalMinutes = config.cycleIntervalMinutes,
             throughputNetworks = config.throughputLightNetworks,
             fullSweepRequiresCharging = config.fullSweepRequiresCharging,
+            liveTestMinDurationMs = config.liveTestMinDurationMs,
+            liveTestSweepEnabled = config.liveTestSweepEnabled,
+            preferredTestNetwork = config.preferredTestNetwork,
             reportPeriod = RoomMonitorStore.reportPeriod(app),
             projectedMeteredBytesPerMonth = DataBudget.project(config).meteredBytesPerMonth,
             meteredBytesThisMonth = store.bytesUsedSince(monthStart, metered = true),
@@ -107,6 +114,21 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setFullSweepRequiresCharging(required: Boolean) = viewModelScope.launch {
         store.saveConfig(store.loadConfig().copy(fullSweepRequiresCharging = required))
+        refresh()
+    }
+
+    fun setLiveTestDurationMinutes(minutes: Int) = viewModelScope.launch {
+        store.saveConfig(store.loadConfig().copy(liveTestMinDurationMs = minutes * 60_000L))
+        refresh()
+    }
+
+    fun setLiveTestSweepEnabled(enabled: Boolean) = viewModelScope.launch {
+        store.saveConfig(store.loadConfig().copy(liveTestSweepEnabled = enabled))
+        refresh()
+    }
+
+    fun setPreferredTestNetwork(preference: NetworkPreference) = viewModelScope.launch {
+        store.saveConfig(store.loadConfig().copy(preferredTestNetwork = preference))
         refresh()
     }
 

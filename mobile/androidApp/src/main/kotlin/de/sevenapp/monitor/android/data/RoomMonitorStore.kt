@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.room.Room
 import de.sevenapp.monitor.core.DropEvent
+import de.sevenapp.monitor.core.NetworkPreference
 import de.sevenapp.monitor.core.NetworkType
 import de.sevenapp.monitor.core.PingSample
 import de.sevenapp.monitor.core.ProbeTier
@@ -46,6 +47,11 @@ class RoomMonitorStore(
                 ?: defaults.throughputLightNetworks,
             fullSweepRequiresCharging = prefs[KEY_FULL_CHARGING] ?: defaults.fullSweepRequiresCharging,
             fullSweepsPerDay = prefs[KEY_FULL_PER_DAY] ?: defaults.fullSweepsPerDay,
+            liveTestMinDurationMs = prefs[KEY_LIVE_DURATION] ?: defaults.liveTestMinDurationMs,
+            liveTestSweepEnabled = prefs[KEY_LIVE_SWEEP] ?: defaults.liveTestSweepEnabled,
+            preferredTestNetwork = prefs[KEY_PREFERRED_NETWORK]?.let {
+                runCatching { NetworkPreference.valueOf(it) }.getOrNull()
+            } ?: defaults.preferredTestNetwork,
         )
     }
 
@@ -57,6 +63,9 @@ class RoomMonitorStore(
             p[KEY_TP_NETWORKS] = config.throughputLightNetworks.map { it.name }.toSet()
             p[KEY_FULL_CHARGING] = config.fullSweepRequiresCharging
             p[KEY_FULL_PER_DAY] = config.fullSweepsPerDay
+            p[KEY_LIVE_DURATION] = config.liveTestMinDurationMs
+            p[KEY_LIVE_SWEEP] = config.liveTestSweepEnabled
+            p[KEY_PREFERRED_NETWORK] = config.preferredTestNetwork.name
         }
     }
 
@@ -176,6 +185,9 @@ class RoomMonitorStore(
         private val KEY_TP_NETWORKS = stringSetPreferencesKey("throughput_networks")
         private val KEY_FULL_CHARGING = booleanPreferencesKey("full_requires_charging")
         private val KEY_FULL_PER_DAY = intPreferencesKey("full_sweeps_per_day")
+        private val KEY_LIVE_DURATION = longPreferencesKey("live_test_min_duration_ms")
+        private val KEY_LIVE_SWEEP = booleanPreferencesKey("live_test_sweep_enabled")
+        private val KEY_PREFERRED_NETWORK = stringPreferencesKey("preferred_test_network")
         private val KEY_CYCLE_INDEX = longPreferencesKey("cycle_index")
         private val KEY_CONSECUTIVE_FAILURES = intPreferencesKey("consecutive_failures")
 
