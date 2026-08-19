@@ -17,11 +17,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 data class HistoryState(
-    val days: Int = 7,
+    val historyDays: Int = 0,
     val samples: List<PingSample> = emptyList(),
     val throughput: List<ThroughputSample> = emptyList(),
     val drops: List<DropEvent> = emptyList(),
-    val connectionFilter: NetworkType? = null,
+    val connectionFilter: NetworkType = NetworkType.WIFI,
     val ssidFilter: String? = null,
     val ssids: List<String> = emptyList(),
     val summary: HistorySummary = HistorySummary(),
@@ -51,12 +51,7 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
 
     init { refresh() }
 
-    fun setDays(days: Int) {
-        _state.value = _state.value.copy(days = days)
-        refresh()
-    }
-
-    fun setConnectionFilter(network: NetworkType?) {
+    fun setConnectionFilter(network: NetworkType) {
         _state.value = _state.value.copy(connectionFilter = network)
         refresh()
     }
@@ -68,13 +63,13 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refresh() = viewModelScope.launch {
         val now = System.currentTimeMillis()
-        val start = now - _state.value.days * 24L * 60 * 60 * 1000
+        val start = store.oldestMeasurementAt() ?: now
         val filter = _state.value.connectionFilter
         val ssidFilter = _state.value.ssidFilter
         val allPings = store.pingsBetween(start, now)
         val allThroughput = store.throughputBetween(start, now)
-        val samples = allPings.filter { (filter == null || it.networkType == filter) && (ssidFilter == null || it.ssid == ssidFilter) }.reversed()
-        val throughput = allThroughput.filter { (filter == null || it.networkType == filter) && (ssidFilter == null || it.ssid == ssidFilter) }.reversed()
+        val samples = allPings.filter { it.networkType == filter && (ssidFilter == null || it.ssid == ssidFilter) }.reversed()
+        val throughput = allThroughput.filter { it.networkType == filter && (ssidFilter == null || it.ssid == ssidFilter) }.reversed()
         val drops = store.dropsOverlapping(start, now).reversed()
         val rtts = samples.mapNotNull { it.rttMs }
         val down = throughput.mapNotNull { it.downMbps }
@@ -89,6 +84,7 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
             samples = samples,
             throughput = throughput,
             drops = drops,
+            historyDays = if (start == now) 0 else ((now - start) / (24L * 60 * 60 * 1000) + 1).toInt().coerceAtLeast(1),
             ssids = allPings.mapNotNull { it.ssid }.distinct().sorted(),
             summary = HistorySummary(
                 averageDownloadMbps = down.takeIf { it.isNotEmpty() }?.average(),

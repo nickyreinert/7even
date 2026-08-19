@@ -188,6 +188,8 @@ class RoomMonitorStore(
             PingSample(it.atEpochMs, it.rttMs, it.networkType.toNetworkType(), it.ssid)
         }
 
+    suspend fun oldestMeasurementAt(): Long? = listOfNotNull(dao.oldestPingAt(), dao.oldestThroughputAt()).minOrNull()
+
     override suspend fun throughputBetween(startEpochMs: Long, endEpochMs: Long): List<ThroughputSample> =
         dao.throughputBetween(startEpochMs, endEpochMs).map {
             ThroughputSample(

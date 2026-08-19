@@ -71,8 +71,14 @@ interface MonitorDao {
     @Query("SELECT * FROM ping_samples WHERE atEpochMs BETWEEN :start AND :end ORDER BY atEpochMs")
     suspend fun pingsBetween(start: Long, end: Long): List<PingEntity>
 
+    @Query("SELECT MIN(atEpochMs) FROM ping_samples")
+    suspend fun oldestPingAt(): Long?
+
     @Query("SELECT * FROM throughput_samples WHERE atEpochMs BETWEEN :start AND :end ORDER BY atEpochMs")
     suspend fun throughputBetween(start: Long, end: Long): List<ThroughputEntity>
+
+    @Query("SELECT MIN(atEpochMs) FROM throughput_samples")
+    suspend fun oldestThroughputAt(): Long?
 
     @Query("SELECT * FROM ping_samples ORDER BY atEpochMs DESC LIMIT :limit")
     suspend fun recentPings(limit: Int): List<PingEntity>

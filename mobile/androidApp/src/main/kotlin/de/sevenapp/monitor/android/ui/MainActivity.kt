@@ -310,22 +310,19 @@ private fun HistoryScreen(
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("History", style = MaterialTheme.typography.headlineMedium)
-                    Text("Browse measurements collected over time.", style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        if (state.historyDays == 0) "No measurements recorded yet" else "${state.historyDays} days of recorded history",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
                 TextButton(onClick = viewModel::shareExport) { Text("Export") }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(1, 7, 30, 90).forEach { days ->
-                    FilterChip(selected = state.days == days, onClick = { viewModel.setDays(days) }, label = { Text("${days}d") })
-                }
-            }
             Text("Connection", style = MaterialTheme.typography.labelMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(selected = state.connectionFilter == null, onClick = { viewModel.setConnectionFilter(null) }, label = { Text("All") })
                 FilterChip(selected = state.connectionFilter == NetworkType.WIFI, onClick = { viewModel.setConnectionFilter(NetworkType.WIFI) }, label = { Text("Wi-Fi") })
                 FilterChip(selected = state.connectionFilter == NetworkType.CELLULAR, onClick = { viewModel.setConnectionFilter(NetworkType.CELLULAR) }, label = { Text("Mobile") })
             }
-            if (state.connectionFilter != NetworkType.CELLULAR) {
+            if (state.connectionFilter == NetworkType.WIFI) {
                 Text("Wi-Fi network", style = MaterialTheme.typography.labelMedium)
                 if (state.ssids.isEmpty()) {
                     TextButton(onClick = onRequestSsidPermission) { Text("Allow Wi-Fi name access") }
