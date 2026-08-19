@@ -134,7 +134,7 @@ fun DashboardScreen(
         item {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
-                    val hasLatestTest = state.manualTestRunning || state.livePingMs.isNotEmpty() ||
+                    val hasLatestTest = state.manualTestRunning || state.livePings.isNotEmpty() ||
                         state.liveDownloadMbps.isNotEmpty() || state.liveUploadMbps.isNotEmpty()
                     if (!hasLatestTest) {
                         Text("Latest completed test", style = MaterialTheme.typography.labelMedium)
@@ -155,7 +155,7 @@ fun DashboardScreen(
                             style = MaterialTheme.typography.labelMedium,
                         )
                         Text("Ping (ms)", style = MaterialTheme.typography.labelMedium)
-                        MetricLineChart(state.livePingMs, color = androidx.compose.ui.graphics.Color(0xFFA0A0A0), suffix = " ms", heightDp = 90)
+                        LatencyChart(state.livePings, heightDp = 90)
                         Text("Download (Mbps)", style = MaterialTheme.typography.labelMedium)
                         MetricLineChart(state.liveDownloadMbps.map { it }, suffix = " Mbps", heightDp = 90)
                         Text("Upload (Mbps)", style = MaterialTheme.typography.labelMedium)
