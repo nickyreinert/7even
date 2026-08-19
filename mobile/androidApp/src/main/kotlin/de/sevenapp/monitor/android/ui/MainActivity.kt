@@ -13,8 +13,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -37,6 +35,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import de.sevenapp.monitor.core.Format
 import de.sevenapp.monitor.core.NetworkType
+import de.sevenapp.monitor.probe.LiveTestConfig
 
 private enum class Screen { MAIN, HISTORY, SETTINGS, HELP }
 
@@ -97,15 +96,17 @@ fun DashboardScreen(
     viewModel: DashboardViewModel = androidx.lifecycle.viewmodel.compose.viewModel(),
 ) {
     val state by viewModel.state.collectAsState()
-    var intervalMenuOpen by rememberSaveable { mutableStateOf(false) }
     var logOpen by rememberSaveable { mutableStateOf(false) }
 
     LazyColumn(modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Button(onClick = viewModel::runManualTest, enabled = !state.manualTestRunning, modifier = Modifier.fillMaxWidth()) {
-                        Text(if (state.manualTestRunning) "Testing…" else "Start monitoring")
+                    Button(
+                        onClick = if (state.manualTestRunning) viewModel::stopManualTest else viewModel::runManualTest,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(if (state.manualTestRunning) "Stop monitoring" else "Start monitoring")
                     }
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
@@ -114,20 +115,18 @@ fun DashboardScreen(
                         }
                         Switch(state.monitoringEnabled, onCheckedChange = viewModel::setMonitoring)
                     }
+                    Text("Test duration", style = MaterialTheme.typography.labelMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        DurationChip("1 min", LiveTestConfig.MIN_DURATION_MS, state.liveTestDurationMs, viewModel)
+                        DurationChip("5 min", 5 * 60_000L, state.liveTestDurationMs, viewModel)
+                        DurationChip("15 min", 15 * 60_000L, state.liveTestDurationMs, viewModel)
+                        DurationChip("Until stopped", Long.MAX_VALUE, state.liveTestDurationMs, viewModel)
+                    }
                     Text("Use connection", style = MaterialTheme.typography.labelMedium)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         FilterChip(state.monitoringNetworks == setOf(NetworkType.WIFI), { viewModel.setMonitoringNetworks(setOf(NetworkType.WIFI)) }, label = { Text("Wi-Fi") })
                         FilterChip(state.monitoringNetworks == setOf(NetworkType.CELLULAR), { viewModel.setMonitoringNetworks(setOf(NetworkType.CELLULAR)) }, label = { Text("Mobile") })
                         FilterChip(state.monitoringNetworks == setOf(NetworkType.WIFI, NetworkType.CELLULAR), { viewModel.setMonitoringNetworks(setOf(NetworkType.WIFI, NetworkType.CELLULAR)) }, label = { Text("Both") })
-                    }
-                    Text("Recurrence", style = MaterialTheme.typography.labelMedium)
-                    Column {
-                        TextButton(onClick = { intervalMenuOpen = true }) { Text(intervalLabel(state.intervalMinutes) + " ▾") }
-                        DropdownMenu(expanded = intervalMenuOpen, onDismissRequest = { intervalMenuOpen = false }) {
-                            listOf(15, 60, 1440, 10080).forEach { minutes ->
-                                DropdownMenuItem(text = { Text(intervalLabel(minutes)) }, onClick = { viewModel.setInterval(minutes); intervalMenuOpen = false })
-                            }
-                        }
                     }
                 }
             }
@@ -137,7 +136,7 @@ fun DashboardScreen(
                 Column(Modifier.padding(16.dp)) {
                     Text("Live — recent probes", style = MaterialTheme.typography.labelMedium)
                     LatencyChart(state.recentPings)
-                    if (state.manualTestRunning && (state.liveDownloadMbps.isNotEmpty() || state.liveUploadMbps.isNotEmpty())) {
+                    if (state.liveDownloadMbps.isNotEmpty() || state.liveUploadMbps.isNotEmpty()) {
                         Text("Live stream — download", style = MaterialTheme.typography.labelMedium)
                         MetricLineChart(state.liveDownloadMbps.map { it }, suffix = " Mbps", heightDp = 90)
                         Text("Live stream — upload", style = MaterialTheme.typography.labelMedium)
@@ -173,6 +172,15 @@ fun DashboardScreen(
             }
         }
     }
+}
+
+@Composable
+private fun DurationChip(label: String, durationMs: Long, selectedDurationMs: Long, viewModel: DashboardViewModel) {
+    FilterChip(
+        selected = selectedDurationMs == durationMs,
+        onClick = { viewModel.setLiveTestDuration(durationMs) },
+        label = { Text(label) },
+    )
 }
 
 @Composable

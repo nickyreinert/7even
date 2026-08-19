@@ -12,6 +12,7 @@ import de.sevenapp.monitor.android.livetest.LiveTestRunner
 import de.sevenapp.monitor.android.work.ProbeWorker
 import de.sevenapp.monitor.android.work.ReportWorker
 import de.sevenapp.monitor.core.NetworkType
+import de.sevenapp.monitor.core.NetworkPreference
 import de.sevenapp.monitor.core.PingSample
 import de.sevenapp.monitor.core.Stats
 import de.sevenapp.monitor.core.ThroughputSample
@@ -28,11 +29,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
 
 data class DashboardState(
     val tier: Tier = Tier.FREE,
     val monitoringEnabled: Boolean = false,
     val intervalMinutes: Int = 15,
+    val liveTestDurationMs: Long = LiveTestConfig.MIN_DURATION_MS,
     val monitoringNetworks: Set<NetworkType> = setOf(NetworkType.WIFI, NetworkType.CELLULAR),
     val lightDownBytes: Int = 256 * 1024,
     val lightUpBytes: Int = 128 * 1024,
@@ -57,6 +60,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _state = MutableStateFlow(DashboardState())
     val state: StateFlow<DashboardState> = _state.asStateFlow()
+    private var manualTestJob: Job? = null
 
     init { refresh() }
 
@@ -75,6 +79,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             tier = entitlements.effectiveTier(now),
             monitoringEnabled = RoomMonitorStore.isMonitoringEnabled(app),
             intervalMinutes = config.cycleIntervalMinutes,
+            liveTestDurationMs = config.liveTestMinDurationMs,
             monitoringNetworks = config.monitoringNetworks,
             lightDownBytes = config.lightDownBytes,
             lightUpBytes = config.lightUpBytes,
@@ -98,8 +103,9 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
      * having this happen *without being asked*, which is the part that takes
      * ongoing work to keep reliable.
      */
-    fun runManualTest() = viewModelScope.launch {
-        if (_state.value.manualTestRunning) return@launch
+    fun runManualTest() {
+        if (_state.value.manualTestRunning) return
+        manualTestJob = viewModelScope.launch {
         _state.update {
             it.copy(
             manualTestRunning = true,
@@ -138,7 +144,20 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
         } finally {
             _state.update { it.copy(manualTestRunning = false) }
             refresh()
+            manualTestJob = null
         }
+        }
+    }
+
+    fun stopManualTest() {
+        manualTestJob?.cancel()
+        manualTestJob = null
+        _state.update { it.copy(manualTestRunning = false) }
+    }
+
+    fun setLiveTestDuration(durationMs: Long) = viewModelScope.launch {
+        store.saveConfig(store.loadConfig().copy(liveTestMinDurationMs = durationMs))
+        refresh()
     }
 
     fun setMonitoring(enabled: Boolean) = viewModelScope.launch {
@@ -180,7 +199,15 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
     fun setMonitoringNetworks(networks: Set<NetworkType>) = viewModelScope.launch {
         val selected = networks.intersect(setOf(NetworkType.WIFI, NetworkType.CELLULAR))
         if (selected.isEmpty()) return@launch
-        store.saveConfig(store.loadConfig().copy(monitoringNetworks = selected))
+        val preference = when (selected) {
+            setOf(NetworkType.WIFI) -> NetworkPreference.WIFI
+            setOf(NetworkType.CELLULAR) -> NetworkPreference.CELLULAR
+            else -> NetworkPreference.AUTO
+        }
+        store.saveConfig(store.loadConfig().copy(
+            monitoringNetworks = selected,
+            preferredTestNetwork = preference,
+        ))
         refresh()
     }
 

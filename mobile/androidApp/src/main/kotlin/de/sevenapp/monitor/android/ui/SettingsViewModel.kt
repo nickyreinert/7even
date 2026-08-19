@@ -10,6 +10,7 @@ import de.sevenapp.monitor.android.data.RoomMonitorStore
 import de.sevenapp.monitor.android.work.ProbeWorker
 import de.sevenapp.monitor.android.work.ReportWorker
 import de.sevenapp.monitor.core.NetworkType
+import de.sevenapp.monitor.core.NetworkPreference
 import de.sevenapp.monitor.entitlement.FeatureGate
 import de.sevenapp.monitor.entitlement.Tier
 import de.sevenapp.monitor.probe.DataBudget
@@ -121,7 +122,10 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         // silently disabling monitoring.
         val allowed = networks.intersect(setOf(NetworkType.WIFI, NetworkType.CELLULAR))
         if (allowed.isEmpty()) return@launch
-        store.saveConfig(store.loadConfig().copy(monitoringNetworks = allowed))
+        store.saveConfig(store.loadConfig().copy(
+            monitoringNetworks = allowed,
+            preferredTestNetwork = allowed.toPreference(),
+        ))
         refresh()
     }
 
@@ -130,7 +134,10 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         val networks = config.monitoringNetworks.toMutableSet()
         if (enabled) networks += network else networks -= network
         if (networks.isEmpty()) return@launch
-        store.saveConfig(config.copy(monitoringNetworks = networks))
+        store.saveConfig(config.copy(
+            monitoringNetworks = networks,
+            preferredTestNetwork = networks.toPreference(),
+        ))
         refresh()
     }
 
@@ -220,4 +227,10 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     /** TODO: write the JSON to a user-chosen file via the storage access framework. */
     fun export() = viewModelScope.launch { /* not implemented */ }
+
+    private fun Set<NetworkType>.toPreference(): NetworkPreference = when (this) {
+        setOf(NetworkType.WIFI) -> NetworkPreference.WIFI
+        setOf(NetworkType.CELLULAR) -> NetworkPreference.CELLULAR
+        else -> NetworkPreference.AUTO
+    }
 }
