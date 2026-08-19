@@ -282,13 +282,31 @@ private fun HistoryScreen(modifier: Modifier, viewModel: HistoryViewModel = andr
                 FilterChip(selected = state.connectionFilter == NetworkType.CELLULAR, onClick = { viewModel.setConnectionFilter(NetworkType.CELLULAR) }, label = { Text("Mobile") })
             }
         }
-        item { HistoryChartCard("Ping", "Latency per probe", state.samples.map { it.rttMs }, "ms") }
-        item { HistoryChartCard("Download", "Speed-test download", state.throughput.map { it.downMbps }, " Mbps") }
-        item { HistoryChartCard("Upload", "Speed-test upload", state.throughput.map { it.upMbps }, " Mbps") }
+        item { HistorySummaryCards(state.summary) }
+        item { HistoryEvidenceCard(state.summary) }
+        item { HistoryChartCard("Ping", "Latency per probe; red bars are timed-out requests.", state.samples.map { it.rttMs }, " ms") }
+        item {
+            Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) {
+                Text("Jitter", style = MaterialTheme.typography.titleMedium)
+                Text("Variation within each probe group. Taller bars mean a less steady connection.", style = MaterialTheme.typography.bodySmall)
+                JitterChart(state.samples)
+            } }
+        }
+        item {
+            Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) {
+                Text("Request loss", style = MaterialTheme.typography.titleMedium)
+                Text("Failed requests as a percentage of each probe group.", style = MaterialTheme.typography.bodySmall)
+                LossChart(state.samples)
+            } }
+        }
+        item { HistoryChartCard("Download", "Each completed stream test. Compare the average with the reliable p10 result above.", state.throughput.map { it.downMbps }, " Mbps") }
+        item { HistoryChartCard("Upload", "Each completed stream test. Gaps mean that direction did not complete.", state.throughput.map { it.upMbps }, " Mbps") }
         item {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("Drop events", style = MaterialTheme.typography.titleMedium)
+                    Text("Each bar is one sustained outage; height is its duration.", style = MaterialTheme.typography.bodySmall)
+                    DropEventChart(state.drops, System.currentTimeMillis())
                     if (state.drops.isEmpty()) {
                         Text("No connection drops in this period.", style = MaterialTheme.typography.bodySmall)
                     } else {
@@ -302,6 +320,46 @@ private fun HistoryScreen(modifier: Modifier, viewModel: HistoryViewModel = andr
             }
         }
         if (state.samples.isEmpty()) item { Text("No measurements yet. Start monitoring to build your history.") }
+    }
+}
+
+@Composable
+private fun HistorySummaryCards(summary: HistorySummary) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Period overview", style = MaterialTheme.typography.titleMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            MetricCard("Average download", formatMbps(summary.averageDownloadMbps), Modifier.weight(1f))
+            MetricCard("Average upload", formatMbps(summary.averageUploadMbps), Modifier.weight(1f))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            MetricCard("Median latency", summary.medianLatencyMs?.let { "%.0f ms".format(it) } ?: "—", Modifier.weight(1f))
+            MetricCard("Jitter", summary.jitterMs?.let { "%.0f ms".format(it) } ?: "—", Modifier.weight(1f))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            MetricCard("Request loss", summary.requestLossPct?.let { "%.1f%%".format(it) } ?: "—", Modifier.weight(1f))
+            MetricCard("Stability", summary.stability?.let { "%.1f".format(it.composite) } ?: "—", Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun HistoryEvidenceCard(summary: HistorySummary) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Typical speed vs. dependable speed", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Average can hide bad periods. P10 is the speed that 90% of completed checks met or exceeded; consistency compares it with the typical result.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                "Download: ${formatMbps(summary.downloadP10Mbps)} dependable · ${summary.downloadConsistencyPct?.let { "%.0f%%".format(it) } ?: "—"} consistency",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                "Upload: ${formatMbps(summary.uploadP10Mbps)} dependable · ${summary.uploadConsistencyPct?.let { "%.0f%%".format(it) } ?: "—"} consistency",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
     }
 }
 

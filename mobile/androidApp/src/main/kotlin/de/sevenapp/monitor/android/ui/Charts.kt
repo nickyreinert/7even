@@ -15,6 +15,8 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.unit.dp
 import de.sevenapp.monitor.chart.AxisTicks
 import de.sevenapp.monitor.core.PingSample
+import de.sevenapp.monitor.core.DropEvent
+import de.sevenapp.monitor.core.Stats
 import de.sevenapp.monitor.probe.SweepResult
 import kotlin.math.max
 
@@ -81,6 +83,7 @@ fun ThroughputBars(
     upload: Boolean,
     modifier: Modifier = Modifier,
     heightDp: Int = 100,
+    suffix: String = " Mbps",
 ) {
     Box(modifier.fillMaxWidth().height(heightDp.dp)) {
         Canvas(Modifier.fillMaxWidth().height(heightDp.dp)) {
@@ -112,7 +115,7 @@ fun ThroughputBars(
                 toY = { v -> (padding + plotH - (v / maxV) * plotH).toFloat() },
                 padding = padding,
                 plotHeight = plotH,
-                label = { if (it >= 10) "${it.toInt()} Mbps" else "${(it * 10).toInt() / 10.0} Mbps" },
+                label = { if (it >= 10) "${it.toInt()}$suffix" else "${(it * 10).toInt() / 10.0}$suffix" },
             )
         }
     }
@@ -142,6 +145,46 @@ fun LossChart(
                 drawRect(FailRed, Offset(x, padding + plotH - h), androidx.compose.ui.geometry.Size(barW, h))
             }
             drawAxisTicks(lossRates, { value -> (padding + plotH - value / 100.0 * plotH).toFloat() }, padding, plotH) { "${it.toInt()}%" }
+        }
+    }
+}
+
+@Composable
+fun JitterChart(
+    samples: List<PingSample>,
+    modifier: Modifier = Modifier,
+    heightDp: Int = 100,
+) {
+    val values = samples.chunked(3).mapNotNull { group ->
+        group.mapNotNull { it.rttMs }.takeIf { it.size >= 2 }?.let(Stats::stdDev)
+    }
+    ThroughputBars(values, upload = true, modifier = modifier, heightDp = heightDp, suffix = " ms")
+}
+
+@Composable
+fun DropEventChart(
+    drops: List<DropEvent>,
+    nowEpochMs: Long,
+    modifier: Modifier = Modifier,
+    heightDp: Int = 100,
+) {
+    Box(modifier.fillMaxWidth().height(heightDp.dp)) {
+        Canvas(Modifier.fillMaxWidth().height(heightDp.dp)) {
+            if (drops.isEmpty()) return@Canvas
+            val durations = drops.map { it.durationMs(nowEpochMs).toDouble() }
+            val maxDuration = max(1.0, durations.max())
+            val padding = 4f
+            val plotH = size.height - padding * 2
+            val plotW = size.width - padding * 2
+            val barW = max(2f, plotW / drops.size - 2f)
+            durations.forEachIndexed { index, duration ->
+                val x = padding + index * (plotW / drops.size)
+                val h = max(2f, (duration / maxDuration * plotH).toFloat())
+                drawRect(FailRed, Offset(x, padding + plotH - h), androidx.compose.ui.geometry.Size(barW, h))
+            }
+            drawAxisTicks(durations, { value -> (padding + plotH - value / maxDuration * plotH).toFloat() }, padding, plotH) {
+                if (it >= 60_000) "${(it / 60_000).toInt()} min" else "${(it / 1000).toInt()}s"
+            }
         }
     }
 }
