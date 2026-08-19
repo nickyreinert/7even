@@ -119,10 +119,10 @@ class ProbeWorker(
          */
         const val MIN_INTERVAL_MINUTES = 15L
 
-        fun schedule(context: Context, intervalMinutes: Long) {
+        fun schedule(context: Context, intervalMinutes: Long, hourOfDay: Int = 0, dayOfWeek: Int = 1) {
             val request = PeriodicWorkRequestBuilder<ProbeWorker>(
                 intervalMinutes.coerceAtLeast(MIN_INTERVAL_MINUTES), TimeUnit.MINUTES,
-            ).setConstraints(
+            ).setInitialDelay(initialDelayMillis(intervalMinutes, hourOfDay, dayOfWeek), TimeUnit.MILLISECONDS).setConstraints(
                 Constraints.Builder()
                     // CONNECTED rather than UNMETERED: a cycle that finds no
                     // usable network is itself a measurement. Gating on
@@ -144,6 +144,29 @@ class ProbeWorker(
 
         fun cancel(context: Context) {
             WorkManager.getInstance(context).cancelUniqueWork(UNIQUE_NAME)
+        }
+
+        private fun initialDelayMillis(intervalMinutes: Long, hourOfDay: Int, dayOfWeek: Int): Long {
+            if (intervalMinutes < 12 * 60) return 0L
+            val now = java.util.Calendar.getInstance()
+            val target = now.clone() as java.util.Calendar
+            target.set(java.util.Calendar.HOUR_OF_DAY, hourOfDay.coerceIn(0, 23))
+            target.set(java.util.Calendar.MINUTE, 0)
+            target.set(java.util.Calendar.SECOND, 0)
+            target.set(java.util.Calendar.MILLISECOND, 0)
+            when (intervalMinutes) {
+                7 * 24 * 60L -> {
+                    val calendarDay = if (dayOfWeek in 1..6) dayOfWeek + 1 else java.util.Calendar.SUNDAY
+                    val daysAhead = (calendarDay - now.get(java.util.Calendar.DAY_OF_WEEK) + 7) % 7
+                    target.add(java.util.Calendar.DAY_OF_YEAR, daysAhead)
+                    if (!target.after(now)) target.add(java.util.Calendar.WEEK_OF_YEAR, 1)
+                }
+                12 * 60L -> {
+                    if (!target.after(now)) target.add(java.util.Calendar.HOUR_OF_DAY, 12)
+                }
+                else -> if (!target.after(now)) target.add(java.util.Calendar.DAY_OF_YEAR, 1)
+            }
+            return (target.timeInMillis - now.timeInMillis).coerceAtLeast(0L)
         }
     }
 }

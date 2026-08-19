@@ -28,6 +28,8 @@ data class SettingsState(
     val expiryLabel: String? = null,
     val monitoringEnabled: Boolean = false,
     val intervalMinutes: Int = 15,
+    val automaticHourOfDay: Int = 0,
+    val automaticDayOfWeek: Int = 1,
     val monitoringNetworks: Set<NetworkType> = setOf(NetworkType.WIFI, NetworkType.CELLULAR),
     val automaticStreamEnabled: Boolean = false,
     val automaticSweepEnabled: Boolean = false,
@@ -70,6 +72,8 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             expiryLabel = entitlement.expiresAtEpochMs?.let { "Renews or expires ${java.text.DateFormat.getDateInstance().format(java.util.Date(it))}" },
             monitoringEnabled = RoomMonitorStore.isMonitoringEnabled(app),
             intervalMinutes = config.cycleIntervalMinutes,
+            automaticHourOfDay = config.automaticHourOfDay,
+            automaticDayOfWeek = config.automaticDayOfWeek,
             monitoringNetworks = config.monitoringNetworks,
             automaticStreamEnabled = config.automaticStreamEnabled,
             automaticSweepEnabled = config.automaticSweepEnabled,
@@ -102,7 +106,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
         RoomMonitorStore.setMonitoringEnabled(app, enabled)
         if (enabled) {
-            ProbeWorker.schedule(app, store.loadConfig().cycleIntervalMinutes.toLong())
+            store.loadConfig().let { ProbeWorker.schedule(app, it.cycleIntervalMinutes.toLong(), it.automaticHourOfDay, it.automaticDayOfWeek) }
             ReportWorker.schedule(app)
         } else {
             ProbeWorker.cancel(app)
@@ -116,11 +120,25 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         val tier = entitlements.effectiveTier()
         if (minutes !in FeatureGate.allowedIntervalMinutes(tier)) return@launch
 
-        store.saveConfig(store.loadConfig().copy(
+        val config = store.loadConfig().copy(
             cycleIntervalMinutes = minutes,
             throughputEveryNCycles = if (minutes >= 24 * 60) 1 else store.loadConfig().throughputEveryNCycles,
-        ))
-        if (RoomMonitorStore.isMonitoringEnabled(app)) ProbeWorker.schedule(app, minutes.toLong())
+        )
+        store.saveConfig(config)
+        if (RoomMonitorStore.isMonitoringEnabled(app)) ProbeWorker.schedule(app, minutes.toLong(), config.automaticHourOfDay, config.automaticDayOfWeek)
+        refresh()
+    }
+
+    fun setAutomaticScheduleTime(hourOfDay: Int, dayOfWeek: Int = _state.value.automaticDayOfWeek) = viewModelScope.launch {
+        val app = getApplication<Application>()
+        val config = store.loadConfig().copy(
+            automaticHourOfDay = hourOfDay.coerceIn(0, 23),
+            automaticDayOfWeek = dayOfWeek.coerceIn(1, 7),
+        )
+        store.saveConfig(config)
+        if (RoomMonitorStore.isMonitoringEnabled(app)) {
+            ProbeWorker.schedule(app, config.cycleIntervalMinutes.toLong(), config.automaticHourOfDay, config.automaticDayOfWeek)
+        }
         refresh()
     }
 

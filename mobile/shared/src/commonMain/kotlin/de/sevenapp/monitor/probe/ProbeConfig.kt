@@ -13,6 +13,10 @@ import de.sevenapp.monitor.core.ProbeTier
 data class ProbeConfig(
     /** How often the scheduler is asked to run a cycle. Android's floor is 15 min. */
     val cycleIntervalMinutes: Int = 15,
+    /** Local hour at which long automatic schedules begin (0..23). */
+    val automaticHourOfDay: Int = 0,
+    /** Monday=1 through Sunday=7; used by the weekly schedule. */
+    val automaticDayOfWeek: Int = 1,
 
     /** Connections on which this device is allowed to collect measurements. */
     val monitoringNetworks: Set<NetworkType> = setOf(NetworkType.WIFI, NetworkType.CELLULAR),

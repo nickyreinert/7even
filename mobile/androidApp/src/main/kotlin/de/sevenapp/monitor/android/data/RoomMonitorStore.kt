@@ -45,6 +45,8 @@ class RoomMonitorStore(
         val defaults = ProbeConfig()
         return defaults.copy(
             cycleIntervalMinutes = prefs[KEY_INTERVAL] ?: defaults.cycleIntervalMinutes,
+            automaticHourOfDay = prefs[KEY_AUTO_HOUR] ?: defaults.automaticHourOfDay,
+            automaticDayOfWeek = prefs[KEY_AUTO_DAY] ?: defaults.automaticDayOfWeek,
             monitoringNetworks = prefs[KEY_MONITORING_NETWORKS]?.toNetworkTypes()
                 ?.ifEmpty { defaults.monitoringNetworks } ?: defaults.monitoringNetworks,
             pingsPerCycle = prefs[KEY_PINGS] ?: defaults.pingsPerCycle,
@@ -77,6 +79,8 @@ class RoomMonitorStore(
     override suspend fun saveConfig(config: ProbeConfig) {
         context.settings.edit { p ->
             p[KEY_INTERVAL] = config.cycleIntervalMinutes
+            p[KEY_AUTO_HOUR] = config.automaticHourOfDay
+            p[KEY_AUTO_DAY] = config.automaticDayOfWeek
             p[KEY_MONITORING_NETWORKS] = config.monitoringNetworks.map { it.name }.toSet()
             p[KEY_PINGS] = config.pingsPerCycle
             p[KEY_TP_EVERY] = config.throughputEveryNCycles
@@ -246,6 +250,8 @@ class RoomMonitorStore(
 
     companion object {
         private val KEY_INTERVAL = intPreferencesKey("cycle_interval_minutes")
+        private val KEY_AUTO_HOUR = intPreferencesKey("automatic_hour_of_day")
+        private val KEY_AUTO_DAY = intPreferencesKey("automatic_day_of_week")
         private val KEY_MONITORING_NETWORKS = stringSetPreferencesKey("monitoring_networks")
         private val KEY_PINGS = intPreferencesKey("pings_per_cycle")
         private val KEY_TP_EVERY = intPreferencesKey("throughput_every_n")

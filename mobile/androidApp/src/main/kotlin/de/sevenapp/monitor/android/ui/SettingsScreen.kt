@@ -54,6 +54,7 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = androidx.lifecycle.viewmodel.compose.viewModel(),
 ) {
     val state by viewModel.state.collectAsState()
+    var recurrenceMenuOpen by remember { mutableStateOf(false) }
 
     LazyColumn(
         modifier = modifier.fillMaxSize().padding(16.dp),
@@ -90,17 +91,24 @@ fun SettingsScreen(
                     if (state.monitoringEnabled) {
                         HorizontalDivider(Modifier.padding(vertical = 8.dp))
                         Text("How often", style = MaterialTheme.typography.labelMedium)
-                        FeatureGate.allowedIntervalMinutes(state.tier).forEach { minutes ->
-                            RadioRow(
-                                label = intervalLabel(minutes),
-                                selected = state.intervalMinutes == minutes,
-                                onSelect = { viewModel.setInterval(minutes) },
-                            )
+                        Box {
+                            OutlinedButton(onClick = { recurrenceMenuOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                                Text(intervalLabel(state.intervalMinutes), modifier = Modifier.weight(1f))
+                                Text("⌄")
+                            }
+                            DropdownMenu(expanded = recurrenceMenuOpen, onDismissRequest = { recurrenceMenuOpen = false }) {
+                                FeatureGate.allowedIntervalMinutes(state.tier).forEach { minutes ->
+                                    DropdownMenuItem(
+                                        text = { Text(intervalLabel(minutes)) },
+                                        onClick = {
+                                            recurrenceMenuOpen = false
+                                            viewModel.setInterval(minutes)
+                                        },
+                                    )
+                                }
+                            }
                         }
-                        Text(
-                            intervalExplanation(state.intervalMinutes),
-                            style = MaterialTheme.typography.bodySmall,
-                        )
+                        AutomaticScheduleTimeControls(state, viewModel)
                     }
                 }
             }
@@ -153,6 +161,64 @@ fun SettingsScreen(
 
     }
 }
+
+@Composable
+private fun AutomaticScheduleTimeControls(state: SettingsState, viewModel: SettingsViewModel) {
+    val interval = state.intervalMinutes
+    if (interval < 12 * 60) {
+        Text(intervalExplanation(interval), style = MaterialTheme.typography.bodySmall)
+        return
+    }
+    var hourMenuOpen by remember { mutableStateOf(false) }
+    var dayMenuOpen by remember { mutableStateOf(false) }
+    val hourLabel = "%02d:00".format(state.automaticHourOfDay)
+    val needsDay = interval == 7 * 24 * 60
+    val timeLabel = if (interval == 12 * 60) "First daily hour" else "Hour of day"
+
+    Text(timeLabel, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 8.dp))
+    Box {
+        OutlinedButton(onClick = { hourMenuOpen = true }, modifier = Modifier.fillMaxWidth()) {
+            Text(hourLabel, modifier = Modifier.weight(1f))
+            Text("⌄")
+        }
+        DropdownMenu(expanded = hourMenuOpen, onDismissRequest = { hourMenuOpen = false }) {
+            (0..23).forEach { hour ->
+                DropdownMenuItem(
+                    text = { Text("%02d:00".format(hour)) },
+                    onClick = { hourMenuOpen = false; viewModel.setAutomaticScheduleTime(hour) },
+                )
+            }
+        }
+    }
+    if (needsDay) {
+        Text("Day of week", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 8.dp))
+        Box {
+            OutlinedButton(onClick = { dayMenuOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                Text(dayOfWeekLabel(state.automaticDayOfWeek), modifier = Modifier.weight(1f))
+                Text("⌄")
+            }
+            DropdownMenu(expanded = dayMenuOpen, onDismissRequest = { dayMenuOpen = false }) {
+                (1..7).forEach { day ->
+                    DropdownMenuItem(
+                        text = { Text(dayOfWeekLabel(day)) },
+                        onClick = { dayMenuOpen = false; viewModel.setAutomaticScheduleTime(state.automaticHourOfDay, day) },
+                    )
+                }
+            }
+        }
+    }
+    val explanation = when (interval) {
+        12 * 60 -> "Runs around $hourLabel and ${"%02d:00".format((state.automaticHourOfDay + 12) % 24)} each day. Android may defer a run briefly to protect battery."
+        24 * 60 -> "Runs around $hourLabel every day. Android may defer a run briefly to protect battery."
+        48 * 60 -> "Runs around $hourLabel every second day. Android may defer a run briefly to protect battery."
+        else -> "Runs around ${dayOfWeekLabel(state.automaticDayOfWeek)} at $hourLabel. Android may defer a run briefly to protect battery."
+    }
+    Text(explanation, style = MaterialTheme.typography.bodySmall)
+}
+
+private fun dayOfWeekLabel(day: Int): String = listOf(
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+).getOrElse(day - 1) { "Monday" }
 
 @Composable
 private fun SweepSettingsCard(state: SettingsState, viewModel: SettingsViewModel) {
