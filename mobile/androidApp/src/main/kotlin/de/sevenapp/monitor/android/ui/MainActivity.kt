@@ -152,7 +152,7 @@ fun DashboardScreen(
                         onClick = if (state.manualTestRunning) viewModel::stopManualTest else viewModel::runManualTest,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text(if (state.manualTestRunning) "Stop monitoring" else "Start monitoring")
+                        Text(manualTestButtonLabel(state))
                     }
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
@@ -293,6 +293,14 @@ private fun SummaryCards(state: DashboardState) {
 }
 
 private fun formatMbps(value: Double?): String = value?.let { "%.1f Mbps".format(it) } ?: "—"
+
+private fun manualTestButtonLabel(state: DashboardState): String {
+    if (!state.manualTestRunning) return "Start monitoring"
+    val displayedMs = if (state.liveTestDurationMs == Long.MAX_VALUE) state.manualTestElapsedMs
+    else (state.liveTestDurationMs - state.manualTestElapsedMs).coerceAtLeast(0L)
+    val seconds = displayedMs / 1_000
+    return "Stop · %02d:%02d".format(seconds / 60, seconds % 60)
+}
 
 private fun sweepHeight(results: List<de.sevenapp.monitor.probe.SweepResult>): Int =
     (results.size * 36).coerceAtLeast(128)

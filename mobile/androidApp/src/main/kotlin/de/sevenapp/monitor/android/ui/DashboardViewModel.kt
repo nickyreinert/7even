@@ -34,6 +34,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 
 data class DashboardState(
     val tier: Tier = Tier.FREE,
@@ -45,6 +46,7 @@ data class DashboardState(
     val lightDownBytes: Int = 256 * 1024,
     val lightUpBytes: Int = 128 * 1024,
     val manualTestRunning: Boolean = false,
+    val manualTestElapsedMs: Long = 0L,
     val manualTestError: String? = null,
     val recentPings: List<PingSample> = emptyList(),
     val recentThroughput: List<ThroughputSample> = emptyList(),
@@ -71,6 +73,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
     private val _state = MutableStateFlow(DashboardState())
     val state: StateFlow<DashboardState> = _state.asStateFlow()
     private var manualTestJob: Job? = null
+    private var manualTimerJob: Job? = null
 
     init { refresh() }
 
@@ -143,6 +146,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
 
         val app = getApplication<Application>()
         val config = store.loadConfig()
+        startManualTimer(System.currentTimeMillis())
         val deviceState = readDeviceState()
         try {
             LiveTestRunner(
@@ -188,7 +192,9 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
                 } else "Test could not start on $selected.")
             }
         } finally {
-            _state.update { it.copy(manualTestRunning = false) }
+            manualTimerJob?.cancel()
+            manualTimerJob = null
+            _state.update { it.copy(manualTestRunning = false, manualTestElapsedMs = 0L) }
             refresh()
             manualTestJob = null
         }
@@ -198,7 +204,19 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
     fun stopManualTest() {
         manualTestJob?.cancel()
         manualTestJob = null
-        _state.update { it.copy(manualTestRunning = false) }
+        manualTimerJob?.cancel()
+        manualTimerJob = null
+        _state.update { it.copy(manualTestRunning = false, manualTestElapsedMs = 0L) }
+    }
+
+    private fun startManualTimer(startedAtMs: Long) {
+        manualTimerJob?.cancel()
+        manualTimerJob = viewModelScope.launch {
+            while (true) {
+                _state.update { it.copy(manualTestElapsedMs = (System.currentTimeMillis() - startedAtMs).coerceAtLeast(0L)) }
+                delay(1_000)
+            }
+        }
     }
 
     fun setLiveTestDuration(durationMs: Long) = viewModelScope.launch {
