@@ -44,6 +44,7 @@ data class DashboardState(
     val manualTestRunning: Boolean = false,
     val recentPings: List<PingSample> = emptyList(),
     val recentThroughput: List<ThroughputSample> = emptyList(),
+    val livePingMs: List<Double?> = emptyList(),
     val liveDownloadMbps: List<Double> = emptyList(),
     val liveUploadMbps: List<Double> = emptyList(),
     val latestDownloadSweep: List<SweepResult> = emptyList(),
@@ -123,6 +124,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
         _state.update {
             it.copy(
             manualTestRunning = true,
+            livePingMs = emptyList(),
             liveDownloadMbps = emptyList(),
             liveUploadMbps = emptyList(),
             latestDownloadSweep = emptyList(),
@@ -150,7 +152,9 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
                                 liveUploadMbps = (current.liveUploadMbps + sample.mbps).takeLast(120),
                             )
                         }
-                        is LiveSample.Ping -> current
+                        is LiveSample.Ping -> current.copy(
+                            livePingMs = (current.livePingMs + sample.rttMs).takeLast(120),
+                        )
                         is LiveSample.Sweep -> when (sample.direction) {
                             SweepRunner.Direction.DOWN -> current.copy(latestDownloadSweep = sample.results)
                             SweepRunner.Direction.UP -> current.copy(latestUploadSweep = sample.results)
