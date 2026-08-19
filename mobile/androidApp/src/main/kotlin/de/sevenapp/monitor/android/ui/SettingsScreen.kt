@@ -143,6 +143,8 @@ fun SettingsScreen(
             }
         }
 
+        item { SweepSettingsCard(state, viewModel) }
+
         item { EndpointSettingsCard(state, viewModel) }
 
         item {
@@ -207,6 +209,39 @@ fun SettingsScreen(
                     modifier = Modifier.padding(top = 8.dp),
                 ) { Text("Export as JSON") }
             }
+        }
+    }
+}
+
+@Composable
+private fun SweepSettingsCard(state: SettingsState, viewModel: SettingsViewModel) {
+    var planText by remember(state.sweepPlanText) { mutableStateOf(state.sweepPlanText) }
+    SettingsCard("Size sweep") {
+        CheckRow(
+            label = "Run send and receive size checks",
+            checked = state.liveTestSweepEnabled,
+            enabled = true,
+            onCheckedChange = viewModel::setLiveSweep,
+        )
+        Text(
+            "Each try becomes one green or red block in the download and upload charts. " +
+                "Use K or M units and × repeats, for example: 16K x6, 32K x6, 10M x1.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        OutlinedTextField(
+            value = planText,
+            onValueChange = { planText = it },
+            label = { Text("Size × repeats") },
+            placeholder = { Text("32K x3, 128K x3, 512K x2, 2M x2, 5M x1, 10M x1") },
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 3,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { viewModel.setSweepPlan(planText) }) { Text("Save sweep") }
+            OutlinedButton(onClick = {
+                planText = "32K x3, 128K x3, 512K x2, 2M x2, 5M x1, 10M x1"
+                viewModel.setSweepPlan(planText)
+            }) { Text("Use defaults") }
         }
     }
 }

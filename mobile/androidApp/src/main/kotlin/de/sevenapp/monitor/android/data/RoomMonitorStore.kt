@@ -17,6 +17,7 @@ import de.sevenapp.monitor.core.ProbeTier
 import de.sevenapp.monitor.core.ThroughputSample
 import de.sevenapp.monitor.data.MonitorStore
 import de.sevenapp.monitor.probe.ProbeConfig
+import de.sevenapp.monitor.probe.SweepPlan
 import de.sevenapp.monitor.report.ReportPeriod
 import kotlinx.coroutines.flow.first
 
@@ -51,6 +52,7 @@ class RoomMonitorStore(
             fullSweepsPerDay = prefs[KEY_FULL_PER_DAY] ?: defaults.fullSweepsPerDay,
             liveTestMinDurationMs = prefs[KEY_LIVE_DURATION] ?: defaults.liveTestMinDurationMs,
             liveTestSweepEnabled = prefs[KEY_LIVE_SWEEP] ?: defaults.liveTestSweepEnabled,
+            liveTestSweepSteps = prefs[KEY_LIVE_SWEEP_PLAN]?.let(SweepPlan::parse) ?: defaults.liveTestSweepSteps,
             preferredTestNetwork = prefs[KEY_PREFERRED_NETWORK]?.let {
                 runCatching { NetworkPreference.valueOf(it) }.getOrNull()
             } ?: defaults.preferredTestNetwork,
@@ -77,6 +79,7 @@ class RoomMonitorStore(
             p[KEY_FULL_PER_DAY] = config.fullSweepsPerDay
             p[KEY_LIVE_DURATION] = config.liveTestMinDurationMs
             p[KEY_LIVE_SWEEP] = config.liveTestSweepEnabled
+            p[KEY_LIVE_SWEEP_PLAN] = SweepPlan.format(config.liveTestSweepSteps)
             p[KEY_PREFERRED_NETWORK] = config.preferredTestNetwork.name
             p[KEY_LIGHT_DOWN] = config.lightDownBytes
             p[KEY_LIGHT_UP] = config.lightUpBytes
@@ -211,6 +214,7 @@ class RoomMonitorStore(
         private val KEY_FULL_PER_DAY = intPreferencesKey("full_sweeps_per_day")
         private val KEY_LIVE_DURATION = longPreferencesKey("live_test_min_duration_ms")
         private val KEY_LIVE_SWEEP = booleanPreferencesKey("live_test_sweep_enabled")
+        private val KEY_LIVE_SWEEP_PLAN = stringPreferencesKey("live_test_sweep_plan")
         private val KEY_PREFERRED_NETWORK = stringPreferencesKey("preferred_test_network")
         private val KEY_LIGHT_DOWN = intPreferencesKey("light_down_bytes")
         private val KEY_LIGHT_UP = intPreferencesKey("light_up_bytes")

@@ -12,6 +12,8 @@ data class SweepResult(
     val passCount: Int,
     val avgDurationMs: Double?,
     val lastError: FailureReason?,
+    /** One entry per configured try; used to render every block in the sweep chart. */
+    val trialOutcomes: List<Boolean> = List(trials) { it < passCount },
 ) {
     val ok: Boolean get() = passCount == trials
 }
@@ -112,6 +114,7 @@ class SweepRunner(private val transport: Transport) {
             if (!shouldContinue()) break
 
             var passCount = 0
+            val outcomes = mutableListOf<Boolean>()
             var durationSum = 0.0
             var lastError: FailureReason? = null
 
@@ -128,13 +131,13 @@ class SweepRunner(private val transport: Transport) {
                 }
 
                 when (result) {
-                    is TransferResult.Ok -> { passCount++; durationSum += result.elapsedMs }
+                    is TransferResult.Ok -> { passCount++; durationSum += result.elapsedMs; outcomes += true }
                     // A partial transfer is a FAILURE for the sweep's purposes.
                     // The sweep asks "does this size get through", and a
                     // truncated transfer did not — counting it as a pass would
                     // blur the very cutoff being looked for.
-                    is TransferResult.Partial -> lastError = result.reason
-                    is TransferResult.Failed -> lastError = result.reason
+                    is TransferResult.Partial -> { lastError = result.reason; outcomes += false }
+                    is TransferResult.Failed -> { lastError = result.reason; outcomes += false }
                 }
             }
 
@@ -144,6 +147,7 @@ class SweepRunner(private val transport: Transport) {
                 passCount = passCount,
                 avgDurationMs = if (passCount > 0) durationSum / passCount else null,
                 lastError = if (passCount == step.trials) null else lastError,
+                trialOutcomes = outcomes,
             )
         }
 

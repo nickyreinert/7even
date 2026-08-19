@@ -50,6 +50,8 @@ data class ProbeConfig(
     val wsUrl: String = "wss://ws-speedtest.nyrt.workers.dev",
     val liveTestMinDurationMs: Long = LiveTestConfig.MIN_DURATION_MS,
     val liveTestSweepEnabled: Boolean = true,
+    /** Packet sizes and repeats for the foreground send/receive reliability sweep. */
+    val liveTestSweepSteps: List<SweepStep> = SweepPlan.DEFAULT,
     val preferredTestNetwork: NetworkPreference = NetworkPreference.AUTO,
 ) {
     fun downUrl(bytes: Int): String = downUrlTemplate.replace("{bytes}", bytes.toString())

@@ -14,6 +14,7 @@ import de.sevenapp.monitor.core.NetworkPreference
 import de.sevenapp.monitor.entitlement.FeatureGate
 import de.sevenapp.monitor.entitlement.Tier
 import de.sevenapp.monitor.probe.DataBudget
+import de.sevenapp.monitor.probe.SweepPlan
 import de.sevenapp.monitor.report.ReportPeriod
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -34,6 +35,8 @@ data class SettingsState(
     val upUrl: String = "",
     val streamUrl: String = "",
     val useWebSocketStream: Boolean = false,
+    val liveTestSweepEnabled: Boolean = true,
+    val sweepPlanText: String = "",
     val wifiMeasurementSizes: Set<Int> = emptySet(),
     val cellularMeasurementSizes: Set<Int> = emptySet(),
     val reportPeriod: ReportPeriod = ReportPeriod.WEEKLY,
@@ -73,6 +76,8 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             upUrl = config.upUrl,
             streamUrl = config.streamUrl,
             useWebSocketStream = config.useWebSocketStream,
+            liveTestSweepEnabled = config.liveTestSweepEnabled,
+            sweepPlanText = SweepPlan.format(config.liveTestSweepSteps),
             wifiMeasurementSizes = config.wifiMeasurementSizes,
             cellularMeasurementSizes = config.cellularMeasurementSizes,
             reportPeriod = RoomMonitorStore.reportPeriod(app),
@@ -168,6 +173,18 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setFullSweepRequiresCharging(required: Boolean) = viewModelScope.launch {
         store.saveConfig(store.loadConfig().copy(fullSweepRequiresCharging = required))
+        refresh()
+    }
+
+    fun setLiveSweep(enabled: Boolean) = viewModelScope.launch {
+        store.saveConfig(store.loadConfig().copy(liveTestSweepEnabled = enabled))
+        refresh()
+    }
+
+    fun setSweepPlan(text: String) = viewModelScope.launch {
+        // The parser validates size/repeat limits and falls back to the tested
+        // default ladder if every entry is invalid.
+        store.saveConfig(store.loadConfig().copy(liveTestSweepSteps = SweepPlan.parse(text)))
         refresh()
     }
 

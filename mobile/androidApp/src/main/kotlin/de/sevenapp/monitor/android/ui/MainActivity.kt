@@ -177,9 +177,9 @@ fun DashboardScreen(
                     Text("Request Loss (%)", style = MaterialTheme.typography.labelMedium)
                     LossChart(state.recentPings)
                     Text("Size Sweep · download — green=passed, red=failed", style = MaterialTheme.typography.labelMedium)
-                    SweepResultChart(state.latestDownloadSweep)
+                    SweepResultChart(state.latestDownloadSweep, heightDp = sweepHeight(state.latestDownloadSweep))
                     Text("Size Sweep · upload — green=passed, red=failed", style = MaterialTheme.typography.labelMedium)
-                    SweepResultChart(state.latestUploadSweep)
+                    SweepResultChart(state.latestUploadSweep, heightDp = sweepHeight(state.latestUploadSweep))
                     Text("Showing only the latest checks. Browse History for older measurements.", style = MaterialTheme.typography.bodySmall)
                 }
             }
@@ -241,6 +241,9 @@ private fun SummaryCards(state: DashboardState) {
 }
 
 private fun formatMbps(value: Double?): String = value?.let { "%.1f Mbps".format(it) } ?: "—"
+
+private fun sweepHeight(results: List<de.sevenapp.monitor.probe.SweepResult>): Int =
+    (results.sumOf { it.trials } * 20).coerceAtLeast(128)
 
 @Composable
 private fun MetricCard(label: String, value: String, modifier: Modifier) {

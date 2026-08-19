@@ -50,6 +50,7 @@ class LiveTestRunner(
     private val liveConfig = LiveTestConfig(
         minDurationMs = probeConfig.liveTestMinDurationMs,
         sweepEnabled = probeConfig.liveTestSweepEnabled,
+        sweepSteps = probeConfig.liveTestSweepSteps,
     )
 
     private val effectiveNetworkType: NetworkType = when (probeConfig.preferredTestNetwork) {

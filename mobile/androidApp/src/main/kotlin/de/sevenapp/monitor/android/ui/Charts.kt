@@ -155,17 +155,21 @@ fun SweepResultChart(
     Box(modifier.fillMaxWidth().height(heightDp.dp)) {
         Canvas(Modifier.fillMaxWidth().height(heightDp.dp)) {
             if (results.isEmpty()) return@Canvas
-            val rowHeight = size.height / results.size
-            results.forEachIndexed { index, result ->
+            val attempts = results.flatMap { result ->
+                val outcomes = result.trialOutcomes.ifEmpty { List(result.trials) { it < result.passCount } }
+                outcomes.mapIndexed { index, passed -> Triple(result.bytes, index + 1, passed) }
+            }
+            val rowHeight = size.height / attempts.size
+            attempts.forEachIndexed { index, (bytes, tryNumber, passed) ->
                 val top = index * rowHeight + 2f
                 drawRect(
-                    color = if (result.ok) Color(0xFF22C55E) else FailRed,
+                    color = if (passed) Color(0xFF22C55E) else FailRed,
                     topLeft = Offset(0f, top),
                     size = androidx.compose.ui.geometry.Size(size.width, max(2f, rowHeight - 4f)),
                 )
                 val label = when {
-                    result.bytes >= 1_000_000 -> "${result.bytes / 1_000_000} MB"
-                    else -> "${result.bytes / 1_000} KB"
+                    bytes >= 1_000_000 -> "${bytes / 1_000_000} MB · try $tryNumber"
+                    else -> "${bytes / 1_000} KB · try $tryNumber"
                 }
                 val paint = android.graphics.Paint().apply {
                     color = android.graphics.Color.WHITE
