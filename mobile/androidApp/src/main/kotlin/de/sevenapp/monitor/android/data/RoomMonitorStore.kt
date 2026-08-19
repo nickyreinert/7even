@@ -228,6 +228,19 @@ class RoomMonitorStore(
         dao.pruneDrops(epochMs)
     }
 
+    suspend fun clearHistory() {
+        dao.clearPings()
+        dao.clearThroughput()
+        dao.clearFullSweeps()
+        dao.clearDataUsage()
+        dao.clearDrops()
+        context.settings.edit {
+            it.remove(KEY_LATEST_DOWN_SWEEP)
+            it.remove(KEY_LATEST_UP_SWEEP)
+            it.remove(KEY_CONSECUTIVE_FAILURES)
+        }
+    }
+
     /** Recent samples for the live dashboard, newest first. */
     suspend fun recentPings(limit: Int = 200): List<PingSample> =
         dao.recentPings(limit).map { PingSample(it.atEpochMs, it.rttMs, it.networkType.toNetworkType(), it.ssid) }

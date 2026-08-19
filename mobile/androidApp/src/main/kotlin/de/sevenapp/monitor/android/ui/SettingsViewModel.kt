@@ -207,6 +207,11 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         refresh()
     }
 
+    fun clearHistory() = viewModelScope.launch {
+        store.clearHistory()
+        refresh()
+    }
+
     fun setLiveSweep(enabled: Boolean) = viewModelScope.launch {
         store.saveConfig(store.loadConfig().copy(liveTestSweepEnabled = enabled))
         refresh()

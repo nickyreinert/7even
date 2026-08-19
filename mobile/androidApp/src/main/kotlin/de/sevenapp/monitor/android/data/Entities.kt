@@ -118,18 +118,28 @@ interface MonitorDao {
     @Query("DELETE FROM ping_samples WHERE atEpochMs < :before")
     suspend fun prunePings(before: Long)
 
+    @Query("DELETE FROM ping_samples") suspend fun clearPings()
+
     @Query("DELETE FROM throughput_samples WHERE atEpochMs < :before")
     suspend fun pruneThroughput(before: Long)
+
+    @Query("DELETE FROM throughput_samples") suspend fun clearThroughput()
 
     @Query("DELETE FROM full_sweeps WHERE atEpochMs < :before")
     suspend fun pruneFullSweeps(before: Long)
 
+    @Query("DELETE FROM full_sweeps") suspend fun clearFullSweeps()
+
     @Query("DELETE FROM data_usage WHERE atEpochMs < :before")
     suspend fun pruneDataUsage(before: Long)
+
+    @Query("DELETE FROM data_usage") suspend fun clearDataUsage()
 
     // Closed drops only — pruning an open drop would orphan an ongoing outage.
     @Query("DELETE FROM drop_events WHERE endedAtEpochMs IS NOT NULL AND endedAtEpochMs < :before")
     suspend fun pruneDrops(before: Long)
+
+    @Query("DELETE FROM drop_events") suspend fun clearDrops()
 }
 
 @Database(

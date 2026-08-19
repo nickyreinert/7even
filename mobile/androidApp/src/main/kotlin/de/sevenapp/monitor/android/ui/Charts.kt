@@ -126,7 +126,7 @@ fun ValueBarChart(
                 toY = { v -> (padding + plotH - (v / maxV) * plotH).toFloat() },
                 padding = padding,
                 plotHeight = plotH,
-                label = { if (it >= 10) "${it.toInt()}$suffix" else "${(it * 10).toInt() / 10.0}$suffix" },
+                label = { value -> if (suffix == " Mbps") formatRate(value) else if (value >= 10) "${value.toInt()}$suffix" else "${(value * 10).toInt() / 10.0}$suffix" },
             )
         }
     }
@@ -269,10 +269,16 @@ fun MetricLineChart(
                 toY = { value -> (padding + plotH - (value / maxValue) * plotH).toFloat() },
                 padding = padding,
                 plotHeight = plotH,
-                label = { value -> if (value >= 10) "${value.toInt()}$suffix" else "${(value * 10).toInt() / 10.0}$suffix" },
+                label = { value -> if (suffix == " Mbps") formatRate(value) else if (value >= 10) "${value.toInt()}$suffix" else "${(value * 10).toInt() / 10.0}$suffix" },
             )
         }
     }
+}
+
+private fun formatRate(mbps: Double): String = when {
+    mbps >= 1_000 -> "%.1f Gbit/s".format(mbps / 1_000)
+    mbps >= 1 -> "%.1f Mbit/s".format(mbps)
+    else -> "%.0f Kbit/s".format(mbps * 1_000)
 }
 
 private fun DrawScope.drawAxisTicks(

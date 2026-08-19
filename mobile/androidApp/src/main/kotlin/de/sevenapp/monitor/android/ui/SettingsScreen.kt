@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
@@ -56,6 +57,7 @@ fun SettingsScreen(
 ) {
     val state by viewModel.state.collectAsState()
     var recurrenceMenuOpen by remember { mutableStateOf(false) }
+    var clearHistoryDialogOpen by remember { mutableStateOf(false) }
 
     LazyColumn(
         modifier = modifier.fillMaxSize().padding(16.dp),
@@ -175,6 +177,22 @@ fun SettingsScreen(
 
         item { EndpointSettingsCard(state, viewModel) }
 
+        item {
+            SettingsCard("History") {
+                Text("Delete all recorded ping, stream, sweep, drop, and data-use history from this device. Your settings stay unchanged.", style = MaterialTheme.typography.bodySmall)
+                OutlinedButton(onClick = { clearHistoryDialogOpen = true }) { Text("Clear history") }
+            }
+        }
+
+    }
+    if (clearHistoryDialogOpen) {
+        AlertDialog(
+            onDismissRequest = { clearHistoryDialogOpen = false },
+            title = { Text("Clear all history?") },
+            text = { Text("This permanently removes all saved measurements and cannot be undone.") },
+            confirmButton = { Button(onClick = { clearHistoryDialogOpen = false; viewModel.clearHistory() }) { Text("Clear history") } },
+            dismissButton = { TextButton(onClick = { clearHistoryDialogOpen = false }) { Text("Cancel") } },
+        )
     }
 }
 

@@ -277,7 +277,13 @@ private fun SummaryCards(state: DashboardState) {
     }
 }
 
-private fun formatMbps(value: Double?): String = value?.let { "%.1f Mbps".format(it) } ?: "—"
+private fun formatMbps(value: Double?): String = value?.let {
+    when {
+        it >= 1_000 -> "%.1f Gbit/s".format(it / 1_000)
+        it >= 1 -> "%.1f Mbit/s".format(it)
+        else -> "%.0f Kbit/s".format(it * 1_000)
+    }
+} ?: "—"
 
 private fun manualTestButtonLabel(state: DashboardState): String {
     if (!state.manualTestRunning) return "Start monitoring"
