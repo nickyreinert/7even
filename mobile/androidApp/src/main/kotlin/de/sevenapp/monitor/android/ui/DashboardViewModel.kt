@@ -1,14 +1,26 @@
 package de.sevenapp.monitor.android.ui
 
 import android.app.Application
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.os.BatteryManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import de.sevenapp.monitor.android.billing.EntitlementRepository
 import de.sevenapp.monitor.android.data.RoomMonitorStore
+import de.sevenapp.monitor.android.net.KtorTransport
 import de.sevenapp.monitor.android.work.ProbeWorker
 import de.sevenapp.monitor.android.work.ReportWorker
+import de.sevenapp.monitor.core.Clock
+import de.sevenapp.monitor.core.NetworkType
 import de.sevenapp.monitor.core.PingSample
 import de.sevenapp.monitor.core.Stats
+import de.sevenapp.monitor.entitlement.FeatureGate
+import de.sevenapp.monitor.entitlement.Tier
 import de.sevenapp.monitor.probe.DataBudget
+import de.sevenapp.monitor.probe.DeviceState
+import de.sevenapp.monitor.probe.MonitorCoordinator
+import de.sevenapp.monitor.probe.ProbeEngine
 import de.sevenapp.monitor.report.Report
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -16,8 +28,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 data class DashboardState(
+    val tier: Tier = Tier.FREE,
     val monitoringEnabled: Boolean = false,
     val intervalMinutes: Int = 15,
+    val manualTestRunning: Boolean = false,
     val recentPings: List<PingSample> = emptyList(),
     val latencyMedianMs: Double? = null,
     val jitterMs: Double? = null,
@@ -31,12 +45,12 @@ data class DashboardState(
 class DashboardViewModel(app: Application) : AndroidViewModel(app) {
 
     private val store = RoomMonitorStore.get(app)
+    private val entitlements = EntitlementRepository.get(app)
+
     private val _state = MutableStateFlow(DashboardState())
     val state: StateFlow<DashboardState> = _state.asStateFlow()
 
-    init {
-        refresh()
-    }
+    init { refresh() }
 
     fun refresh() = viewModelScope.launch {
         val app = getApplication<Application>()
@@ -49,7 +63,8 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
         val rtts = pings.mapNotNull { it.rttMs }
         val failures = pings.count { !it.ok }
 
-        _state.value = DashboardState(
+        _state.value = _state.value.copy(
+            tier = entitlements.current().effectiveTierAt(now),
             monitoringEnabled = RoomMonitorStore.isMonitoringEnabled(app),
             intervalMinutes = config.cycleIntervalMinutes,
             recentPings = store.recentPings(120).reversed(), // oldest-first for the chart
@@ -62,18 +77,77 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
+    /**
+     * Run one cycle right now, on demand.
+     *
+     * Free at every tier, deliberately — this is the whole app for someone who
+     * just wants to check their connection, and it costs nothing per run since
+     * the measurement is client-side against public endpoints. What Pro buys is
+     * having this happen *without being asked*, which is the part that takes
+     * ongoing work to keep reliable.
+     */
+    fun runManualTest() = viewModelScope.launch {
+        if (_state.value.manualTestRunning) return@launch
+        _state.value = _state.value.copy(manualTestRunning = true)
+
+        val now = System.currentTimeMillis()
+        try {
+            MonitorCoordinator(
+                store = store,
+                engine = ProbeEngine(KtorTransport(), Clock { System.currentTimeMillis() }),
+                clock = Clock { System.currentTimeMillis() },
+                retentionDays = FeatureGate.effectiveRetentionDays(
+                    currentTier = entitlements.current().effectiveTierAt(now),
+                    hasEverHadPro = entitlements.hasEverHadPro(),
+                ),
+            ).runCycle(readDeviceState())
+        } catch (t: Throwable) {
+            // A failed manual test is itself a measurement — the cycle records
+            // failed probes before it can throw, so there is nothing to undo.
+        } finally {
+            _state.value = _state.value.copy(manualTestRunning = false)
+            refresh()
+        }
+    }
+
     fun setMonitoring(enabled: Boolean) = viewModelScope.launch {
         val app = getApplication<Application>()
-        RoomMonitorStore.setMonitoringEnabled(app, enabled)
+        val now = System.currentTimeMillis()
 
+        // Checked here as well as in the worker. Hiding a switch is
+        // presentation; this is the gate next to the effect.
+        if (enabled && !FeatureGate.shouldBackgroundWorkRun(entitlements.current(), now)) {
+            refresh()
+            return@launch
+        }
+
+        RoomMonitorStore.setMonitoringEnabled(app, enabled)
         if (enabled) {
-            val config = store.loadConfig()
-            ProbeWorker.schedule(app, config.cycleIntervalMinutes.toLong())
+            ProbeWorker.schedule(app, store.loadConfig().cycleIntervalMinutes.toLong())
             ReportWorker.schedule(app)
         } else {
             ProbeWorker.cancel(app)
             ReportWorker.cancel(app)
         }
         refresh()
+    }
+
+    private fun readDeviceState(): DeviceState {
+        val context = getApplication<Application>()
+        val cm = context.getSystemService(ConnectivityManager::class.java)
+        val caps = cm?.activeNetwork?.let { cm.getNetworkCapabilities(it) }
+
+        val type = when {
+            caps == null -> NetworkType.NONE
+            !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) -> NetworkType.NONE
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> NetworkType.WIFI
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> NetworkType.CELLULAR
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> NetworkType.ETHERNET
+            else -> NetworkType.OTHER
+        }
+        val metered = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) != true
+        val charging = context.getSystemService(BatteryManager::class.java)?.isCharging == true
+
+        return DeviceState(networkType = type, isCharging = charging, isMetered = metered)
     }
 }

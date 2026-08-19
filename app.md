@@ -338,6 +338,59 @@ The actual product deliverable. Computed on-device from SQLite rollups.
   metric, here are its inputs" framing — that transparency is a genuine
   differentiator against Ookla-style black-box scores.
 
+## 8a. Free vs paid
+
+**The line: one-off testing is free, unattended repeated testing is paid.**
+
+That is the honest place to draw it. A single manual test costs nothing per run
+— the measurement is client-side against public endpoints — so charging for it
+would be charging for nothing. What genuinely costs something is *repeated
+background measurement*: it is the part that takes ongoing work to keep
+reliable across OS versions and OEM battery quirks, and the part that consumes
+the user's battery and data.
+
+| | Free | Pro |
+|---|---|---|
+| Run a test on demand | ✅ unlimited | ✅ |
+| Live latency / jitter / loss / speed while open | ✅ | ✅ |
+| Export your data | ✅ | ✅ |
+| **Background monitoring on a schedule** | ❌ | ✅ |
+| **Daily / weekly / monthly reports** | ❌ | ✅ |
+| History retention | 2 days | 90 days |
+
+Three rules that are implemented and tested, not just intended:
+
+1. **Export is free at every tier.** The data is a record of the user's own
+   connection, collected on their own device. Holding it hostage behind a
+   subscription would be indefensible.
+2. **Lapsing never deletes collected history.** Collection stops; the record
+   stays readable and exportable. The retention window *ratchets* — once Pro
+   has been held, the 90-day window sticks, because dropping a lapsed user to
+   2 days would delete months of history on the next prune. Costs some disk;
+   far better than destroying a record that cannot be recreated.
+3. **A few days of grace after a failed renewal.** A card that fails to renew
+   is usually a payment glitch, not a decision to quit. Cutting monitoring off
+   instantly puts a *gap in the data* — the one thing the user cannot go back
+   and recreate. The grace window is for their data's sake, not as a sales
+   tactic.
+
+Enforcement is at the scheduling layer, not just the UI: `ProbeWorker` and
+`ReportWorker` re-check entitlement on every wakeup, so a lapse stops
+collection without needing the app to be opened. Hiding a switch is
+presentation; that is the gate.
+
+### Billing is not built
+
+`EntitlementRepository` currently stores whatever it is told and has no
+connection to Google Play. Selling a subscription requires the Play Billing
+Library **plus server-side verification of the purchase token** — Play policy
+requires Play Billing for digital goods, and a client-side-only entitlement is
+trivially defeated. The Upgrade button says so rather than pretending.
+
+What *is* decided and tested is the part worth deciding carefully: what is
+free, what lapsing does to the user's data, how grace behaves. Swapping the
+entitlement's source from local to verified-purchase is a contained change.
+
 ## 9. Store policy notes
 
 - **Apple:** background modes may "only be used for their intended purposes."

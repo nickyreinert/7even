@@ -18,19 +18,49 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import de.sevenapp.monitor.core.Format
+import de.sevenapp.monitor.entitlement.Tier
 import de.sevenapp.monitor.report.Report
+
+private enum class Screen { DASHBOARD, SETTINGS }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             MaterialTheme {
-                Scaffold { padding ->
-                    DashboardScreen(Modifier.padding(padding))
+                // Two screens do not justify a navigation library; when a third
+                // arrives, swap this for one rather than growing the enum.
+                var screen by androidx.compose.runtime.saveable.rememberSaveable {
+                    androidx.compose.runtime.mutableStateOf(Screen.DASHBOARD)
+                }
+
+                Scaffold(
+                    bottomBar = {
+                        androidx.compose.material3.NavigationBar {
+                            androidx.compose.material3.NavigationBarItem(
+                                selected = screen == Screen.DASHBOARD,
+                                onClick = { screen = Screen.DASHBOARD },
+                                icon = {},
+                                label = { Text("Monitor") },
+                            )
+                            androidx.compose.material3.NavigationBarItem(
+                                selected = screen == Screen.SETTINGS,
+                                onClick = { screen = Screen.SETTINGS },
+                                icon = {},
+                                label = { Text("Settings") },
+                            )
+                        }
+                    },
+                ) { padding ->
+                    when (screen) {
+                        Screen.DASHBOARD -> DashboardScreen(Modifier.padding(padding))
+                        Screen.SETTINGS -> SettingsScreen(Modifier.padding(padding))
+                    }
                 }
             }
         }
@@ -50,27 +80,48 @@ fun DashboardScreen(
     ) {
         item {
             Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
-                    androidx.compose.foundation.layout.Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // The free action, given top billing rather than buried
+                    // under a locked one. Someone who never pays should still
+                    // find the app immediately useful.
+                    androidx.compose.material3.Button(
+                        onClick = viewModel::runManualTest,
+                        enabled = !state.manualTestRunning,
+                        modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text("Monitoring", style = MaterialTheme.typography.titleMedium)
-                        Switch(
-                            checked = state.monitoringEnabled,
-                            onCheckedChange = viewModel::setMonitoring,
+                        Text(if (state.manualTestRunning) "Testing…" else "Run a test now")
+                    }
+
+                    if (state.tier == Tier.PRO) {
+                        androidx.compose.foundation.layout.Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("Measure automatically", style = MaterialTheme.typography.titleMedium)
+                            Switch(
+                                checked = state.monitoringEnabled,
+                                onCheckedChange = viewModel::setMonitoring,
+                            )
+                        }
+                        if (state.monitoringEnabled) {
+                            Text(
+                                // Say the real cadence, not an aspiration.
+                                // WorkManager clamps to 15 minutes and the OS
+                                // may defer further; implying a tighter
+                                // interval would be a promise the platform
+                                // does not keep.
+                                "Samples roughly every ${state.intervalMinutes} minutes. " +
+                                    "Android may defer cycles to save battery.",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    } else {
+                        Text(
+                            "Automatic background monitoring is part of Pro — see Settings.",
+                            style = MaterialTheme.typography.bodySmall,
                         )
                     }
-                    Text(
-                        // Say the real cadence, not an aspiration. WorkManager
-                        // clamps to 15 minutes and the OS may defer further;
-                        // implying a tighter interval would be a promise the
-                        // platform does not keep.
-                        "Samples roughly every ${state.intervalMinutes} minutes. " +
-                            "Android may defer cycles to save battery.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
                 }
             }
         }

@@ -11,10 +11,12 @@ import androidx.work.NetworkType as WorkNetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import de.sevenapp.monitor.android.billing.EntitlementRepository
 import de.sevenapp.monitor.android.data.RoomMonitorStore
 import de.sevenapp.monitor.android.net.KtorTransport
 import de.sevenapp.monitor.core.Clock
 import de.sevenapp.monitor.core.NetworkType
+import de.sevenapp.monitor.entitlement.FeatureGate
 import de.sevenapp.monitor.probe.DeviceState
 import de.sevenapp.monitor.probe.MonitorCoordinator
 import de.sevenapp.monitor.probe.ProbeEngine
@@ -34,11 +36,32 @@ class ProbeWorker(
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
+        // Checked on every wakeup, not only when scheduling. Hiding a toggle is
+        // presentation; this is enforcement — an entitlement that lapses while
+        // work is already enqueued has to actually stop collecting, without
+        // waiting for the user to open the app. Grace is handled inside
+        // FeatureGate, so a failed renewal does not punch a hole in the data.
+        val now = System.currentTimeMillis()
+        val entitlements = EntitlementRepository.get(applicationContext)
+        val entitlement = entitlements.current()
+
+        if (!FeatureGate.shouldBackgroundWorkRun(entitlement, now)) {
+            cancel(applicationContext)
+            // Not a failure: this is the intended end state for a free account.
+            return Result.success()
+        }
+
         val store = RoomMonitorStore.get(applicationContext)
         val coordinator = MonitorCoordinator(
             store = store,
             engine = ProbeEngine(KtorTransport(), Clock { System.currentTimeMillis() }),
             clock = Clock { System.currentTimeMillis() },
+            // Ratcheted, so a lapse never prunes away history collected while
+            // paying — see FeatureGate.effectiveRetentionDays.
+            retentionDays = FeatureGate.effectiveRetentionDays(
+                currentTier = entitlement.effectiveTierAt(now),
+                hasEverHadPro = entitlements.hasEverHadPro(),
+            ),
         )
 
         return try {

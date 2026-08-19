@@ -23,10 +23,19 @@ class MonitorCoordinator(
     private val engine: ProbeEngine,
     private val clock: Clock,
     private val timeZone: TimeZone = TimeZone.currentSystemDefault(),
+    retentionDays: Int = 90,
 ) {
 
-    /** Samples older than this are pruned so the database stays bounded. */
-    private val retentionMs = 90L * 24 * 60 * 60 * 1000
+    /**
+     * Samples older than this are pruned so the database stays bounded.
+     *
+     * Supplied by the caller rather than fixed here, because the correct window
+     * depends on entitlement — and specifically on whether Pro has *ever* been
+     * held, not just whether it is active now. See
+     * `FeatureGate.effectiveRetentionDays`: shrinking the window on lapse would
+     * delete history the user cannot recreate.
+     */
+    private val retentionMs: Long = retentionDays * 24L * 60 * 60 * 1000
 
     suspend fun runCycle(deviceState: DeviceState): ProbeEngine.CycleOutput {
         val config = store.loadConfig()

@@ -16,11 +16,13 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import de.sevenapp.monitor.android.billing.EntitlementRepository
 import de.sevenapp.monitor.android.data.RoomMonitorStore
 import de.sevenapp.monitor.android.net.KtorTransport
 import de.sevenapp.monitor.android.ui.MainActivity
 import de.sevenapp.monitor.core.Clock
 import de.sevenapp.monitor.core.Format
+import de.sevenapp.monitor.entitlement.FeatureGate
 import de.sevenapp.monitor.probe.MonitorCoordinator
 import de.sevenapp.monitor.probe.ProbeEngine
 import de.sevenapp.monitor.report.Report
@@ -50,7 +52,17 @@ class ReportWorker(
 
         return try {
             val now = System.currentTimeMillis()
-            val period = ReportPeriod.WEEKLY // TODO: read from settings once the picker exists
+
+            // Scheduled reports follow background monitoring, so the same gate
+            // applies here. Same reasoning as ProbeWorker: enforce on wakeup,
+            // not only at schedule time.
+            val entitlement = EntitlementRepository.get(ctx).current()
+            if (!FeatureGate.canReceiveScheduledReports(entitlement.effectiveTierAt(now))) {
+                cancel(ctx)
+                return Result.success()
+            }
+
+            val period = RoomMonitorStore.reportPeriod(ctx)
             val report = coordinator.buildDueReport(period, now, RoomMonitorStore.lastReportAt(ctx))
                 ?: return Result.success() // nothing due; not a failure
 

@@ -7,7 +7,7 @@ in [`../app.md`](../app.md); this file covers the code.
 
 | Part | State | Verified how |
 |---|---|---|
-| `:shared` measurement engine | **working** | 93 unit tests, green on JDK 21 |
+| `:shared` measurement engine | **working** | 112 unit tests, green on JDK 21 |
 | `checkNoPlatformImports` gate | **working** | verified to fail on a deliberate `import android.*` |
 | `androidApp` module | **written, never compiled** | ⚠️ no Android SDK in this environment |
 
@@ -127,22 +127,57 @@ a default and that test fails, the fix is the default, not the test.
 - `chart/` — `AxisTicks` (the fiddly tick-collision math, tested rather than
   eyeballed inside a draw block)
 - `data/` — `MonitorStore`, the persistence contract
+- `entitlement/` — `Tier`, `Entitlement`, `FeatureGate`, `Paywall`
 
 `androidApp` (uncompiled):
 - Room schema + `RoomMonitorStore` implementing `MonitorStore`
 - `KtorTransport` (OkHttp engine)
 - `ProbeWorker` (WorkManager), `ReportWorker` (report + notification),
   `BootReceiver`
-- Compose dashboard, `DashboardViewModel`, chart port in `ui/Charts.kt`
+- Compose dashboard + settings screen, their view models, chart port in
+  `ui/Charts.kt`
+- `EntitlementRepository` (local cache only — no billing)
+
+## Free vs paid
+
+**One-off testing is free; unattended repeated testing is Pro.** A manual test
+costs nothing per run — the measurement is client-side against public
+endpoints — so charging for it would be charging for nothing. Pro is the
+scheduled, unattended version, plus reports and 90-day history.
+
+Three rules are implemented and tested, not merely intended:
+
+- **Export is free at every tier** (`FeatureGate.canExport`). It is the user's
+  own data from their own device.
+- **Lapsing never deletes history.** Retention *ratchets*:
+  `effectiveRetentionDays(tier, hasEverHadPro)` keeps the 90-day window once
+  Pro has been held, because dropping a lapsed user to the 2-day free window
+  would delete months of history on the next prune.
+- **Three days of grace after a failed renewal**, so a payment glitch does not
+  punch a gap in the data.
+
+Enforcement is at the scheduling layer: `ProbeWorker` and `ReportWorker`
+re-check entitlement on every wakeup and cancel themselves if it lapsed. Hiding
+a switch is presentation; that is the gate.
+
+⚠️ **Billing is not implemented.** `EntitlementRepository` stores whatever it is
+told and has no connection to Google Play. Real selling needs the Play Billing
+Library plus server-side purchase-token verification — a client-side-only
+entitlement is trivially defeated. The Upgrade button says so rather than
+pretending. What *is* decided and tested is the part worth deciding carefully:
+what is free, what lapsing does to data, how grace behaves.
 
 ## Not built yet
 
+- **Play Billing.** See above. `grantProForTesting()` is the only way to reach
+  Pro today, and it is named accordingly.
 - **`THROUGHPUT_FULL` is selected but not implemented.** `TierPolicy` returns it
   correctly and `SweepRunner` exists and is tested, but `ProbeEngine` still runs
   the *light* measurement for that tier — the sweep and the WebSocket stream
   test are not wired into the cycle yet. Wiring them is the next real task.
-- Settings UI. `ReportWorker` hard-codes `ReportPeriod.WEEKLY` (marked `TODO`);
-  the config is persisted and editable in code but has no screen.
+- Export writes nothing yet — `SettingsViewModel.export()` is a stub. The
+  button is present because export being free is a stated promise; it needs the
+  storage-access-framework plumbing behind it.
 - Everything iOS.
 
 ## Next step

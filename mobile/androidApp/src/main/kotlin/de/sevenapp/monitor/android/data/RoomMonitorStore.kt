@@ -16,6 +16,7 @@ import de.sevenapp.monitor.core.ProbeTier
 import de.sevenapp.monitor.core.ThroughputSample
 import de.sevenapp.monitor.data.MonitorStore
 import de.sevenapp.monitor.probe.ProbeConfig
+import de.sevenapp.monitor.report.ReportPeriod
 import kotlinx.coroutines.flow.first
 
 private val Context.settings by preferencesDataStore("monitor_settings")
@@ -207,6 +208,17 @@ class RoomMonitorStore(
 
         suspend fun setLastReportAt(context: Context, epochMs: Long) {
             context.settings.edit { it[KEY_LAST_REPORT_AT] = epochMs }
+        }
+
+        suspend fun reportPeriod(context: Context): ReportPeriod {
+            val stored = context.settings.data.first()[KEY_REPORT_PERIOD]
+            // Unknown value degrades to WEEKLY rather than crashing a worker.
+            return stored?.let { runCatching { ReportPeriod.valueOf(it) }.getOrNull() }
+                ?: ReportPeriod.WEEKLY
+        }
+
+        suspend fun setReportPeriod(context: Context, period: ReportPeriod) {
+            context.settings.edit { it[KEY_REPORT_PERIOD] = period.name }
         }
     }
 }
