@@ -39,6 +39,7 @@ data class DashboardState(
     val intervalMinutes: Int = 15,
     val liveTestDurationMs: Long = LiveTestConfig.MIN_DURATION_MS,
     val monitoringNetworks: Set<NetworkType> = setOf(NetworkType.WIFI, NetworkType.CELLULAR),
+    val manualNetwork: NetworkPreference = NetworkPreference.WIFI,
     val lightDownBytes: Int = 256 * 1024,
     val lightUpBytes: Int = 128 * 1024,
     val manualTestRunning: Boolean = false,
@@ -90,6 +91,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             intervalMinutes = config.cycleIntervalMinutes,
             liveTestDurationMs = config.liveTestMinDurationMs,
             monitoringNetworks = config.monitoringNetworks,
+            manualNetwork = config.preferredTestNetwork.let { if (it == NetworkPreference.AUTO) NetworkPreference.WIFI else it },
             lightDownBytes = config.lightDownBytes,
             lightUpBytes = config.lightUpBytes,
             recentPings = store.recentPings(120).reversed(), // oldest-first for the chart
@@ -239,6 +241,11 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             monitoringNetworks = selected,
             preferredTestNetwork = preference,
         ))
+        refresh()
+    }
+
+    fun setManualNetwork(network: NetworkPreference) = viewModelScope.launch {
+        store.saveConfig(store.loadConfig().copy(preferredTestNetwork = network))
         refresh()
     }
 

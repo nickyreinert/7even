@@ -124,9 +124,8 @@ fun DashboardScreen(
                     }
                     Text("Use connection", style = MaterialTheme.typography.labelMedium)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilterChip(state.monitoringNetworks == setOf(NetworkType.WIFI), { viewModel.setMonitoringNetworks(setOf(NetworkType.WIFI)) }, label = { Text("Wi-Fi") })
-                        FilterChip(state.monitoringNetworks == setOf(NetworkType.CELLULAR), { viewModel.setMonitoringNetworks(setOf(NetworkType.CELLULAR)) }, label = { Text("Mobile") })
-                        FilterChip(state.monitoringNetworks == setOf(NetworkType.WIFI, NetworkType.CELLULAR), { viewModel.setMonitoringNetworks(setOf(NetworkType.WIFI, NetworkType.CELLULAR)) }, label = { Text("Both") })
+                        FilterChip(state.manualNetwork == de.sevenapp.monitor.core.NetworkPreference.WIFI, { viewModel.setManualNetwork(de.sevenapp.monitor.core.NetworkPreference.WIFI) }, label = { Text("Wi-Fi") })
+                        FilterChip(state.manualNetwork == de.sevenapp.monitor.core.NetworkPreference.CELLULAR, { viewModel.setManualNetwork(de.sevenapp.monitor.core.NetworkPreference.CELLULAR) }, label = { Text("Mobile") })
                     }
                 }
             }
