@@ -174,11 +174,13 @@ fun SettingsScreen(
                     }
                 }
                 Text(
-                    "A manual test runs three phases in turn, each for the chosen length: ping on its own, " +
-                        "then a continuous download stream, then a continuous upload stream. The " +
-                        "connection-specific size sweep runs once at the end. A 10 sec choice therefore " +
-                        "takes about 30 seconds plus the sweep. Automatic background tests cap each phase " +
-                        "at 30 seconds regardless of this setting.",
+                    "A manual test runs three phases strictly one after another, each for the chosen " +
+                        "length: ping alone, then a continuous download stream, then a continuous upload " +
+                        "stream. Only one thing ever touches the connection at a time, so each phase " +
+                        "measures the whole link rather than a share of it. The connection-specific size " +
+                        "sweep runs once at the end. A 10 sec choice therefore takes about 30 seconds " +
+                        "plus the sweep. Automatic background tests cap each phase at 30 seconds " +
+                        "regardless of this setting.",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
