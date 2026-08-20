@@ -29,6 +29,7 @@ import de.sevenapp.monitor.probe.LiveTestConfig
 import de.sevenapp.monitor.probe.SweepRunner
 import de.sevenapp.monitor.probe.SweepResult
 import de.sevenapp.monitor.report.Report
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -77,6 +78,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
     val state: StateFlow<DashboardState> = _state.asStateFlow()
     private var manualTestJob: Job? = null
     private var manualTimerJob: Job? = null
+    private var manualRunGeneration = 0L
 
     init { refresh() }
 
@@ -134,89 +136,99 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun runManualTest() {
         if (_state.value.manualTestRunning) return
+        val runGeneration = ++manualRunGeneration
         manualTestJob = viewModelScope.launch {
-        _state.update {
-            it.copy(
-            manualTestRunning = true,
-            manualTestError = null,
-            manualTestStep = 1,
-            manualTestStepLabel = "Connecting to ${if (it.manualNetwork == NetworkPreference.CELLULAR) "mobile data" else "Wi-Fi"}",
-            livePings = emptyList(),
-            liveDownloadMbps = emptyList(),
-            liveUploadMbps = emptyList(),
-            latestDownloadSweep = emptyList(),
-            latestUploadSweep = emptyList(),
-            )
-        }
+            _state.update {
+                it.copy(
+                    manualTestRunning = true,
+                    manualTestError = null,
+                    manualTestStep = 1,
+                    manualTestStepLabel = "Connecting to ${if (it.manualNetwork == NetworkPreference.CELLULAR) "mobile data" else "Wi-Fi"}",
+                    livePings = emptyList(),
+                    liveDownloadMbps = emptyList(),
+                    liveUploadMbps = emptyList(),
+                    latestDownloadSweep = emptyList(),
+                    latestUploadSweep = emptyList(),
+                )
+            }
 
-        val app = getApplication<Application>()
-        val config = store.loadConfig()
-        val deviceState = readDeviceState()
-        var streamTimerStarted = false
-        try {
-            LiveTestRunner(
-                context = app,
-                store = store,
-            probeConfig = config,
-            fallbackNetworkType = deviceState.networkType,
-            wifiSsid = deviceState.ssid,
-            ).runSession { sample ->
-                if (!streamTimerStarted && sample !is LiveSample.Sweep) {
-                    streamTimerStarted = true
-                    startManualTimer(System.currentTimeMillis())
-                }
-                _state.update { current ->
-                    when (sample) {
-                        is LiveSample.Rate -> when (sample.direction) {
-                            SweepRunner.Direction.DOWN -> current.copy(
-                                liveDownloadMbps = (current.liveDownloadMbps + sample.mbps).takeLast(120),
-                                manualTestStep = 2,
-                                manualTestStepLabel = "Download stream",
-                            )
-                            SweepRunner.Direction.UP -> current.copy(
-                                liveUploadMbps = (current.liveUploadMbps + sample.mbps).takeLast(120),
-                                manualTestStep = 3,
-                                manualTestStepLabel = "Upload stream",
-                            )
-                        }
-                        is LiveSample.Ping -> current.copy(
-                            manualTestStep = 1,
-                            manualTestStepLabel = "Ping",
-                            livePings = (current.livePings + PingSample(
-                                atEpochMs = sample.atEpochMs,
-                                rttMs = sample.rttMs,
-                                networkType = deviceState.networkType,
-                            )).takeLast(120),
-                        )
-                        is LiveSample.Sweep -> when (sample.direction) {
-                            SweepRunner.Direction.DOWN -> current.copy(latestDownloadSweep = sample.results, manualTestStep = 4, manualTestStepLabel = "Download size sweep")
-                            SweepRunner.Direction.UP -> current.copy(latestUploadSweep = sample.results, manualTestStep = 5, manualTestStepLabel = "Upload size sweep")
+            val app = getApplication<Application>()
+            val config = store.loadConfig()
+            val deviceState = readDeviceState()
+            startManualTimer(System.currentTimeMillis())
+            try {
+                LiveTestRunner(
+                    context = app,
+                    store = store,
+                    probeConfig = config,
+                    fallbackNetworkType = deviceState.networkType,
+                    wifiSsid = deviceState.ssid,
+                ).runSession { sample ->
+                    // A cancelled/older run must never repaint a later run or
+                    // replace its selected mobile result with a stale Wi-Fi one.
+                    if (runGeneration == manualRunGeneration) {
+                        _state.update { current ->
+                            when (sample) {
+                                is LiveSample.Rate -> when (sample.direction) {
+                                    SweepRunner.Direction.DOWN -> current.copy(
+                                        liveDownloadMbps = (current.liveDownloadMbps + sample.mbps).takeLast(120),
+                                        manualTestStep = 2,
+                                        manualTestStepLabel = "Download stream",
+                                    )
+                                    SweepRunner.Direction.UP -> current.copy(
+                                        liveUploadMbps = (current.liveUploadMbps + sample.mbps).takeLast(120),
+                                        manualTestStep = 3,
+                                        manualTestStepLabel = "Upload stream",
+                                    )
+                                }
+                                is LiveSample.Ping -> current.copy(
+                                    // Pings continue during streaming, but they are
+                                    // not a phase change and must not make the UI
+                                    // look as though the stream never started.
+                                    manualTestStep = current.manualTestStep,
+                                    manualTestStepLabel = current.manualTestStepLabel,
+                                    livePings = (current.livePings + PingSample(
+                                        atEpochMs = sample.atEpochMs,
+                                        rttMs = sample.rttMs,
+                                        networkType = deviceState.networkType,
+                                    )).takeLast(120),
+                                )
+                                is LiveSample.Sweep -> when (sample.direction) {
+                                    SweepRunner.Direction.DOWN -> current.copy(latestDownloadSweep = sample.results, manualTestStep = 4, manualTestStepLabel = "Download size sweep")
+                                    SweepRunner.Direction.UP -> current.copy(latestUploadSweep = sample.results, manualTestStep = 5, manualTestStepLabel = "Upload size sweep")
+                                }
+                            }
                         }
                     }
                 }
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                if (runGeneration == manualRunGeneration) {
+                    val selected = when (config.preferredTestNetwork) {
+                        NetworkPreference.CELLULAR -> "Mobile data"
+                        NetworkPreference.WIFI -> "Wi-Fi"
+                        NetworkPreference.AUTO -> "The selected network"
+                    }
+                    _state.update {
+                        it.copy(manualTestError = if (t is NetworkBinder.RequestedNetworkUnavailable) {
+                            "$selected is unavailable. The test did not fall back to another connection."
+                        } else "Test could not start on $selected.")
+                    }
+                }
+            } finally {
+                if (runGeneration == manualRunGeneration) {
+                    manualTimerJob?.cancel()
+                    manualTimerJob = null
+                    _state.update { it.copy(manualTestRunning = false, manualTestElapsedMs = 0L) }
+                    refresh()
+                    manualTestJob = null
+                }
             }
-        } catch (t: Throwable) {
-            val selected = when (config.preferredTestNetwork) {
-                NetworkPreference.CELLULAR -> "Mobile data"
-                NetworkPreference.WIFI -> "Wi-Fi"
-                NetworkPreference.AUTO -> "The selected network"
-            }
-            _state.update {
-                it.copy(manualTestError = if (t is NetworkBinder.RequestedNetworkUnavailable) {
-                    "$selected is unavailable. The test did not fall back to another connection."
-                } else "Test could not start on $selected.")
-            }
-        } finally {
-            manualTimerJob?.cancel()
-            manualTimerJob = null
-            _state.update { it.copy(manualTestRunning = false, manualTestElapsedMs = 0L) }
-            refresh()
-            manualTestJob = null
-        }
         }
     }
 
     fun stopManualTest() {
+        manualRunGeneration++
         manualTestJob?.cancel()
         manualTestJob = null
         manualTimerJob?.cancel()

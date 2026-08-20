@@ -38,7 +38,9 @@ sealed interface LiveSample {
  * `DOWN_ROUND_BYTES`/`UP_ROUND_BYTES`, `STREAM_PHASE_DURATION_MS`,
  * `PROGRESS_THROTTLE_MS`) so the mobile session reads the same way: a
  * continuous ping loop plus back-to-back streaming rounds, with a
- * configurable size sweep run between streaming episodes.
+ * configurable size sweep run between streaming episodes. A finite duration
+ * is a whole-test deadline; the `minDurationMs` name remains for stored-config
+ * compatibility.
  */
 data class LiveTestConfig(
     val minDurationMs: Long = MIN_DURATION_MS,
@@ -65,9 +67,8 @@ data class LiveTestConfig(
 }
 
 /**
- * Decides when a running session has done enough to stop — never mid-episode,
- * only at a clean boundary between rounds, and never before the configured
- * minimum has actually elapsed.
+ * Legacy pure helper for callers that choose boundary-based scheduling. The
+ * Android manual runner deliberately uses a hard user-facing deadline instead.
  *
  * Split out as a pure function so "should this cycle happen again" is
  * testable without a network, a clock mock library, or a running coroutine —

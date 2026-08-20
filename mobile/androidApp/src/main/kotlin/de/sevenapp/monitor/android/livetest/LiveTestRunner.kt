@@ -14,22 +14,25 @@ import de.sevenapp.monitor.core.ThroughputSample
 import de.sevenapp.monitor.data.MonitorStore
 import de.sevenapp.monitor.probe.LiveSample
 import de.sevenapp.monitor.probe.LiveTestConfig
-import de.sevenapp.monitor.probe.LiveTestSchedule
 import de.sevenapp.monitor.probe.ProbeConfig
 import de.sevenapp.monitor.probe.SweepResult
 import de.sevenapp.monitor.probe.SweepRunner
 import de.sevenapp.monitor.probe.TransportResult
 import de.sevenapp.monitor.probe.mbpsOf
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 
 /**
  * Runs the web app's "web-style" foreground test on Android: a continuous
  * ping loop plus back-to-back streaming download/upload episodes over one
  * persistent WebSocket, with an optional chunk-size sweep between episodes,
- * for at least [LiveTestConfig.minDurationMs] — never cut off mid-episode,
- * per [LiveTestSchedule].
+ * for exactly [LiveTestConfig.minDurationMs] when a finite duration is selected.
+ * A user-selected duration is a whole-test deadline, not a minimum that lets a
+ * slow stream or sweep continue after the UI timer reaches zero.
  *
  * Deliberately Android-specific rather than living in :shared. Unlike
  * [de.sevenapp.monitor.probe.ProbeEngine], which the platform worker only
@@ -37,7 +40,8 @@ import kotlinx.coroutines.launch
  * UI-facing progress callback — exactly the platform glue that
  * [de.sevenapp.monitor.probe.Transport]'s own doc comment says stays out of
  * :shared. The pure "is this session done yet" decision is the one part
- * that *is* shared and unit-tested, in [LiveTestSchedule].
+ * that is shared; the Android host owns the user-facing deadline and
+ * cancellation behavior.
  */
 class LiveTestRunner(
     private val context: Context,
@@ -71,8 +75,11 @@ class LiveTestRunner(
             try {
                 if (ws != null) {
                     ws.connect(NativeAuth.header())
-                    if (runStream) runStreamLoop(ws, httpTransport, onSample)
-                    if (runSweep) runWebSocketSweep(ws, onSample)
+                    if (runStream) {
+                        runTimedStreamAndSweep(ws, httpTransport, onSample)
+                    } else if (runSweep) {
+                        runWebSocketSweep(ws, onSample)
+                    }
                 }
             } finally {
                 ws?.close()
@@ -91,39 +98,55 @@ class LiveTestRunner(
         }
     }
 
-    private suspend fun runStreamLoop(
+    private suspend fun runTimedStreamAndSweep(
         ws: WsLiveTestClient,
         httpTransport: KtorTransport,
         onSample: (LiveSample) -> Unit,
     ) {
-        val sessionStart = clock.nowEpochMs()
+        val run: suspend () -> Unit = {
+            coroutineScope {
+                val pingJob = launch { runPingLoop(httpTransport, onSample) }
+                try {
+                    while (true) {
+                        val down = ws.runDownEpisode(
+                            roundBytes = liveConfig.downRoundBytes,
+                            episodeDurationMs = liveConfig.streamEpisodeDurationMs,
+                            roundTimeoutMs = liveConfig.streamRoundTimeoutMs,
+                            progressThrottleMs = liveConfig.progressThrottleMs,
+                        ) { bytes, elapsedMs ->
+                            mbpsOf(bytes, elapsedMs)?.let {
+                                onSample(LiveSample.Rate(clock.nowEpochMs(), SweepRunner.Direction.DOWN, it))
+                            }
+                        }
 
-        coroutineScope {
-            val pingJob = launch { runPingLoop(httpTransport, onSample) }
+                        val up = ws.runUpEpisode(
+                            roundBytes = liveConfig.upRoundBytes,
+                            episodeDurationMs = liveConfig.streamEpisodeDurationMs,
+                            roundTimeoutMs = liveConfig.streamRoundTimeoutMs,
+                            progressThrottleMs = liveConfig.progressThrottleMs,
+                        ) { bytes, elapsedMs ->
+                            mbpsOf(bytes, elapsedMs)?.let {
+                                onSample(LiveSample.Rate(clock.nowEpochMs(), SweepRunner.Direction.UP, it))
+                            }
+                        }
+
+                        persistEpisode(down, up)
+                        if (runSweep) runWebSocketSweep(ws, onSample)
+                    }
+                } finally {
+                    pingJob.cancelAndJoin()
+                }
+            }
+        }
+
+        if (liveConfig.minDurationMs == Long.MAX_VALUE) {
+            run()
+        } else {
             try {
-                do {
-                    val down = ws.runDownEpisode(
-                roundBytes = liveConfig.downRoundBytes,
-                episodeDurationMs = liveConfig.streamEpisodeDurationMs,
-                roundTimeoutMs = liveConfig.streamRoundTimeoutMs,
-                progressThrottleMs = liveConfig.progressThrottleMs,
-            ) { bytes, elapsedMs ->
-                mbpsOf(bytes, elapsedMs)?.let { onSample(LiveSample.Rate(clock.nowEpochMs(), SweepRunner.Direction.DOWN, it)) }
-            }
-
-                    val up = ws.runUpEpisode(
-                roundBytes = liveConfig.upRoundBytes,
-                episodeDurationMs = liveConfig.streamEpisodeDurationMs,
-                roundTimeoutMs = liveConfig.streamRoundTimeoutMs,
-                progressThrottleMs = liveConfig.progressThrottleMs,
-            ) { bytes, elapsedMs ->
-                mbpsOf(bytes, elapsedMs)?.let { onSample(LiveSample.Rate(clock.nowEpochMs(), SweepRunner.Direction.UP, it)) }
-            }
-
-                    persistEpisode(down, up)
-                } while (!LiveTestSchedule.isSessionDone(sessionStart, clock.nowEpochMs(), liveConfig.minDurationMs))
-            } finally {
-                pingJob.cancel()
+                withTimeout(liveConfig.minDurationMs) { run() }
+            } catch (_: TimeoutCancellationException) {
+                // Finite manual duration is normal completion. The timeout
+                // cancels ping, stream, and sweep together.
             }
         }
     }

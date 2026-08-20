@@ -16,6 +16,7 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.http.isSuccess
 import io.ktor.utils.io.readAvailable
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import java.io.IOException
@@ -53,6 +54,7 @@ class KtorTransport(
             TransportResult.Failed(FailureReason.HTTP_ERROR)
         }
     } catch (t: Throwable) {
+        if (t is CancellationException) throw t
         TransportResult.Failed(t.toFailureReason())
     }
 
@@ -73,6 +75,7 @@ class KtorTransport(
             }
             TransferResult.Ok(received, elapsedMsSince(started))
         } catch (t: Throwable) {
+            if (t is CancellationException) throw t
             // Bytes that did arrive still measure something real — the web app
             // makes the same call when a stream test stalls mid-phase.
             if (received > 0) {
@@ -100,6 +103,7 @@ class KtorTransport(
                 TransferResult.Failed(FailureReason.HTTP_ERROR)
             }
         } catch (t: Throwable) {
+            if (t is CancellationException) throw t
             // Unlike download, a failed upload gives no trustworthy partial
             // count: bytes handed to the socket are not bytes the peer received.
             TransferResult.Failed(t.toFailureReason())

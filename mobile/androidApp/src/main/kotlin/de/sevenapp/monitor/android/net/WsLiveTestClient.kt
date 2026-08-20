@@ -13,6 +13,7 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import io.ktor.websocket.send
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import kotlin.random.Random
@@ -113,6 +114,7 @@ class WsLiveTestClient(
                 }
             }
         } catch (t: Throwable) {
+            if (t is CancellationException) throw t
             return EpisodeResult.Failed(totalBytes, elapsedMs(episodeStart), t.toFailureReason())
         }
 
@@ -169,6 +171,7 @@ class WsLiveTestClient(
                 }
             }
         } catch (t: Throwable) {
+            if (t is CancellationException) throw t
             return EpisodeResult.Failed(totalBytes, elapsedMs(episodeStart), t.toFailureReason())
         }
 
@@ -196,6 +199,7 @@ class WsLiveTestClient(
             if (completed == true && received == bytes.toLong()) EpisodeResult.Ok(received, elapsedMs(started))
             else EpisodeResult.Failed(received, elapsedMs(started), FailureReason.TIMEOUT)
         } catch (t: Throwable) {
+            if (t is CancellationException) throw t
             EpisodeResult.Failed(received, elapsedMs(started), t.toFailureReason())
         }
     }
@@ -226,6 +230,7 @@ class WsLiveTestClient(
             if (acknowledged == bytes.toLong()) EpisodeResult.Ok(bytes.toLong(), elapsedMs(started))
             else EpisodeResult.Failed(0, elapsedMs(started), FailureReason.TIMEOUT)
         } catch (t: Throwable) {
+            if (t is CancellationException) throw t
             EpisodeResult.Failed(0, elapsedMs(started), t.toFailureReason())
         }
     }

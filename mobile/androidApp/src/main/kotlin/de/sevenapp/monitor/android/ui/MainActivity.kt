@@ -48,6 +48,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import de.sevenapp.monitor.core.Format
 import de.sevenapp.monitor.core.NetworkType
+import de.sevenapp.monitor.core.Stats
 import de.sevenapp.monitor.probe.LiveTestConfig
 
 private enum class Screen { MAIN, HISTORY, SETTINGS, HELP }
@@ -207,10 +208,13 @@ fun DashboardScreen(
             TextButton(onClick = { logOpen = !logOpen }, modifier = Modifier.fillMaxWidth()) { Text(if (logOpen) "Hide probe log" else "Show probe log") }
             if (logOpen) Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp)) {
-                    state.recentPings.takeLast(20).reversed().forEach { sample ->
+                    val showManualResult = state.manualTestRunning || state.livePings.isNotEmpty() ||
+                        state.liveDownloadMbps.isNotEmpty() || state.liveUploadMbps.isNotEmpty()
+                    val pings = if (showManualResult) state.livePings else state.recentPings
+                    pings.takeLast(20).reversed().forEach { sample ->
                         Text("${java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(sample.atEpochMs))}  " + (sample.rttMs?.let { "${it.toInt()} ms" } ?: "no reply") + "  ${sample.networkType.name.lowercase()}", style = MaterialTheme.typography.bodySmall)
                     }
-                    if (state.recentPings.isEmpty()) Text("No probes yet.", style = MaterialTheme.typography.bodySmall)
+                    if (pings.isEmpty()) Text("No probes yet.", style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
@@ -219,8 +223,10 @@ fun DashboardScreen(
         item {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val showManualResult = state.manualTestRunning || state.livePings.isNotEmpty() ||
+                        state.liveDownloadMbps.isNotEmpty() || state.liveUploadMbps.isNotEmpty()
                     Text("Request Loss (%)", style = MaterialTheme.typography.labelMedium)
-                    LossChart(state.recentPings)
+                    LossChart(if (showManualResult) state.livePings else state.recentPings)
                     Text("Size Sweep · download — green=passed, red=failed", style = MaterialTheme.typography.labelMedium)
                     SweepResultChart(state.latestDownloadSweep, heightDp = sweepHeight(state.latestDownloadSweep))
                     Text("Size Sweep · upload — green=passed, red=failed", style = MaterialTheme.typography.labelMedium)
@@ -235,20 +241,39 @@ fun DashboardScreen(
 
 @Composable
 private fun SummaryCards(state: DashboardState) {
-    val averageDownload = state.recentThroughput.mapNotNull { it.downMbps }.takeIf { it.isNotEmpty() }?.average()
-    val averageUpload = state.recentThroughput.mapNotNull { it.upMbps }.takeIf { it.isNotEmpty() }?.average()
+    // While displaying a manual test, never fall back to an older persisted
+    // Wi-Fi sample. An empty live rate is honest evidence that this run has not
+    // measured that direction yet; a previous network's result is not.
+    val showManualResult = state.manualTestRunning || state.livePings.isNotEmpty() ||
+        state.liveDownloadMbps.isNotEmpty() || state.liveUploadMbps.isNotEmpty()
+    val pings = if (showManualResult) state.livePings else state.recentPings
+    val rtts = pings.mapNotNull { it.rttMs }
+    val failures = pings.count { !it.ok }
+    val latency = Format.millis(Stats.median(rtts))
+    val jitter = Format.millis(if (rtts.size >= 2) Stats.stdDev(rtts) else null)
+    val loss = if (pings.isEmpty()) null else (failures.toDouble() / pings.size) * 100.0
+    val averageDownload = if (showManualResult) {
+        state.liveDownloadMbps.takeIf { it.isNotEmpty() }?.average()
+    } else {
+        state.recentThroughput.mapNotNull { it.downMbps }.takeIf { it.isNotEmpty() }?.average()
+    }
+    val averageUpload = if (showManualResult) {
+        state.liveUploadMbps.takeIf { it.isNotEmpty() }?.average()
+    } else {
+        state.recentThroughput.mapNotNull { it.upMbps }.takeIf { it.isNotEmpty() }?.average()
+    }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            MetricCard("Avg download", formatMbps(averageDownload), Modifier.weight(1f))
-            MetricCard("Avg upload", formatMbps(averageUpload), Modifier.weight(1f))
+            MetricCard(if (showManualResult) "Manual download" else "Avg download", formatMbps(averageDownload), Modifier.weight(1f))
+            MetricCard(if (showManualResult) "Manual upload" else "Avg upload", formatMbps(averageUpload), Modifier.weight(1f))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            MetricCard("Latency", Format.millis(state.latencyMedianMs), Modifier.weight(1f))
-            MetricCard("Jitter", Format.millis(state.jitterMs), Modifier.weight(1f))
+            MetricCard("Latency", latency, Modifier.weight(1f))
+            MetricCard("Jitter", jitter, Modifier.weight(1f))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            MetricCard("Request loss", Format.percent(state.lossPct), Modifier.weight(1f))
-            MetricCard("Drops", state.dropCount.toString(), Modifier.weight(1f))
+            MetricCard("Request loss", Format.percent(loss), Modifier.weight(1f))
+            MetricCard("Drops", if (showManualResult) "—" else state.dropCount.toString(), Modifier.weight(1f))
         }
         MetricCard("Mobile data this month", Format.bytes(state.meteredBytesThisMonth), Modifier.fillMaxWidth())
         state.stability?.let { score ->

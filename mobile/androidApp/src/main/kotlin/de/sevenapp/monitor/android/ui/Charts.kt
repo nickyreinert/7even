@@ -105,7 +105,7 @@ fun ValueBarChart(
             val plotW = size.width - padding * 2
             val present = values.filterNotNull()
             if (present.isEmpty()) return@Canvas
-            val maxV = max(1.0, present.max())
+            val maxV = if (suffix == " Mbps") rateScaleMax(present) else max(1.0, present.max())
             val barW = max(1f, (plotW / values.size) - 2f)
 
             values.forEachIndexed { i, v ->
@@ -254,7 +254,7 @@ fun MetricLineChart(
             val padding = 8f
             val plotH = size.height - padding * 2
             val plotW = size.width - padding * 2
-            val maxValue = max(1.0, present.max())
+            val maxValue = if (suffix == " Mbps") rateScaleMax(present) else max(1.0, present.max())
             val path = Path()
             var drawing = false
             values.forEachIndexed { index, value ->
@@ -279,6 +279,16 @@ private fun formatRate(mbps: Double): String = when {
     mbps >= 1_000 -> "%.1f Gbit/s".format(mbps / 1_000)
     mbps >= 1 -> "%.1f Mbit/s".format(mbps)
     else -> "%.0f Kbit/s".format(mbps * 1_000)
+}
+
+/**
+ * Throughput is stored in Mbps, but a slow mobile link can legitimately be a
+ * few Kbit/s. A fixed 1 Mbps floor turns such a line into an almost invisible
+ * pixel at the chart edge; scale sub-Mbps charts to the observed range instead.
+ */
+private fun rateScaleMax(values: List<Double>): Double {
+    val observedMax = values.maxOrNull() ?: return 1.0
+    return if (observedMax >= 1.0) observedMax else max(observedMax * 1.1, 0.001)
 }
 
 private fun DrawScope.drawAxisTicks(

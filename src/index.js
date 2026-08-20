@@ -5,7 +5,10 @@
 //   up         -> client streams binary frames, then { type:"up_end", bytesSent }
 //                 server replies { type:"up_ack", bytesReceived }
 
-const DOWN_CHUNK_SIZE = 65536; // 64KB per frame
+// Small enough that a very slow mobile connection receives a first progress
+// frame promptly. A 64KB frame can take longer than a short manual test to
+// arrive, leaving the client with traffic but no measurable live sample.
+const DOWN_CHUNK_SIZE = 4096; // 4KB per frame
 
 // This Worker is now actively linked from the production page (previously
 // unused), so an unauthenticated Origin check keeps other sites from
