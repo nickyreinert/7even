@@ -15,6 +15,16 @@ package de.sevenapp.monitor.probe
 sealed interface LiveSample {
     val atEpochMs: Long
 
+    /**
+     * One reachability probe from the ping phase.
+     *
+     * Every probe is taken on an idle link, because phases never overlap — so a
+     * failure here is an unanswered probe, and can be counted as loss without
+     * qualification. Probing during a stream would measure queueing delay
+     * instead: on a 64 kbit/s line a stream leaves nothing spare, so nearly
+     * every concurrent probe would time out and a merely busy connection would
+     * report near-total packet loss.
+     */
     data class Ping(override val atEpochMs: Long, val rttMs: Double?) : LiveSample
 
     /**
@@ -94,9 +104,10 @@ data class LiveTestConfig(
     val progressThrottleMs: Long = 200,
     val sweepEnabled: Boolean = true,
     val sweepSteps: List<SweepStep> = SweepPlan.DEFAULT,
-    val pingTimeoutMs: Long = 2_000,
+    val pingTimeoutMs: Long = 5_000,
     val streamRoundTimeoutMs: Long = 30_000,
-    val sweepTimeoutMs: Long = 10_000,
+    /** Per-connection; see [ProbeConfig.sweepTimeoutMs]. */
+    val sweepTimeoutMs: Long = 30_000,
 ) {
     /** True when the user picked "Unlimited": phases run until they are stopped. */
     val isUnlimited: Boolean get() = phaseDurationMs == Long.MAX_VALUE
@@ -137,6 +148,16 @@ data class LiveTestConfig(
 
         /** Offered in Settings; the floor matches the web app's shortest option. */
         val DURATION_OPTIONS_MINUTES = listOf(1, 2, 5, 10)
+
+        /**
+         * Sweep timeout choices offered in Settings, in milliseconds.
+         *
+         * The long end is deliberate. 1MB over a 64 kbit/s line takes about
+         * 125 seconds, so anything below two minutes can only ever report that
+         * transfer as a failure — which is the wrong word for a link that is
+         * working exactly as its rate limit dictates.
+         */
+        val SWEEP_TIMEOUT_OPTIONS_MS = listOf(10_000L, 30_000L, 60_000L, 120_000L, 300_000L)
 
         /** How much of the live chart's rolling window to keep, same span as the web app's Live chart. */
         const val LIVE_WINDOW_MS = 65_000L

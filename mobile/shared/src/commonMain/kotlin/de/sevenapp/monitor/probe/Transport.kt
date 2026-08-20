@@ -54,7 +54,29 @@ sealed interface TransferResult {
     data class Failed(val reason: FailureReason) : TransferResult
 }
 
-enum class FailureReason { TIMEOUT, NO_NETWORK, DNS, TLS, HTTP_ERROR, CANCELLED, UNKNOWN }
+enum class FailureReason {
+    /** Ran out of time. On a slow link this means "too slow", not "broken". */
+    TIMEOUT,
+
+    /**
+     * The transfer finished but delivered the wrong number of bytes.
+     *
+     * Distinct from [TIMEOUT] because they mean opposite things about a link:
+     * a timeout on a 64 kbit/s connection is the expected, honest outcome for a
+     * large payload, while a short body that arrived promptly is evidence of
+     * something dropping or truncating traffic.
+     */
+    INCOMPLETE,
+
+    /**
+     * The peer acknowledged an upload but reported a byte count that does not
+     * match what was sent — a server-side accounting problem, not proof that
+     * the link failed. Kept separate so it cannot be read as packet loss.
+     */
+    ACK_MISMATCH,
+
+    NO_NETWORK, DNS, TLS, HTTP_ERROR, CANCELLED, UNKNOWN,
+}
 
 /** Mbps from bytes and milliseconds. Null when the inputs cannot support a rate. */
 fun mbpsOf(bytes: Long, elapsedMs: Double): Double? {

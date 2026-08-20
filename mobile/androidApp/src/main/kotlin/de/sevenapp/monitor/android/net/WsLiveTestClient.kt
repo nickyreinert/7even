@@ -123,10 +123,24 @@ class WsLiveTestClient(
 
     /**
      * Runs back-to-back download rounds of [roundBytes] each until
-     * [episodeDurationMs] has elapsed, calling [onProgress] roughly every
-     * [progressThrottleMs] with the bytes/elapsed *since the last call* — an
-     * instantaneous rate rather than a cumulative average, so a live chart fed
-     * from it shows what's happening right now.
+     * [episodeDurationMs] has elapsed, calling [onProgress] at most every
+     * [progressThrottleMs] with the **cumulative** bytes and elapsed time for
+     * the whole episode.
+     *
+     * Cumulative, not instantaneous, and that distinction is the difference
+     * between a usable number and nonsense. Frames do not arrive smoothly: TCP
+     * and the OkHttp receive buffer deliver them in bursts, so several frames
+     * that spent seconds crossing a slow link are handed to this loop
+     * microseconds apart. Dividing bytes-since-last-sample by
+     * time-since-last-sample then reports the speed of a memory copy — which is
+     * how a 64 kbit/s link produced live readings ranging from 5 Kbit/s to
+     * 5.6 Mbit/s and an "average download" of 3.4 Mbit/s that was never
+     * physically possible.
+     *
+     * Averaging over the whole episode makes bursts cancel out: after a few
+     * seconds the figure converges on what the link actually sustains. It is
+     * also what the web app has always done (`onDownProgress` in index.html),
+     * so the two now agree.
      *
      * The episode deadline is a hard boundary, enforced *within* a round rather
      * than only between rounds: each round gets whatever time is left, so a
@@ -141,11 +155,11 @@ class WsLiveTestClient(
         progressThrottleMs: Long,
         /** Hard byte ceiling for this episode, or null for none. See TransferPlan. */
         maxBytes: Long? = null,
-        onProgress: (bytes: Long, elapsedMs: Double) -> Unit,
+        /** Cumulative bytes and cumulative elapsed ms for the episode so far. */
+        onProgress: (cumulativeBytes: Long, cumulativeElapsedMs: Double) -> Unit,
     ): EpisodeResult {
         val episodeStart = System.nanoTime()
         var totalBytes = 0L
-        var sinceLastSample = 0L
         var lastSampleAt = episodeStart
 
         try {
@@ -166,12 +180,10 @@ class WsLiveTestClient(
                             is Frame.Binary -> {
                                 val n = frame.data.size
                                 totalBytes += n
-                                sinceLastSample += n
                                 val now = System.nanoTime()
                                 if ((now - lastSampleAt) / 1_000_000.0 >= progressThrottleMs) {
-                                    onProgress(sinceLastSample, (now - lastSampleAt) / 1_000_000.0)
-                                    sinceLastSample = 0
                                     lastSampleAt = now
+                                    onProgress(totalBytes, elapsedMs(episodeStart))
                                 }
                             }
                             else -> if (matchingFrame(frame, "down_end", roundId) != null) return@withTimeoutOrNull true
@@ -202,11 +214,16 @@ class WsLiveTestClient(
             return EpisodeResult.Failed(totalBytes, elapsedMs(episodeStart), t.toFailureReason())
         }
 
-        if (sinceLastSample > 0) onProgress(sinceLastSample, (System.nanoTime() - lastSampleAt) / 1_000_000.0)
+        // One final sample so the chart's last point equals the episode result.
+        if (totalBytes > 0) onProgress(totalBytes, elapsedMs(episodeStart))
         return EpisodeResult.Ok(totalBytes, elapsedMs(episodeStart))
     }
 
-    /** Same shape as [runDownEpisode], upload direction: send rounds, wait for each round's `up_ack`. */
+    /**
+     * Same shape as [runDownEpisode], upload direction: send rounds, wait for
+     * each round's `up_ack`. Progress is likewise cumulative — see the note
+     * there for why an instantaneous rate is meaningless on a bursty link.
+     */
     suspend fun runUpEpisode(
         roundBytes: Int,
         episodeDurationMs: Long,
@@ -214,11 +231,11 @@ class WsLiveTestClient(
         progressThrottleMs: Long,
         /** Hard byte ceiling for this episode, or null for none. See TransferPlan. */
         maxBytes: Long? = null,
-        onProgress: (bytes: Long, elapsedMs: Double) -> Unit,
+        /** Cumulative bytes and cumulative elapsed ms for the episode so far. */
+        onProgress: (cumulativeBytes: Long, cumulativeElapsedMs: Double) -> Unit,
     ): EpisodeResult {
         val episodeStart = System.nanoTime()
         var totalBytes = 0L
-        var sinceLastSample = 0L
         var lastSampleAt = episodeStart
 
         try {
@@ -245,12 +262,10 @@ class WsLiveTestClient(
                         s.send(Frame.Binary(fin = true, data = Random.nextBytes(n)))
                         sent += n
                         totalBytes += n
-                        sinceLastSample += n
                         val now = System.nanoTime()
                         if ((now - lastSampleAt) / 1_000_000.0 >= progressThrottleMs) {
-                            onProgress(sinceLastSample, (now - lastSampleAt) / 1_000_000.0)
-                            sinceLastSample = 0
                             lastSampleAt = now
+                            onProgress(totalBytes, elapsedMs(episodeStart))
                         }
                     }
 
@@ -276,7 +291,8 @@ class WsLiveTestClient(
             return EpisodeResult.Failed(totalBytes, elapsedMs(episodeStart), t.toFailureReason())
         }
 
-        if (sinceLastSample > 0) onProgress(sinceLastSample, (System.nanoTime() - lastSampleAt) / 1_000_000.0)
+        // One final sample so the chart's last point equals the episode result.
+        if (totalBytes > 0) onProgress(totalBytes, elapsedMs(episodeStart))
         return EpisodeResult.Ok(totalBytes, elapsedMs(episodeStart))
     }
 
@@ -300,12 +316,22 @@ class WsLiveTestClient(
             }
             // A rung passes only on an exact-size delivery. A short body is a
             // failure for the sweep's purpose, which is "does this size get
-            // through" — not "did something arrive".
-            if (completed == true && received == bytes.toLong()) {
-                EpisodeResult.Ok(received, elapsedMs(started))
-            } else {
-                dropSession()
-                EpisodeResult.Failed(received, elapsedMs(started), FailureReason.TIMEOUT)
+            // through" — not "did something arrive". A failure still reports
+            // the bytes that DID arrive and the time they took: on a
+            // rate-limited line that partial figure is the measurement.
+            when {
+                completed == true && received == bytes.toLong() -> EpisodeResult.Ok(received, elapsedMs(started))
+                // The server said it was done, but the wrong number of bytes
+                // showed up. That is truncation, not slowness, and the two must
+                // not share a label.
+                completed == true -> {
+                    dropSession()
+                    EpisodeResult.Failed(received, elapsedMs(started), FailureReason.INCOMPLETE)
+                }
+                else -> {
+                    dropSession()
+                    EpisodeResult.Failed(received, elapsedMs(started), FailureReason.TIMEOUT)
+                }
             }
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
@@ -314,12 +340,27 @@ class WsLiveTestClient(
         }
     }
 
-    /** One exact-size upload used by the reliability sweep, verified by the Worker's byte acknowledgement. */
+    /**
+     * One exact-size upload used by the reliability sweep, verified by the
+     * Worker's byte acknowledgement.
+     *
+     * Three outcomes are kept apart, because collapsing them made every upload
+     * rung look identical when they were not:
+     *
+     * - the ack matches what was sent — a pass;
+     * - no ack arrived in time — the link is too slow for this size, and the
+     *   bytes handed to the socket are still reported as progress;
+     * - an ack arrived with a byte count that disagrees — the peer's accounting
+     *   is wrong, which is a server problem and NOT evidence of a bad link.
+     *   That last case is why a whole upload ladder could read as failed on a
+     *   connection that was uploading perfectly well.
+     */
     suspend fun runUpTransfer(bytes: Int, timeoutMs: Long): EpisodeResult {
         ensureConnected()
         val s = session ?: return EpisodeResult.Failed(0, 0.0, FailureReason.NO_NETWORK)
         val started = System.nanoTime()
         val roundId = nextRoundId()
+        var sentBytes = 0L
         return try {
             val acknowledged = withTimeoutOrNull(timeoutMs) {
                 s.send(Frame.Text(JSONObject().put("type", "up_start").put("bytes", bytes).put("id", roundId).toString()))
@@ -328,6 +369,7 @@ class WsLiveTestClient(
                     val n = minOf(UP_CHUNK_SIZE, bytes - sent)
                     s.send(Frame.Binary(fin = true, data = Random.nextBytes(n)))
                     sent += n
+                    sentBytes = sent.toLong()
                 }
                 s.send(Frame.Text(JSONObject().put("type", "up_end").put("bytesSent", sent).put("id", roundId).toString()))
                 while (true) {
@@ -336,16 +378,32 @@ class WsLiveTestClient(
                 }
                 @Suppress("UNREACHABLE_CODE") -1L
             }
-            if (acknowledged == bytes.toLong()) {
-                EpisodeResult.Ok(bytes.toLong(), elapsedMs(started))
-            } else {
-                dropSession()
-                EpisodeResult.Failed(0, elapsedMs(started), FailureReason.TIMEOUT)
+            when {
+                acknowledged == bytes.toLong() -> EpisodeResult.Ok(bytes.toLong(), elapsedMs(started))
+                acknowledged == null -> {
+                    dropSession()
+                    EpisodeResult.Failed(sentBytes, elapsedMs(started), FailureReason.TIMEOUT)
+                }
+                // The peer answered "I received nothing" for an upload whose
+                // `up_end` it demonstrably processed — and `up_end` was queued
+                // behind every data frame, so ordering guarantees they arrived
+                // first. That is the peer's accounting failing, not the link
+                // dropping data, and calling it packet loss would put a fault
+                // on the user's connection that belongs to the server.
+                acknowledged <= 0L && sentBytes > 0 -> {
+                    dropSession()
+                    EpisodeResult.Failed(sentBytes, elapsedMs(started), FailureReason.ACK_MISMATCH)
+                }
+                // Some but not all of it arrived: a genuinely truncated upload.
+                else -> {
+                    dropSession()
+                    EpisodeResult.Failed(sentBytes, elapsedMs(started), FailureReason.INCOMPLETE)
+                }
             }
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
             dropSession()
-            EpisodeResult.Failed(0, elapsedMs(started), t.toFailureReason())
+            EpisodeResult.Failed(sentBytes, elapsedMs(started), t.toFailureReason())
         }
     }
 

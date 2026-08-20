@@ -65,6 +65,24 @@ data class ProbeConfig(
      */
     val liveTestPhaseDurationMs: Long = LiveTestConfig.DEFAULT_PHASE_DURATION_MS,
     val liveTestSweepEnabled: Boolean = true,
+
+    /**
+     * How long one sweep transfer may take, per connection type.
+     *
+     * One value for every rung on purpose: the sweep asks "does this size get
+     * through", and scaling the allowance with the size would let a merely-slow
+     * large transfer pass by being given more benefit of the doubt — which
+     * destroys the cutoff signal the ladder exists to find.
+     *
+     * They differ by connection because the same 10 seconds means very
+     * different things on each. A rate-limited mobile line at 64 kbit/s needs
+     * roughly 125 seconds to move 1MB; a 10-second cap called that a failure,
+     * when the honest answer is "it works, it is just slow" — precisely the
+     * finding this app exists to document. The mobile default is generous
+     * enough for that to come out as a pass rather than a red block.
+     */
+    val wifiSweepTimeoutMs: Long = 30_000,
+    val mobileSweepTimeoutMs: Long = 120_000,
     /** Packet sizes and repeats for the foreground send/receive reliability sweep. */
     val liveTestSweepSteps: List<SweepStep> = SweepPlan.DEFAULT,
     val wifiLiveTestSweepSteps: List<SweepStep> = SweepPlan.DEFAULT,
@@ -93,6 +111,9 @@ data class ProbeConfig(
     fun downUrl(bytes: Int): String = downUrlTemplate.replace("{bytes}", bytes.toString())
 
     fun cyclesPerDay(): Int = if (cycleIntervalMinutes <= 0) 0 else (24 * 60) / cycleIntervalMinutes
+
+    fun sweepTimeoutMs(network: NetworkType): Long =
+        if (network == NetworkType.CELLULAR) mobileSweepTimeoutMs else wifiSweepTimeoutMs
 
     fun measurementSizes(network: NetworkType): List<Int> = when (network) {
         NetworkType.WIFI -> wifiMeasurementSizes

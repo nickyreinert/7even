@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import de.sevenapp.monitor.core.Format
+import de.sevenapp.monitor.probe.LiveTestConfig
 import de.sevenapp.monitor.core.NetworkType
 import de.sevenapp.monitor.entitlement.FeatureGate
 import de.sevenapp.monitor.entitlement.Paywall
@@ -286,6 +287,34 @@ private fun SweepSettingsCard(state: SettingsState, viewModel: SettingsViewModel
             FilterChip(selected = !editMobile, onClick = { editMobile = false }, label = { Text("Wi-Fi") })
             FilterChip(selected = editMobile, onClick = { editMobile = true }, label = { Text("Mobile") })
         }
+
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+        Text(
+            "Time allowed per transfer (${if (editMobile) "mobile" else "Wi-Fi"})",
+            style = MaterialTheme.typography.labelMedium,
+        )
+        val timeout = if (editMobile) state.mobileSweepTimeoutMs else state.wifiSweepTimeoutMs
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            LiveTestConfig.SWEEP_TIMEOUT_OPTIONS_MS.forEach { option ->
+                FilterChip(
+                    selected = timeout == option,
+                    onClick = { viewModel.setSweepTimeout(network, option) },
+                    label = { Text(Format.duration(option)) },
+                )
+            }
+        }
+        Text(
+            "The same allowance applies to every size in the plan, on purpose: giving a larger " +
+                "transfer more time would let a merely slow one pass, which hides the size cutoff " +
+                "these checks exist to find. " +
+                "Set it long enough for your connection to finish the biggest size. A 1 MB transfer " +
+                "needs about ${sweepHintSeconds(1_000_000)} on a 64 kbit/s line — with less than that, " +
+                "a working-but-throttled connection is reported as a failure instead of as slow. " +
+                "Transfers that run out of time still report how far they got and at what rate.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+
         rows.forEachIndexed { index, row ->
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 OutlinedTextField(
@@ -360,6 +389,10 @@ private fun SettingsDataUseCard(state: SettingsState) {
         }
     }
 }
+
+/** How long [bytes] takes on a 64 kbit/s line, as a plain-language hint. */
+private fun sweepHintSeconds(bytes: Long): String =
+    Format.duration((bytes * 8 * 1000L) / 64_000L)
 
 private data class SweepEditorRow(val repeats: String, val size: String, val unit: String) {
     fun toStep(): SweepStep? {

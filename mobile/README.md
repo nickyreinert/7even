@@ -7,7 +7,7 @@ in [`../app.md`](../app.md); this file covers the code.
 
 | Part | State | Verified how |
 |---|---|---|
-| `:shared` measurement engine | **working** | 154 unit tests, green on JDK 17 |
+| `:shared` measurement engine | **working** | 160 unit tests, green on JDK 17 |
 | `checkNoPlatformImports` gate | **working** | verified to fail on a deliberate `import android.*` |
 | `androidApp` module | **working** | debug APK builds; `lintDebug` clean; host unit tests green |
 

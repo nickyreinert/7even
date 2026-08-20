@@ -60,6 +60,10 @@ data class DashboardState(
     val manualTestError: String? = null,
     val recentPings: List<PingSample> = emptyList(),
     val recentThroughput: List<ThroughputSample> = emptyList(),
+    /**
+     * Probes from this run's ping phase. Phases never overlap, so every one of
+     * these was taken on an idle link.
+     */
     val livePings: List<PingSample> = emptyList(),
     val liveDownloadMbps: List<Double> = emptyList(),
     val liveUploadMbps: List<Double> = emptyList(),

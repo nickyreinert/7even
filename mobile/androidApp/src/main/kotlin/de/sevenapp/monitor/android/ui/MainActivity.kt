@@ -255,6 +255,12 @@ fun DashboardScreen(
                         state.liveDownloadMbps.isNotEmpty() || state.liveUploadMbps.isNotEmpty()
                     Text("Request Loss (%)", style = MaterialTheme.typography.labelMedium)
                     LossChart(if (showManualResult) state.livePings else state.recentPings)
+                    Text(
+                        "Measured during the ping phase, which runs on its own — no download or " +
+                            "upload is competing for the connection, so a probe that goes unanswered " +
+                            "is a lost request rather than a busy link.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                     Text("Size Sweep · download — green=passed, red=failed", style = MaterialTheme.typography.labelMedium)
                     SweepResultChart(state.latestDownloadSweep, heightDp = sweepHeight(state.latestDownloadSweep))
                     Text("Size Sweep · upload — green=passed, red=failed", style = MaterialTheme.typography.labelMedium)
@@ -274,19 +280,27 @@ private fun SummaryCards(state: DashboardState) {
     // measured that direction yet; a previous network's result is not.
     val showManualResult = state.manualTestRunning || state.livePings.isNotEmpty() ||
         state.liveDownloadMbps.isNotEmpty() || state.liveUploadMbps.isNotEmpty()
+    // Every live ping came from the ping phase, which runs on its own with no
+    // stream competing for the link — so these failures are unanswered probes
+    // rather than a saturated connection queueing.
     val pings = if (showManualResult) state.livePings else state.recentPings
     val rtts = pings.mapNotNull { it.rttMs }
     val failures = pings.count { !it.ok }
     val latency = Format.millis(Stats.median(rtts))
     val jitter = Format.millis(if (rtts.size >= 2) Stats.stdDev(rtts) else null)
     val loss = if (pings.isEmpty()) null else (failures.toDouble() / pings.size) * 100.0
+    // The LAST live sample, not the mean of all of them. Live samples are
+    // cumulative averages over the phase so far, so the final one already IS
+    // the phase's average — and averaging a converging series again drags the
+    // result toward the noisy first few samples taken before the rate had
+    // settled, which on a slow link is where the wildest numbers are.
     val averageDownload = if (showManualResult) {
-        state.liveDownloadMbps.takeIf { it.isNotEmpty() }?.average()
+        state.liveDownloadMbps.lastOrNull()
     } else {
         state.recentThroughput.mapNotNull { it.downMbps }.takeIf { it.isNotEmpty() }?.average()
     }
     val averageUpload = if (showManualResult) {
-        state.liveUploadMbps.takeIf { it.isNotEmpty() }?.average()
+        state.liveUploadMbps.lastOrNull()
     } else {
         state.recentThroughput.mapNotNull { it.upMbps }.takeIf { it.isNotEmpty() }?.average()
     }

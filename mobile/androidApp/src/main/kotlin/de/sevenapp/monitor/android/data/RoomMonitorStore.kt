@@ -21,6 +21,7 @@ import de.sevenapp.monitor.core.ThroughputSample
 import de.sevenapp.monitor.data.MonitorStore
 import de.sevenapp.monitor.probe.ProbeConfig
 import de.sevenapp.monitor.probe.SweepPlan
+import de.sevenapp.monitor.probe.FailureReason
 import de.sevenapp.monitor.probe.LatestSweeps
 import de.sevenapp.monitor.probe.SweepResult
 import de.sevenapp.monitor.probe.SweepRunner
@@ -60,6 +61,8 @@ class RoomMonitorStore(
             fullSweepsPerDay = prefs[KEY_FULL_PER_DAY] ?: defaults.fullSweepsPerDay,
             liveTestPhaseDurationMs = prefs[KEY_LIVE_DURATION] ?: defaults.liveTestPhaseDurationMs,
             liveTestSweepEnabled = prefs[KEY_LIVE_SWEEP] ?: defaults.liveTestSweepEnabled,
+            wifiSweepTimeoutMs = prefs[KEY_WIFI_SWEEP_TIMEOUT] ?: defaults.wifiSweepTimeoutMs,
+            mobileSweepTimeoutMs = prefs[KEY_MOBILE_SWEEP_TIMEOUT] ?: defaults.mobileSweepTimeoutMs,
             liveTestSweepSteps = prefs[KEY_LIVE_SWEEP_PLAN]?.let(SweepPlan::parse) ?: defaults.liveTestSweepSteps,
             wifiLiveTestSweepSteps = prefs[KEY_WIFI_LIVE_SWEEP_PLAN]?.let(SweepPlan::parse) ?: defaults.wifiLiveTestSweepSteps,
             mobileLiveTestSweepSteps = prefs[KEY_MOBILE_LIVE_SWEEP_PLAN]?.let(SweepPlan::parse) ?: defaults.mobileLiveTestSweepSteps,
@@ -94,6 +97,8 @@ class RoomMonitorStore(
             p[KEY_FULL_PER_DAY] = config.fullSweepsPerDay
             p[KEY_LIVE_DURATION] = config.liveTestPhaseDurationMs
             p[KEY_LIVE_SWEEP] = config.liveTestSweepEnabled
+            p[KEY_WIFI_SWEEP_TIMEOUT] = config.wifiSweepTimeoutMs
+            p[KEY_MOBILE_SWEEP_TIMEOUT] = config.mobileSweepTimeoutMs
             p[KEY_LIVE_SWEEP_PLAN] = SweepPlan.format(config.liveTestSweepSteps)
             p[KEY_WIFI_LIVE_SWEEP_PLAN] = SweepPlan.format(config.wifiLiveTestSweepSteps)
             p[KEY_MOBILE_LIVE_SWEEP_PLAN] = SweepPlan.format(config.mobileLiveTestSweepSteps)
@@ -278,8 +283,22 @@ class RoomMonitorStore(
 
     private fun Set<String>.toSizes(): Set<Int> = mapNotNull { it.toIntOrNull() }.toSet()
 
+    /**
+     * Positional CSV: bytes,trials,passCount,outcomes,bytesTransferred,elapsedMs,lastError.
+     *
+     * Fields are appended, never reordered, so a value written by an older
+     * build still decodes — the trailing fields simply come back as defaults.
+     */
     private fun List<SweepResult>.encodeSweep(): String = joinToString(";") { result ->
-        "${result.bytes},${result.trials},${result.passCount},${result.trialOutcomes.joinToString("") { if (it) "1" else "0" }}"
+        listOf(
+            result.bytes.toString(),
+            result.trials.toString(),
+            result.passCount.toString(),
+            result.trialOutcomes.joinToString("") { if (it) "1" else "0" },
+            result.bytesTransferred.toString(),
+            result.totalElapsedMs.toLong().toString(),
+            result.lastError?.name.orEmpty(),
+        ).joinToString(",")
     }
 
     private fun String.decodeSweep(): List<SweepResult> = split(';').mapNotNull { encoded ->
@@ -288,8 +307,20 @@ class RoomMonitorStore(
         val trials = fields.getOrNull(1)?.toIntOrNull() ?: return@mapNotNull null
         val passCount = fields.getOrNull(2)?.toIntOrNull() ?: return@mapNotNull null
         val outcomes = fields.getOrNull(3)?.map { it == '1' } ?: emptyList()
-        if (bytes <= 0 || trials <= 0 || outcomes.size != trials) return@mapNotNull null
-        SweepResult(bytes, trials, passCount, avgDurationMs = null, lastError = null, trialOutcomes = outcomes)
+        // A cancelled rung legitimately records fewer outcomes than trials, so
+        // this only rejects an outcome list that is longer than the plan.
+        if (bytes <= 0 || trials <= 0 || outcomes.size > trials) return@mapNotNull null
+        SweepResult(
+            bytes = bytes,
+            trials = trials,
+            passCount = passCount,
+            avgDurationMs = null,
+            lastError = fields.getOrNull(6)?.takeIf { it.isNotEmpty() }
+                ?.let { name -> runCatching { FailureReason.valueOf(name) }.getOrNull() },
+            trialOutcomes = outcomes,
+            bytesTransferred = fields.getOrNull(4)?.toLongOrNull() ?: 0L,
+            totalElapsedMs = fields.getOrNull(5)?.toDoubleOrNull() ?: 0.0,
+        )
     }
 
     companion object {
@@ -304,6 +335,8 @@ class RoomMonitorStore(
         private val KEY_FULL_PER_DAY = intPreferencesKey("full_sweeps_per_day")
         private val KEY_LIVE_DURATION = longPreferencesKey("live_test_min_duration_ms")
         private val KEY_LIVE_SWEEP = booleanPreferencesKey("live_test_sweep_enabled")
+        private val KEY_WIFI_SWEEP_TIMEOUT = longPreferencesKey("wifi_sweep_timeout_ms")
+        private val KEY_MOBILE_SWEEP_TIMEOUT = longPreferencesKey("mobile_sweep_timeout_ms")
         private val KEY_LIVE_SWEEP_PLAN = stringPreferencesKey("live_test_sweep_plan")
         private val KEY_WIFI_LIVE_SWEEP_PLAN = stringPreferencesKey("wifi_live_test_sweep_plan")
         private val KEY_MOBILE_LIVE_SWEEP_PLAN = stringPreferencesKey("mobile_live_test_sweep_plan")

@@ -334,7 +334,18 @@ async function handleControlMessage(server, state, text) {
       if (state.uploadRoundId !== undefined && id !== undefined && id !== state.uploadRoundId) {
         throw new ProtocolError('up_end round id mismatch');
       }
-      const ack = { type: 'up_ack', bytesReceived: state.uploadBytesReceived };
+      // `bytesExpected` echoes what the client said it would send. A client
+      // comparing the two can tell "the link dropped data" apart from "the
+      // server miscounted", which a bare received-count cannot express — and
+      // the second of those must never reach a user as packet loss.
+      const declared = typeof msg.bytesSent === 'number' && Number.isSafeInteger(msg.bytesSent)
+        ? msg.bytesSent
+        : null;
+      const ack = {
+        type: 'up_ack',
+        bytesReceived: state.uploadBytesReceived,
+        bytesExpected: declared ?? state.uploadLimit,
+      };
       const echo = state.uploadRoundId ?? id;
       if (echo !== undefined) ack.id = echo;
       state.phase = 'idle';
@@ -351,11 +362,10 @@ async function handleControlMessage(server, state, text) {
   }
 }
 
-function handleBinaryFrame(state, data) {
+function handleBinaryFrame(state, length) {
   if (state.phase !== 'up') throw new ProtocolError('binary frame outside an upload round');
-  const len = binaryFrameLength(data);
-  state.uploadBytesReceived += len;
-  chargeBytes(state, len);
+  state.uploadBytesReceived += length;
+  chargeBytes(state, length);
   if (state.uploadBytesReceived > state.uploadLimit) {
     throw new ProtocolError('upload exceeded declared size');
   }
@@ -407,16 +417,35 @@ export default {
 
     server.addEventListener('message', (event) => {
       if (state.closed) return;
+      // Read synchronously, inside the listener. The queued task below runs on
+      // a later turn, and an event object is not guaranteed to still hold its
+      // payload by then — reading `event.data` from inside the continuation
+      // risks an undefined length, which the byte counter turns into NaN and
+      // `JSON.stringify` serializes as null. That chain is exactly how an
+      // upload acknowledgement ends up reporting zero bytes received for a
+      // transfer that plainly happened.
+      const data = event.data;
+      // Checked by type rather than `instanceof ArrayBuffer`: that failed to
+      // match real binary frames in production despite the client sending
+      // correctly-sized data (a cross-realm instanceof mismatch in the isolate
+      // runtime — the object IS an ArrayBuffer, just not `instanceof` this
+      // global's constructor).
+      const isBinary = typeof data !== 'string';
+      // Length is also read now rather than later, for the same reason.
+      let binaryLength = 0;
+      if (isBinary) {
+        try {
+          binaryLength = binaryFrameLength(data);
+        } catch (e) {
+          fail(e);
+          return;
+        }
+      }
+
       queue = queue.then(async () => {
         if (state.closed) return;
-        const data = event.data;
-        // Checked by type rather than `instanceof ArrayBuffer`: that failed to
-        // match real binary frames in production despite the client sending
-        // correctly-sized data (a cross-realm instanceof mismatch in the
-        // isolate runtime — the object IS an ArrayBuffer, just not
-        // `instanceof` this global's constructor).
-        if (typeof data !== 'string') {
-          handleBinaryFrame(state, data);
+        if (isBinary) {
+          handleBinaryFrame(state, binaryLength);
         } else {
           await handleControlMessage(server, state, data);
         }

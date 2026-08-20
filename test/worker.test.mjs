@@ -258,7 +258,41 @@ test('upload rounds are correlated and bounded by their declared size', async ()
   await deliver(server, new Uint8Array(1024));
   await deliver(server, new Uint8Array(1024));
   await deliver(server, JSON.stringify({ type: 'up_end', bytesSent: 2048, id: 'u1' }));
-  assert.deepEqual(server.controlFrames(), [{ type: 'up_ack', bytesReceived: 2048, id: 'u1' }]);
+  assert.deepEqual(server.controlFrames(), [
+    { type: 'up_ack', bytesReceived: 2048, bytesExpected: 2048, id: 'u1' },
+  ]);
+});
+
+test('the ack distinguishes a short transfer from a miscount', async () => {
+  // bytesExpected echoes the client's own claim, so a client can tell "the
+  // link dropped data" from "the server counted wrong" — and never report the
+  // second as packet loss.
+  const server = await open();
+  await deliver(server, JSON.stringify({ type: 'up_start', bytes: 4096 }));
+  await deliver(server, new Uint8Array(1024));
+  await deliver(server, JSON.stringify({ type: 'up_end', bytesSent: 4096 }));
+  const [ack] = server.controlFrames();
+  assert.equal(ack.type, 'up_ack');
+  assert.equal(ack.bytesReceived, 1024);
+  assert.equal(ack.bytesExpected, 4096);
+});
+
+test('binary frame length is read before the handler is deferred', async () => {
+  // The queued handler runs on a later turn. Reading event.data there risks an
+  // undefined byteLength, which becomes NaN and serializes as null — reported
+  // back as "0 bytes received" for an upload that plainly happened.
+  const server = await open();
+  await deliver(server, JSON.stringify({ type: 'up_start', bytes: 8192 }));
+
+  const frame = new Uint8Array(4096);
+  server.emit('message', { get data() { return frame; } });
+  // Simulate the runtime recycling the event payload before the queue drains.
+  server.emit('message', { data: new Uint8Array(4096) });
+  for (let i = 0; i < 50; i++) await timersScheduler.wait(0);
+
+  await deliver(server, JSON.stringify({ type: 'up_end', bytesSent: 8192 }));
+  const [ack] = server.controlFrames();
+  assert.equal(ack.bytesReceived, 8192, 'byte counting must not depend on event lifetime');
 });
 
 test('an upload that exceeds its declared size closes the connection', async () => {

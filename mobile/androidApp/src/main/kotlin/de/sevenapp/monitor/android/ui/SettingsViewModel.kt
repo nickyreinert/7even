@@ -14,6 +14,7 @@ import de.sevenapp.monitor.core.NetworkPreference
 import de.sevenapp.monitor.entitlement.FeatureGate
 import de.sevenapp.monitor.entitlement.Tier
 import de.sevenapp.monitor.probe.DataBudget
+import de.sevenapp.monitor.probe.LiveTestConfig
 import de.sevenapp.monitor.probe.SweepPlan
 import de.sevenapp.monitor.probe.SweepStep
 import de.sevenapp.monitor.report.ReportPeriod
@@ -41,6 +42,8 @@ data class SettingsState(
     val streamUrl: String = "",
     val useWebSocketStream: Boolean = false,
     val liveTestSweepEnabled: Boolean = true,
+    val wifiSweepTimeoutMs: Long = 30_000,
+    val mobileSweepTimeoutMs: Long = 120_000,
     val wifiSweepSteps: List<SweepStep> = SweepPlan.DEFAULT,
     val mobileSweepSteps: List<SweepStep> = SweepPlan.MOBILE_DEFAULT,
     val wifiMeasurementSizes: Set<Int> = emptySet(),
@@ -89,6 +92,8 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             streamUrl = config.streamUrl,
             useWebSocketStream = config.useWebSocketStream,
             liveTestSweepEnabled = config.liveTestSweepEnabled,
+            wifiSweepTimeoutMs = config.wifiSweepTimeoutMs,
+            mobileSweepTimeoutMs = config.mobileSweepTimeoutMs,
             wifiSweepSteps = config.wifiLiveTestSweepSteps,
             mobileSweepSteps = config.mobileLiveTestSweepSteps,
             wifiMeasurementSizes = config.wifiMeasurementSizes,
@@ -217,6 +222,26 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setLiveSweep(enabled: Boolean) = viewModelScope.launch {
         store.saveConfig(store.loadConfig().copy(liveTestSweepEnabled = enabled))
+        refresh()
+    }
+
+    /**
+     * One allowance per connection, applied to every size in that plan.
+     *
+     * Deliberately not per-size: scaling the allowance with the payload would
+     * give a large transfer more benefit of the doubt than a small one, which
+     * blurs the exact pass/fail boundary the ladder exists to locate.
+     */
+    fun setSweepTimeout(network: NetworkType, timeoutMs: Long) = viewModelScope.launch {
+        val clamped = timeoutMs.coerceIn(
+            LiveTestConfig.SWEEP_TIMEOUT_OPTIONS_MS.min(),
+            LiveTestConfig.SWEEP_TIMEOUT_OPTIONS_MS.max(),
+        )
+        val config = store.loadConfig()
+        store.saveConfig(
+            if (network == NetworkType.CELLULAR) config.copy(mobileSweepTimeoutMs = clamped)
+            else config.copy(wifiSweepTimeoutMs = clamped),
+        )
         refresh()
     }
 

@@ -56,10 +56,19 @@ fun LatencyChart(
             samples.forEachIndexed { i, sample ->
                 val x = padding + i * (plotW / samples.size)
                 if (sample.rttMs == null) {
-                    // A failed probe is a short red tick at the floor, not a
-                    // zero-height bar — "no answer" must not read as
-                    // "measured near-zero latency".
-                    drawRect(FailRed, Offset(x, padding + plotH - 4f), androidx.compose.ui.geometry.Size(barW, 4f))
+                    // A failed probe gets a full-height translucent column with
+                    // a solid base. It must not be drawn at a height that
+                    // implies a latency value — "no answer" is not "measured
+                    // near-zero" — but the previous 4px tick was so faint that
+                    // a chart of nothing but failures read as an empty chart,
+                    // which is how "it isn't pinging at all" and "every ping
+                    // failed" became indistinguishable.
+                    drawRect(
+                        FailRed.copy(alpha = 0.25f),
+                        Offset(x, padding),
+                        androidx.compose.ui.geometry.Size(barW, plotH),
+                    )
+                    drawRect(FailRed, Offset(x, padding + plotH - 6f), androidx.compose.ui.geometry.Size(barW, 6f))
                 } else {
                     val h = max(1f, ((sample.rttMs!! / maxRtt) * plotH).toFloat())
                     drawRect(DownBlue.copy(alpha = 0.7f), Offset(x, padding + plotH - h), androidx.compose.ui.geometry.Size(barW, h))
@@ -210,6 +219,11 @@ fun SweepResultChart(
         Canvas(Modifier.fillMaxWidth().height(heightDp.dp)) {
             if (results.isEmpty()) return@Canvas
             val labelWidth = 64.dp.toPx()
+            // Room on the right for the achieved rate. A bare pass/fail grid
+            // cannot distinguish "this size is blocked" from "this size is
+            // simply slow", and on a rate-limited line that is the entire
+            // question — so every row carries what it actually measured.
+            val evidenceWidth = 96.dp.toPx()
             val rowHeight = size.height / results.size
             results.forEachIndexed { index, result ->
                 val outcomes = result.trialOutcomes.ifEmpty { List(result.trials) { it < result.passCount } }
@@ -222,14 +236,35 @@ fun SweepResultChart(
                 }
                 drawContext.canvas.nativeCanvas.drawText(label, 8f, top + rowHeight * 0.65f, paint)
 
+                val evidencePaint = android.graphics.Paint().apply {
+                    color = android.graphics.Color.rgb(160, 160, 160)
+                    textSize = 10.dp.toPx()
+                    textAlign = android.graphics.Paint.Align.RIGHT
+                    isAntiAlias = true
+                }
+                drawContext.canvas.nativeCanvas.drawText(
+                    sweepEvidenceLabel(result),
+                    size.width - 4f,
+                    top + rowHeight * 0.65f,
+                    evidencePaint,
+                )
+
                 if (outcomes.isEmpty()) return@forEachIndexed
                 val gap = 3.dp.toPx()
-                val availableWidth = (size.width - labelWidth).coerceAtLeast(1f)
+                val availableWidth = (size.width - labelWidth - evidenceWidth).coerceAtLeast(1f)
                 val blockWidth = (availableWidth - gap * (outcomes.size - 1)) / outcomes.size
                 outcomes.forEachIndexed { tryIndex, passed ->
                     val left = labelWidth + tryIndex * (blockWidth + gap)
                     drawRect(
-                        color = if (passed) Color(0xFF22C55E) else FailRed,
+                        // Amber, not red, for a rung that moved data and ran
+                        // out of time. Red means "did not get through"; a
+                        // throttled link that transferred most of the payload
+                        // deserves a different colour from one that dropped it.
+                        color = when {
+                            passed -> Color(0xFF22C55E)
+                            result.timedOut -> UpAmber
+                            else -> FailRed
+                        },
                         topLeft = Offset(left, top),
                         size = androidx.compose.ui.geometry.Size(blockWidth.coerceAtLeast(1f), max(2f, rowHeight - 6f)),
                     )
@@ -262,6 +297,12 @@ fun MetricLineChart(
                 val x = padding + index * (plotW / max(1, values.lastIndex))
                 val y = (padding + plotH - (value / maxValue) * plotH).toFloat()
                 if (drawing) path.lineTo(x, y) else { path.moveTo(x, y); drawing = true }
+                // A dot per sample as well as the line. A path holding a single
+                // moveTo and no lineTo strokes nothing at all, so a phase that
+                // produced exactly one measurement drew an empty chart — which
+                // read as "upload never ran" while the card above it showed a
+                // perfectly real 200 Kbit/s.
+                drawCircle(color, radius = 3f, center = Offset(x, y))
             }
             drawPath(path, color, style = Stroke(width = 3f))
             drawAxisTicks(
@@ -273,6 +314,31 @@ fun MetricLineChart(
             )
         }
     }
+}
+
+/**
+ * What a rung actually measured, in one short line.
+ *
+ * "1 MB — 480KB @ 64 Kbit/s" is a finding. A red block on its own is not, and
+ * on a deliberately rate-limited connection it is actively misleading: the
+ * transfer was not blocked, it just needed more time than it was given.
+ */
+private fun sweepEvidenceLabel(result: SweepResult): String {
+    val rate = result.observedMbps?.let { formatRate(it) }
+    return when {
+        result.cancelled -> "stopped"
+        result.passCount == result.trials && rate != null -> rate
+        result.bytesTransferred > 0 && rate != null ->
+            "${formatBytesShort(result.bytesTransferred)} @ $rate"
+        result.bytesTransferred > 0 -> formatBytesShort(result.bytesTransferred)
+        else -> result.lastError?.name?.lowercase() ?: ""
+    }
+}
+
+private fun formatBytesShort(bytes: Long): String = when {
+    bytes >= 1_000_000 -> "%.1fMB".format(bytes / 1_000_000.0)
+    bytes >= 1_000 -> "${bytes / 1_000}KB"
+    else -> "${bytes}B"
 }
 
 private fun formatRate(mbps: Double): String = when {

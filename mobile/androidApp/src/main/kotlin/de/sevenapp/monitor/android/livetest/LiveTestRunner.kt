@@ -23,12 +23,9 @@ import de.sevenapp.monitor.probe.TransportResult
 import de.sevenapp.monitor.probe.mbpsOf
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 
 /**
@@ -105,6 +102,12 @@ class LiveTestRunner(
         phaseDurationMs = probeConfig.liveTestPhaseDurationMs,
         sweepEnabled = runSweep,
         sweepSteps = if (effectiveNetworkType == NetworkType.CELLULAR) probeConfig.mobileLiveTestSweepSteps else probeConfig.wifiLiveTestSweepSteps,
+        // Both were hardcoded here. The ping timeout ignored the user's
+        // configured value and defaulted to 2s, which a high-latency mobile
+        // link fails on merely for being slow — producing a latency chart with
+        // no successful probes on it at all.
+        pingTimeoutMs = probeConfig.pingTimeoutMs,
+        sweepTimeoutMs = probeConfig.sweepTimeoutMs(effectiveNetworkType),
     )
 
     private val ssidForSamples: String?
@@ -133,7 +136,7 @@ class LiveTestRunner(
                     // is saturating the link measures the stream, not the link.
                     runPingPhase(httpTransport, onSample)
 
-                    if (ws != null && runStream) runStreamPhases(ws, httpTransport, onSample)
+                    if (ws != null && runStream) runStreamPhases(ws, onSample)
                     if (ws != null && runSweep) runWebSocketSweep(ws, onSample)
                     // "Unlimited" has no per-phase deadline to divide up, so it
                     // cycles the same phases until the user stops it.
@@ -171,6 +174,13 @@ class LiveTestRunner(
         runPhase(liveConfig.effectivePhaseDurationMs) { pingLoop(transport, onSample) }
     }
 
+    /**
+     * Probes until the phase deadline cancels it.
+     *
+     * Every sample here was taken on an idle link, because this only runs
+     * during the ping phase — so a failure is a genuinely unanswered probe and
+     * is safe to record as loss.
+     */
     private suspend fun pingLoop(transport: KtorTransport, onSample: (LiveSample) -> Unit) {
         while (true) {
             currentCoroutineContext().ensureActive()
@@ -184,65 +194,64 @@ class LiveTestRunner(
     }
 
     /**
-     * Download for one phase, then upload for one phase, with the ping loop
-     * running underneath both so the latency chart keeps moving — the same
-     * shape as the web app's live view.
+     * Download for one phase, then upload for one phase. Nothing else runs.
+     *
+     * Strictly one measurement at a time is the point of the phase structure:
+     * a probe competing with a stream measures the stream, and a stream sharing
+     * the link with a probe is not measuring the link's full capacity either.
+     * On a 64 kbit/s connection there is no spare bandwidth for a second thing
+     * to happen in, so overlapping them does not produce two measurements — it
+     * produces two wrong ones. Latency belongs to the ping phase.
      */
     private suspend fun runStreamPhases(
         ws: WsLiveTestClient,
-        httpTransport: KtorTransport,
         onSample: (LiveSample) -> Unit,
-    ) = coroutineScope {
+    ) {
         val phaseMs = liveConfig.effectivePhaseDurationMs
-        val pingJob = launch { pingLoop(httpTransport, onSample) }
-        try {
-            emitPhase(onSample, LivePhase.DOWNLOAD_STREAM, step = 2, durationMs = phaseMs)
-            // Half the ceiling per direction, so an upload phase still has
-            // allowance left after a fast download phase.
-            val perDirectionCap = maxTransferBytes?.let { it / 2 }
-            var down: WsLiveTestClient.EpisodeResult =
-                WsLiveTestClient.EpisodeResult.Failed(0, 0.0, FailureReason.TIMEOUT)
-            // The episode enforces the phase deadline itself, and returns the
-            // bytes it managed to move. This outer timeout is only a backstop
-            // for a wedged socket, so it is given a grace margin rather than
-            // racing the episode's own clean finish and discarding its result.
-            runPhase(phaseMs + STREAM_PHASE_GRACE_MS) {
-                ws.ensureConnected()
-                down = ws.runDownEpisode(
-                    roundBytes = liveConfig.downRoundBytes,
-                    episodeDurationMs = phaseMs,
-                    roundTimeoutMs = liveConfig.streamRoundTimeoutMs,
-                    progressThrottleMs = liveConfig.progressThrottleMs,
-                    maxBytes = perDirectionCap,
-                ) { bytes, elapsedMs ->
-                    mbpsOf(bytes, elapsedMs)?.let {
-                        onSample(LiveSample.Rate(clock.nowEpochMs(), SweepRunner.Direction.DOWN, it))
-                    }
+        emitPhase(onSample, LivePhase.DOWNLOAD_STREAM, step = 2, durationMs = phaseMs)
+        // Half the ceiling per direction, so an upload phase still has
+        // allowance left after a fast download phase.
+        val perDirectionCap = maxTransferBytes?.let { it / 2 }
+        var down: WsLiveTestClient.EpisodeResult =
+            WsLiveTestClient.EpisodeResult.Failed(0, 0.0, FailureReason.TIMEOUT)
+        // The episode enforces the phase deadline itself, and returns the
+        // bytes it managed to move. This outer timeout is only a backstop
+        // for a wedged socket, so it is given a grace margin rather than
+        // racing the episode's own clean finish and discarding its result.
+        runPhase(phaseMs + STREAM_PHASE_GRACE_MS) {
+            ws.ensureConnected()
+            down = ws.runDownEpisode(
+                roundBytes = liveConfig.downRoundBytes,
+                episodeDurationMs = phaseMs,
+                roundTimeoutMs = liveConfig.streamRoundTimeoutMs,
+                progressThrottleMs = liveConfig.progressThrottleMs,
+                maxBytes = perDirectionCap,
+            ) { bytes, elapsedMs ->
+                mbpsOf(bytes, elapsedMs)?.let {
+                    onSample(LiveSample.Rate(clock.nowEpochMs(), SweepRunner.Direction.DOWN, it))
                 }
             }
-
-            emitPhase(onSample, LivePhase.UPLOAD_STREAM, step = 3, durationMs = phaseMs)
-            var up: WsLiveTestClient.EpisodeResult =
-                WsLiveTestClient.EpisodeResult.Failed(0, 0.0, FailureReason.TIMEOUT)
-            runPhase(phaseMs + STREAM_PHASE_GRACE_MS) {
-                ws.ensureConnected()
-                up = ws.runUpEpisode(
-                    roundBytes = liveConfig.upRoundBytes,
-                    episodeDurationMs = phaseMs,
-                    roundTimeoutMs = liveConfig.streamRoundTimeoutMs,
-                    progressThrottleMs = liveConfig.progressThrottleMs,
-                    maxBytes = perDirectionCap,
-                ) { bytes, elapsedMs ->
-                    mbpsOf(bytes, elapsedMs)?.let {
-                        onSample(LiveSample.Rate(clock.nowEpochMs(), SweepRunner.Direction.UP, it))
-                    }
-                }
-            }
-
-            persistEpisode(down, up)
-        } finally {
-            pingJob.cancelAndJoin()
         }
+
+        emitPhase(onSample, LivePhase.UPLOAD_STREAM, step = 3, durationMs = phaseMs)
+        var up: WsLiveTestClient.EpisodeResult =
+            WsLiveTestClient.EpisodeResult.Failed(0, 0.0, FailureReason.TIMEOUT)
+        runPhase(phaseMs + STREAM_PHASE_GRACE_MS) {
+            ws.ensureConnected()
+            up = ws.runUpEpisode(
+                roundBytes = liveConfig.upRoundBytes,
+                episodeDurationMs = phaseMs,
+                roundTimeoutMs = liveConfig.streamRoundTimeoutMs,
+                progressThrottleMs = liveConfig.progressThrottleMs,
+                maxBytes = perDirectionCap,
+            ) { bytes, elapsedMs ->
+                mbpsOf(bytes, elapsedMs)?.let {
+                    onSample(LiveSample.Rate(clock.nowEpochMs(), SweepRunner.Direction.UP, it))
+                }
+            }
+        }
+
+        persistEpisode(down, up)
     }
 
     private suspend fun runWebSocketSweep(ws: WsLiveTestClient, onSample: (LiveSample) -> Unit) {
@@ -260,19 +269,57 @@ class LiveTestRunner(
         chargeBytes(sweepBytesMoved(down) + sweepBytesMoved(up))
     }
 
+    /**
+     * Climbs the ladder, and stops early only when the link is *dead*.
+     *
+     * The stopping rule is deliberately "a rung failed every trial without
+     * moving a single byte", not "a rung failed". A throttled connection fails
+     * large sizes while still transferring most of the payload, and that is
+     * precisely the finding worth waiting for — abandoning the ladder there
+     * would throw away the evidence the test exists to collect. A link that
+     * moves nothing, on the other hand, will not move anything at a larger
+     * size either, and without this the mobile ladder would spend eleven
+     * consecutive timeouts (over half an hour at a two-minute allowance)
+     * re-proving the same thing.
+     */
     private suspend fun runWebSocketSweepDirection(
         ws: WsLiveTestClient,
         direction: SweepRunner.Direction,
-    ): List<SweepResult> = liveConfig.sweepSteps.map { step ->
+    ): List<SweepResult> {
+        val results = mutableListOf<SweepResult>()
+        for (step in liveConfig.sweepSteps) {
+            val result = runSweepStep(ws, direction, step)
+            results += result
+            val linkIsDead = result.passCount == 0 &&
+                result.attempted > 0 &&
+                result.bytesTransferred == 0L
+            if (linkIsDead) break
+        }
+        return results
+    }
+
+    private suspend fun runSweepStep(
+        ws: WsLiveTestClient,
+        direction: SweepRunner.Direction,
+        step: de.sevenapp.monitor.probe.SweepStep,
+    ): SweepResult = run {
         val outcomes = mutableListOf<Boolean>()
         var durationTotal = 0.0
         var lastError: FailureReason? = null
+        var bytesMoved = 0L
+        var elapsedTotal = 0.0
         repeat(step.trials) {
             currentCoroutineContext().ensureActive()
             val result = when (direction) {
                 SweepRunner.Direction.DOWN -> ws.runDownTransfer(step.bytes, liveConfig.sweepTimeoutMs)
                 SweepRunner.Direction.UP -> ws.runUpTransfer(step.bytes, liveConfig.sweepTimeoutMs)
             }
+            // Bytes and time are recorded for failures too. A rung that timed
+            // out after moving most of its payload is the single most useful
+            // measurement this app can produce on a rate-limited line, and
+            // discarding it leaves only an unexplained red block.
+            bytesMoved += result.bytes
+            elapsedTotal += result.elapsedMs
             when (result) {
                 is WsLiveTestClient.EpisodeResult.Ok -> {
                     outcomes += true
@@ -292,6 +339,8 @@ class LiveTestRunner(
             avgDurationMs = if (passed > 0) durationTotal / passed else null,
             lastError = if (passed == step.trials) null else lastError,
             trialOutcomes = outcomes,
+            bytesTransferred = bytesMoved,
+            totalElapsedMs = elapsedTotal,
         )
     }
 

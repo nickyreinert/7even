@@ -16,8 +16,31 @@ data class SweepResult(
     val trialOutcomes: List<Boolean> = List(trials) { it < passCount },
     /** True when the rung stopped early because the test was cancelled. */
     val cancelled: Boolean = false,
+    /**
+     * Bytes that actually crossed the link across every attempt, including
+     * attempts that then timed out.
+     *
+     * This is the evidence that turns a red block into a measurement. "1 MB
+     * failed" says nothing useful about a rate-limited line; "1 MB: 480 KB
+     * moved in 60s" says the link is alive and running at 64 kbit/s, which is
+     * exactly the claim this app exists to substantiate.
+     */
+    val bytesTransferred: Long = 0,
+    /** Wall time spent on this rung across every attempt. */
+    val totalElapsedMs: Double = 0.0,
 ) {
     val attempted: Int get() = trialOutcomes.size
+
+    /**
+     * The rate this rung actually achieved, whether or not it passed.
+     *
+     * A timed-out rung still measured something; discarding its throughput
+     * because it did not finish throws away the only number that explains why.
+     */
+    val observedMbps: Double? get() = mbpsOf(bytesTransferred, totalElapsedMs)
+
+    /** True when the rung moved data steadily but ran out of time rather than failing. */
+    val timedOut: Boolean get() = lastError == FailureReason.TIMEOUT && bytesTransferred > 0
 
     val ok: Boolean get() = passCount == trials && !cancelled
 
@@ -149,6 +172,8 @@ class SweepRunner(private val transport: Transport) {
             var durationSum = 0.0
             var lastError: FailureReason? = null
             var cancelled = false
+            var bytesMoved = 0L
+            var elapsedTotal = 0.0
 
             // A plain `repeat` with `return@repeat` skips one iteration and
             // keeps going, so a cancelled rung still emitted a result claiming
@@ -167,12 +192,25 @@ class SweepRunner(private val transport: Transport) {
                 }
 
                 when (result) {
-                    is TransferResult.Ok -> { passCount++; durationSum += result.elapsedMs; outcomes += true }
+                    is TransferResult.Ok -> {
+                        passCount++
+                        durationSum += result.elapsedMs
+                        elapsedTotal += result.elapsedMs
+                        bytesMoved += result.bytes
+                        outcomes += true
+                    }
                     // A partial transfer is a FAILURE for the sweep's purposes.
                     // The sweep asks "does this size get through", and a
                     // truncated transfer did not — counting it as a pass would
-                    // blur the very cutoff being looked for.
-                    is TransferResult.Partial -> { lastError = result.reason; outcomes += false }
+                    // blur the very cutoff being looked for. Its bytes and time
+                    // are still recorded: they are what proves the link was
+                    // working, just slowly.
+                    is TransferResult.Partial -> {
+                        lastError = result.reason
+                        elapsedTotal += result.elapsedMs
+                        bytesMoved += result.bytes
+                        outcomes += false
+                    }
                     is TransferResult.Failed -> { lastError = result.reason; outcomes += false }
                 }
             }
@@ -185,6 +223,8 @@ class SweepRunner(private val transport: Transport) {
                 lastError = if (passCount == outcomes.size) null else lastError,
                 trialOutcomes = outcomes,
                 cancelled = cancelled,
+                bytesTransferred = bytesMoved,
+                totalElapsedMs = elapsedTotal,
             )
             if (cancelled) break
         }
