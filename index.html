@@ -666,10 +666,10 @@
       <input type="number" id="advStreamTimeout" min="5000" max="60000" step="1000">
     </label>
     <label class="adv-settings-field">
-      <span>Stream duration per direction (ms)</span>
+      <span>Phase duration — ping / download / upload (ms)</span>
       <input type="number" id="advStreamDuration" min="5000" max="55000" step="1000">
     </label>
-    <div class="adv-settings-note">A request that doesn't complete within its timeout counts as failed (AbortError) — that's not proof the connection died, just that it didn't finish in time. Raise these on a slow or high-latency link to stop it misreading "slow" as "lost". The Download/Upload cards and Live chart stream continuously, back-to-back rounds, the whole time monitoring runs (not one fixed-size request) — the round stall timeout is a safety net per round, not for a whole phase. Changes apply to the next probe/check and are saved for next time.</div>
+    <div class="adv-settings-note">A request that doesn't complete within its timeout counts as failed (AbortError) — that's not proof the connection died, just that it didn't finish in time. Raise these on a slow or high-latency link to stop it misreading "slow" as "lost". Each cycle runs fully sequentially — ping for this duration, then download, then upload, each back-to-back rounds for the same duration (not one fixed-size request) — the round stall timeout is a safety net per round, not for a whole phase. Changes apply to the next probe/check and are saved for next time.</div>
 
     <label class="adv-settings-checkbox-field">
       <input type="checkbox" id="advSweepEnabled" checked>
@@ -706,7 +706,7 @@
   const TRACE_URL = 'https://speed.cloudflare.com/cdn-cgi/trace';
   const DOWN_URL = 'https://speed.cloudflare.com/__down?bytes=';
 
-  const PING_INTERVAL_MS = 3000;      // one lightweight probe every 3s, continuously
+  const PING_INTERVAL_MS = 3000;      // one lightweight probe every 3s, during the ping phase only
   const DROP_THRESHOLD_CONSECUTIVE = 2; // 2+ consecutive failed probes = a drop event begins
 
   // Chunk-size sweep: a SEQUENTIAL, configurable ladder of {bytes, trials}
@@ -764,7 +764,7 @@
   const DEFAULT_SWEEP_TIMEOUT_MS = 10_000;
   const DEFAULT_UPLOAD_TIMEOUT_MS = 15_000;
   const DEFAULT_STREAM_TIMEOUT_MS = 30_000;  // stall timeout for a SINGLE round, not the whole phase
-  const DEFAULT_STREAM_PHASE_DURATION_MS = 15_000; // 15s down + 15s up per continuous-stream episode
+  const DEFAULT_STREAM_PHASE_DURATION_MS = 15_000; // shared duration for the ping, download, and upload phases (15s each)
   const TIMEOUT_BOUNDS = {
     probe: { min: 500, max: 30_000 },
     sweep: { min: 2_000, max: 60_000 },
@@ -903,7 +903,6 @@
   let running = false;
   let sessionStartMs = 0;
   let sessionDurationSec = 0; // 0 = until stopped
-  let pingTimer = null;
   let elapsedTimer = null;
 
   let allRtts = [];            // every successful probe RTT this session
@@ -1684,27 +1683,30 @@
     saveSession();
   }
 
-  // Serial, not setInterval. PROBE_TIMEOUT_MS can be configured well above
-  // PING_INTERVAL_MS (30s vs 3s by default), and a fixed interval would then
-  // keep launching probes on top of stalled ones — up to ten in flight,
-  // settling out of order, driving the consecutive-failure counter and drop
-  // transitions from whichever happened to finish first. The next probe is
-  // scheduled only once the current one has settled.
-  function schedulePingLoop(gen) {
-    if (gen !== sessionGeneration || !running) return;
-    pingTimer = setTimeout(async () => {
-      pingTimer = null;
-      if (gen !== sessionGeneration || !running) return;
-      await runSinglePing(gen);
-      schedulePingLoop(gen);
-    }, PING_INTERVAL_MS);
+  // Resolves after ms, or immediately if signal aborts first — lets a phase
+  // wait between probes without outliving a Stop.
+  function waitOrAbort(ms, signal) {
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      const onAbort = () => { clearTimeout(timer); resolve(); };
+      if (signal.aborted) { onAbort(); return; }
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
   }
 
-  async function startPingLoop(gen) {
-    // Fire immediately, then keep going — otherwise a short session could end
-    // before a single probe ran.
+  // The ping phase: probes serially (not setInterval — PROBE_TIMEOUT_MS can be
+  // configured well above PING_INTERVAL_MS, and a fixed interval would then
+  // keep launching probes on top of stalled ones) for STREAM_PHASE_DURATION_MS,
+  // then hands off to the download phase. Fires the first probe immediately so
+  // a short session doesn't end before a single one ran.
+  async function runPingPhase(gen) {
+    const deadline = Date.now() + STREAM_PHASE_DURATION_MS;
     await runSinglePing(gen);
-    schedulePingLoop(gen);
+    while (gen === sessionGeneration && running && Date.now() < deadline) {
+      await waitOrAbort(PING_INTERVAL_MS, sessionAbort.signal);
+      if (gen !== sessionGeneration || !running) return;
+      await runSinglePing(gen);
+    }
   }
 
   async function timedFetch(url, opts, timeoutMs, externalSignal) {
@@ -2039,9 +2041,9 @@
       }
 
       // Rounds keep streaming for up to STREAM_PHASE_DURATION_MS per
-      // direction on their OWN clock, entirely independent of pingTimer/
-      // elapsedTimer or the throughputLoop() driving this call — stopping
-      // those alone does NOT stop an in-flight test. Exposed here so it can.
+      // direction on their OWN clock, entirely independent of elapsedTimer
+      // or the throughputLoop() driving this call — stopping those alone
+      // does NOT stop an in-flight test. Exposed here so it can.
       function cancelThisTest(reason) { finish(reason || 'cancelled'); }
       activeStreamTestCancel = cancelThisTest;
 
@@ -2253,14 +2255,14 @@
     el.innerHTML = `${f.value}<span class="card-unit"> ${f.unit}</span>`;
   }
 
-  // Drives the throughput measurement for as long as the session runs: each
-  // cycle is a continuous-stream episode (down then up, feeding the cards +
-  // live chart) immediately followed by the chunk-size sweep (if enabled),
-  // then loops straight back into the next stream episode — no periodic
-  // gating, no idle wait between cycles. `gen` is the sessionGeneration
-  // captured once at Start/resume; stopMonitoring() bumps the real one, so
-  // the loop condition catches a stop between cycles and every stage inside
-  // runThroughputCycle() catches one mid-cycle.
+  // Drives the whole measurement for as long as the session runs: each cycle
+  // is fully sequential — ping phase, then download, then upload, then the
+  // chunk-size sweep (if enabled) — with no phase overlapping another, then
+  // loops straight back into the next cycle's ping phase, no idle wait
+  // between cycles. `gen` is the sessionGeneration captured once at
+  // Start/resume; stopMonitoring() bumps the real one, so the loop condition
+  // catches a stop between cycles and every stage inside runThroughputCycle()
+  // catches one mid-cycle.
   async function throughputLoop(gen) {
     while (running && gen === sessionGeneration) {
       await runThroughputCycle(gen);
@@ -2268,12 +2270,15 @@
   }
 
   async function runThroughputCycle(gen) {
+    // ---- Phase 1: ping (latency/jitter/loss) ----
+    setPhase('Pinging…');
+    await runPingPhase(gen);
+    if (gen !== sessionGeneration) return; // stopped during the ping phase
+
     setPhase('Streaming throughput…');
     const tickTime = Date.now();
 
-    // ---- Strategy 1: continuous streaming (drives the cards + live chart) ----
-    // Runs FIRST so the animated chart starts moving immediately on Start,
-    // rather than after a multi-second sweep the user just sees as dead air.
+    // ---- Phase 2: continuous streaming, down then up (drives the cards + live chart) ----
 
     function recordLiveSample(mbps, phase) {
       liveRateSamples.push({ t: Date.now(), mbps, phase });
@@ -2344,8 +2349,8 @@
 
     if (gen !== sessionGeneration) return; // stopped during the stream phase
 
-    // ---- Strategy 2: chunk-size sweep, both directions (stability across sizes) ----
-    // Separate question from strategy 1: not "how fast" but "does behaviour
+    // ---- Phase 3: chunk-size sweep, both directions (stability across sizes) ----
+    // Separate question from phase 2: not "how fast" but "does behaviour
     // change with transfer size". A sharp pass/fail cutoff at one size,
     // repeated across ticks, is the signature of size-based dropping; noisy
     // failures spread across all sizes point at general link badness instead.
@@ -2472,18 +2477,19 @@
     const sweepList = SWEEP_PLAN.map(p => `${formatBytes(p.bytes)}×${p.trials}`).join(', ');
     protocolNoteEl.textContent =
 `Protocol (live):
-Ping: 1 HTTPS GET every ${intervalSec}s to ${TRACE_URL}, ${PROBE_TIMEOUT_MS}ms timeout.
+Each cycle runs fully sequentially, one phase at a time, then loops straight
+back to phase 1 — no periodic gating, no idle wait between cycles:
+1) Ping, for ${STREAM_PHASE_DURATION_MS/1000}s: 1 HTTPS GET every ${intervalSec}s to ${TRACE_URL}, ${PROBE_TIMEOUT_MS}ms timeout.
 Latency = median RTT of successful pings. Jitter = stddev of same.
 Loss = failed pings / total pings, session-wide.
 Drop event = ${DROP_THRESHOLD_CONSECUTIVE}+ consecutive failed pings; ends on first success after.
-Throughput runs continuously, back-to-back, for as long as monitoring is
-active — no periodic gating, two independent checks per cycle:
-1) Download/Upload cards + Live chart: one persistent WebSocket to ${WS_URL},
-streaming in ${formatBytes(DOWN_ROUND_BYTES)}/${formatBytes(UP_ROUND_BYTES)} rounds back-to-back for
-${STREAM_PHASE_DURATION_MS/1000}s down then ${STREAM_PHASE_DURATION_MS/1000}s up (not one fixed-size request), live-updating the whole
-time. ${STREAM_TIMEOUT_MS/1000}s stall timeout per round, not per phase. Cards show the
-session's running average across every completed episode.
-2) Chunk-size sweep (${SWEEP_ENABLED ? 'enabled' : 'disabled'}) — feeds the Size Sweep charts only, does
+2) Download, then upload: one persistent WebSocket to ${WS_URL}, streaming in
+${formatBytes(DOWN_ROUND_BYTES)}/${formatBytes(UP_ROUND_BYTES)} rounds back-to-back for
+${STREAM_PHASE_DURATION_MS/1000}s down then ${STREAM_PHASE_DURATION_MS/1000}s up (not one fixed-size request), live-updating the
+Download/Upload cards + Live chart the whole time. ${STREAM_TIMEOUT_MS/1000}s stall timeout per
+round, not per phase. Cards show the session's running average across every
+completed episode.
+3) Chunk-size sweep (${SWEEP_ENABLED ? 'enabled' : 'disabled'}) — feeds the Size Sweep charts only, does
 not feed the cards above: download = sequential HTTPS GETs, upload =
 sequential WebSocket rounds, both at size×trials ${sweepList}
 (${SWEEP_TIMEOUT_MS/1000}s timeout per attempt, one at a time, sequential trials per
@@ -2543,10 +2549,8 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     setPhase('Monitoring…');
     setLiveIndicator(true);
 
-    // Both loops are self-rescheduling rather than interval-driven: the next
-    // ping is scheduled once the current one settles (see schedulePingLoop),
-    // and throughputLoop() runs one cycle after another until stopped.
-    startPingLoop(sessionGeneration);
+    // throughputLoop() runs one fully-sequential cycle (ping, then download,
+    // then upload, then sweep) after another until stopped.
     throughputLoop(sessionGeneration);
     elapsedTimer = setInterval(() => {
       updateElapsedDisplay();
@@ -2565,9 +2569,7 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     running = false;
     isResumedRun = false;
     setLiveIndicator(false);
-    clearTimeout(pingTimer);
     clearInterval(elapsedTimer);
-    pingTimer = null;
     elapsedTimer = null;
 
     // A continuous stream test runs on its own clock (STREAM_PHASE_DURATION_MS
@@ -2697,7 +2699,6 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     setPhase('Monitoring… (resumed)');
     setLiveIndicator(true);
 
-    startPingLoop(sessionGeneration);
     throughputLoop(sessionGeneration);
     elapsedTimer = setInterval(() => {
       updateElapsedDisplay();
