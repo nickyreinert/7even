@@ -86,11 +86,19 @@ object ReportSchedule {
      * How many probe cycles the window *should* have produced, which is what
      * the report's coverage figure is measured against. Without this, a report
      * built from 6 samples looks the same as one built from 96.
+     *
+     * Returns null — "not predictable" — rather than a number when the cadence
+     * does not fit inside the window. A weekly probe cycle in a daily report
+     * truncated to zero expected samples, which the coverage ratio then read as
+     * full coverage: the least-observed configuration claimed the most
+     * complete report.
      */
-    fun expectedSamples(window: Window, cycleIntervalMinutes: Int, pingsPerCycle: Int): Int {
-        if (cycleIntervalMinutes <= 0) return 0
+    fun expectedSamples(window: Window, cycleIntervalMinutes: Int, pingsPerCycle: Int): Int? {
+        if (cycleIntervalMinutes <= 0 || pingsPerCycle <= 0) return null
         val minutes = (window.endEpochMs - window.startEpochMs) / 60_000.0
-        return ((minutes / cycleIntervalMinutes) * pingsPerCycle).toInt()
+        if (minutes < cycleIntervalMinutes) return null
+        val expected = ((minutes / cycleIntervalMinutes) * pingsPerCycle).toInt()
+        return expected.takeIf { it > 0 }
     }
 
     private fun LocalDate.startOfWeek(): LocalDate {

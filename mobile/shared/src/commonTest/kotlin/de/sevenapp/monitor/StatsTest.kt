@@ -153,3 +153,78 @@ class StabilityScoreTest {
         assertEquals(50.0, r.composite) // uptime alone
     }
 }
+
+class NumericHygieneTest {
+
+    @Test
+    fun aggregatesIgnoreImpossibleValues() {
+        // NaN propagates silently through every subsequent average and chart
+        // coordinate, so one broken measurement used to void a whole window.
+        val values = listOf(10.0, Double.NaN, 20.0, Double.POSITIVE_INFINITY, -5.0, 30.0)
+        assertEquals(listOf(10.0, 20.0, 30.0), Stats.usable(values))
+        assertEquals(20.0, Stats.median(values))
+        assertEquals(30.0, Stats.percentile(values, 1.0))
+        assertTrue(!Stats.stdDev(values).isNaN())
+    }
+
+    @Test
+    fun anAllGarbageInputHasNoStatistics() {
+        val values = listOf(Double.NaN, Double.NEGATIVE_INFINITY, -1.0)
+        assertNull(Stats.median(values))
+        assertNull(Stats.percentile(values, 0.5))
+        assertEquals(0.0, Stats.stdDev(values))
+    }
+}
+
+class DropAggregationTest {
+
+    private val hour = 3_600_000L
+
+    @Test
+    fun overlappingDropsAreMergedNotAdded() {
+        // The same outage recorded twice across a process restart. Adding the
+        // durations turned a 10-minute outage into 20 minutes of downtime.
+        val drops = listOf(
+            DropEvent(0, 10 * 60_000),
+            DropEvent(5 * 60_000, 10 * 60_000),
+        )
+        val result = StabilityScore.compute(
+            windowStartEpochMs = 0,
+            nowEpochMs = hour,
+            drops = drops,
+            avgJitterMs = 0.0,
+            avgLossPct = 0.0,
+        )
+        assertEquals(10 * 60_000L, result.totalDropMs)
+    }
+
+    @Test
+    fun adjacentButSeparateDropsStillCountSeparately() {
+        val drops = listOf(
+            DropEvent(0, 5 * 60_000),
+            DropEvent(20 * 60_000, 25 * 60_000),
+        )
+        val result = StabilityScore.compute(
+            windowStartEpochMs = 0,
+            nowEpochMs = hour,
+            drops = drops,
+            avgJitterMs = 0.0,
+            avgLossPct = 0.0,
+        )
+        assertEquals(10 * 60_000L, result.totalDropMs)
+    }
+
+    @Test
+    fun downtimeCanNeverExceedTheWindow() {
+        val drops = (0..9).map { DropEvent(0, hour) }
+        val result = StabilityScore.compute(
+            windowStartEpochMs = 0,
+            nowEpochMs = hour,
+            drops = drops,
+            avgJitterMs = 0.0,
+            avgLossPct = 0.0,
+        )
+        assertEquals(hour, result.totalDropMs)
+        assertEquals(0.0, result.uptimePct)
+    }
+}

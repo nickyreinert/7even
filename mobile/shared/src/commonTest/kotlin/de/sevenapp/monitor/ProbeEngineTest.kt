@@ -4,6 +4,7 @@ import de.sevenapp.monitor.core.Clock
 import de.sevenapp.monitor.core.DropDetector
 import de.sevenapp.monitor.core.NetworkType
 import de.sevenapp.monitor.core.ProbeTier
+import de.sevenapp.monitor.probe.AutomaticTransfers
 import de.sevenapp.monitor.probe.DataBudget
 import de.sevenapp.monitor.probe.DeviceState
 import de.sevenapp.monitor.probe.FailureReason
@@ -17,6 +18,7 @@ import de.sevenapp.monitor.probe.mbpsOf
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -265,21 +267,53 @@ class DataBudgetTest {
     }
 
     @Test
-    fun optingCellularIntoThroughputRaisesTheProjectionSharply() {
+    fun enablingAnAutomaticTransferChangesTheProjection() {
+        // The DATA-01 regression. Automatic stream/sweep work is the expensive
+        // path the worker actually runs, and the projection used to ignore it
+        // entirely — so the settings screen barely moved while real usage went
+        // up by hundreds of megabytes a day.
         val base = DataBudget.project(ProbeConfig())
-        val opted = DataBudget.project(
-            ProbeConfig(throughputLightNetworks = setOf(NetworkType.WIFI, NetworkType.CELLULAR)),
-        )
+
+        val withStream = DataBudget.project(ProbeConfig(automaticStreamEnabled = true))
         assertTrue(
-            opted.meteredBytesPerMonth > base.meteredBytesPerMonth * 10,
-            "expected opting in to be visibly more expensive",
+            withStream.meteredBytesPerMonth > base.meteredBytesPerMonth,
+            "enabling the automatic stream must change the projection",
+        )
+        assertTrue(withStream.isMaximum, "a duration-based stream projects a ceiling, not an estimate")
+
+        val withSweep = DataBudget.project(ProbeConfig(automaticSweepEnabled = true))
+        assertTrue(
+            withSweep.meteredBytesPerMonth > base.meteredBytesPerMonth,
+            "enabling the automatic sweep must change the projection",
+        )
+    }
+
+    @Test
+    fun theProjectionNeverExceedsTheBudgetTheRuntimeEnforces() {
+        // Automatic transfers are capped by the same daily budget the runtime
+        // enforces, so the projection cannot promise a number the worker would
+        // refuse to spend. Reachability pings are outside that budget — they
+        // are the cheap tier that always runs — so they are subtracted first.
+        val config = ProbeConfig(automaticStreamEnabled = true, automaticSweepEnabled = true)
+        val projection = DataBudget.project(config)
+        val pingBytesPerDay = DataBudget.project(config.copy(
+            automaticStreamEnabled = false,
+            automaticSweepEnabled = false,
+        )).meteredBytesPerDay
+        assertTrue(
+            projection.meteredBytesPerDay - pingBytesPerDay <= config.automaticDailyMeteredBytes,
+            "projection claimed more metered transfer data than the daily budget allows",
         )
     }
 
     @Test
     fun wifiOnlyMonitoringProjectsNoMobileDataUse() {
         val projection = DataBudget.project(
-            ProbeConfig(monitoringNetworks = setOf(NetworkType.WIFI)),
+            ProbeConfig(
+                monitoringNetworks = setOf(NetworkType.WIFI),
+                automaticStreamEnabled = true,
+                automaticSweepEnabled = true,
+            ),
         )
         assertEquals(0, projection.meteredBytesPerMonth)
     }
@@ -289,5 +323,102 @@ class DataBudgetTest {
         val quarterHourly = DataBudget.project(ProbeConfig(cycleIntervalMinutes = 15))
         val fiveMinutely = DataBudget.project(ProbeConfig(cycleIntervalMinutes = 5))
         assertTrue(fiveMinutely.meteredBytesPerMonth > quarterHourly.meteredBytesPerMonth)
+    }
+}
+
+class AutomaticTransfersTest {
+
+    private fun state(
+        network: NetworkType = NetworkType.CELLULAR,
+        charging: Boolean = false,
+        metered: Boolean = true,
+    ) = DeviceState(networkType = network, isCharging = charging, isMetered = metered)
+
+    private val noUsage = AutomaticTransfers.Usage(0, 0, 0)
+
+    @Test
+    fun nothingRunsWhenNoAutomaticTransferIsEnabled() {
+        val decision = AutomaticTransfers.decide(ProbeConfig(), state(), noUsage)
+        assertIs<AutomaticTransfers.Decision.Skip>(decision)
+    }
+
+    @Test
+    fun theDailySweepCapBoundsTheRunnerNotJustTheDormantHttpTier() {
+        // 96 wakes a day at the 15-minute default. The cap, not the WorkManager
+        // cadence, is what has to bound the number of sweeps.
+        val config = ProbeConfig(automaticSweepEnabled = true, fullSweepsPerDay = 2)
+        var sweepsToday = 0
+        var runs = 0
+        repeat(96) {
+            val decision = AutomaticTransfers.decide(
+                config,
+                state(network = NetworkType.WIFI, metered = false),
+                AutomaticTransfers.Usage(sweepsToday, 0, 0),
+            )
+            if (decision is AutomaticTransfers.Decision.Run && decision.plan.runSweep) {
+                runs++
+                sweepsToday++
+            }
+        }
+        assertEquals(2, runs, "the configured daily sweep cap did not bound execution")
+    }
+
+    @Test
+    fun meteredWifiIsChargedAgainstTheMeteredBudget() {
+        // Tethering, or a Wi-Fi the user marked as metered. Inferring metering
+        // from "is it cellular" spent this allowance silently.
+        val config = ProbeConfig(automaticStreamEnabled = true)
+        val exhausted = AutomaticTransfers.Usage(
+            fullSweepsToday = 0,
+            meteredBytesToday = config.automaticDailyMeteredBytes,
+            meteredBytesThisMonth = 0,
+        )
+        val decision = AutomaticTransfers.decide(
+            config,
+            state(network = NetworkType.WIFI, metered = true),
+            exhausted,
+        )
+        assertIs<AutomaticTransfers.Decision.Skip>(decision)
+    }
+
+    @Test
+    fun anUnmeteredConnectionIgnoresTheMeteredBudget() {
+        val config = ProbeConfig(automaticStreamEnabled = true)
+        val decision = AutomaticTransfers.decide(
+            config,
+            state(network = NetworkType.WIFI, metered = false),
+            AutomaticTransfers.Usage(0, Long.MAX_VALUE / 4, Long.MAX_VALUE / 4),
+        )
+        assertIs<AutomaticTransfers.Decision.Run>(decision)
+    }
+
+    @Test
+    fun chargingIsRequiredOnlyWhenConfigured() {
+        val config = ProbeConfig(automaticStreamEnabled = true, automaticRequiresCharging = true)
+        assertIs<AutomaticTransfers.Decision.Skip>(
+            AutomaticTransfers.decide(config, state(charging = false, metered = false), noUsage),
+        )
+        assertIs<AutomaticTransfers.Decision.Run>(
+            AutomaticTransfers.decide(config, state(charging = true, metered = false), noUsage),
+        )
+    }
+
+    @Test
+    fun aPlanNeverPromisesMoreThanItsStatedMaximum() {
+        val config = ProbeConfig(automaticStreamEnabled = true, automaticSweepEnabled = true)
+        val plan = AutomaticTransfers.planFor(config, NetworkType.CELLULAR)
+        assertEquals(plan.maxStreamBytes + plan.maxSweepBytes, plan.maxBytesPerRun)
+        assertTrue(plan.phaseDurationMs <= AutomaticTransfers.MAX_AUTOMATIC_PHASE_MS)
+    }
+
+    @Test
+    fun anExcludedConnectionIsSkippedRatherThanRun() {
+        val config = ProbeConfig(
+            automaticStreamEnabled = true,
+            monitoringNetworks = setOf(NetworkType.WIFI),
+        )
+        assertIs<AutomaticTransfers.Decision.Skip>(
+            AutomaticTransfers.decide(config, state(network = NetworkType.CELLULAR), noUsage),
+        )
     }
 }

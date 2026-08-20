@@ -27,6 +27,7 @@ import de.sevenapp.monitor.probe.MonitorCoordinator
 import de.sevenapp.monitor.probe.ProbeEngine
 import de.sevenapp.monitor.report.Report
 import de.sevenapp.monitor.report.ReportPeriod
+import kotlinx.coroutines.CancellationException
 import java.util.concurrent.TimeUnit
 
 /**
@@ -63,29 +64,49 @@ class ReportWorker(
             }
 
             val period = RoomMonitorStore.reportPeriod(ctx)
-            val report = coordinator.buildDueReport(period, now, RoomMonitorStore.lastReportAt(ctx))
+            // First install has no prior delivery. Using epoch zero as the
+            // baseline made the very first wake immediately overdue, producing
+            // a report about a window the app had not been installed for. The
+            // baseline is when reporting was switched on.
+            val baseline = RoomMonitorStore.lastReportAt(ctx)
+                ?: RoomMonitorStore.reportingSince(ctx)
+                ?: run {
+                    RoomMonitorStore.markReportingStarted(ctx, now)
+                    return Result.success()
+                }
+
+            val report = coordinator.buildDueReport(period, now, baseline)
                 ?: return Result.success() // nothing due; not a failure
 
-            notify(ctx, report)
+            // Generated and delivered are separate facts. The report is stored
+            // first so it survives a delivery that cannot happen, and the
+            // generation timestamp advances either way so the schedule does not
+            // rebuild the same window on the next hourly wake.
+            RoomMonitorStore.savePendingReport(ctx, title(report), detail(report), now)
             RoomMonitorStore.setLastReportAt(ctx, now)
+            if (notify(ctx, report)) RoomMonitorStore.markReportDelivered(ctx, now)
             Result.success()
         } catch (t: Throwable) {
+            if (t is CancellationException) throw t
             Result.retry()
         }
     }
 
-    private fun notify(context: Context, report: Report) {
+    /** @return true only when a notification was actually posted. */
+    private fun notify(context: Context, report: Report): Boolean {
         ensureChannel(context)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ActivityCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
         ) {
-            // Permission refused or not yet granted. The report is already
-            // persisted and visible in-app, so this is not an error — just a
-            // delivery we cannot make.
-            return
+            // Permission refused or not yet granted. The report is persisted
+            // and shown in-app, so nothing is lost — but this is emphatically
+            // not a delivery, and reporting it as one is what let a report
+            // vanish without trace.
+            return false
         }
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return false
 
         val intent = PendingIntent.getActivity(
             context,
@@ -103,7 +124,12 @@ class ReportWorker(
             .setAutoCancel(true)
             .build()
 
-        NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, notification)
+        return try {
+            NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, notification)
+            true
+        } catch (e: SecurityException) {
+            false
+        }
     }
 
     private fun title(report: Report): String = when (report.period) {

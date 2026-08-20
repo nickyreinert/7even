@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
+import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import de.sevenapp.monitor.android.billing.EntitlementRepository
@@ -42,15 +43,20 @@ data class DashboardState(
     val tier: Tier = Tier.FREE,
     val monitoringEnabled: Boolean = false,
     val intervalMinutes: Int = 15,
-    val liveTestDurationMs: Long = LiveTestConfig.MIN_DURATION_MS,
+    /** Per-phase duration: ping, download stream, and upload stream each get this long. */
+    val liveTestDurationMs: Long = LiveTestConfig.DEFAULT_PHASE_DURATION_MS,
     val monitoringNetworks: Set<NetworkType> = setOf(NetworkType.WIFI, NetworkType.CELLULAR),
     val manualNetwork: NetworkPreference = NetworkPreference.WIFI,
     val lightDownBytes: Int = 256 * 1024,
     val lightUpBytes: Int = 128 * 1024,
     val manualTestRunning: Boolean = false,
+    /** Elapsed time within the *current phase*, which is what the countdown counts. */
     val manualTestElapsedMs: Long = 0L,
-    val manualTestStep: Int = 1,
+    val manualTestStep: Int = 0,
+    val manualTestTotalSteps: Int = LiveTestConfig.PHASE_COUNT,
     val manualTestStepLabel: String = "Preparing",
+    /** How long the current phase runs, or null when it is not time-bounded. */
+    val manualTestPhaseDurationMs: Long? = null,
     val manualTestError: String? = null,
     val recentPings: List<PingSample> = emptyList(),
     val recentThroughput: List<ThroughputSample> = emptyList(),
@@ -66,6 +72,8 @@ data class DashboardState(
     val meteredBytesThisMonth: Long = 0,
     val projectedMeteredBytesPerMonth: Long = 0,
     val latestReport: Report? = null,
+    /** A generated report the user has not acknowledged, delivered or not. */
+    val pendingReport: RoomMonitorStore.Companion.PendingReport? = null,
     val stability: StabilityScore.Result? = null,
 )
 
@@ -100,7 +108,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             tier = entitlements.effectiveTier(now),
             monitoringEnabled = RoomMonitorStore.isMonitoringEnabled(app),
             intervalMinutes = config.cycleIntervalMinutes,
-            liveTestDurationMs = config.liveTestMinDurationMs,
+            liveTestDurationMs = config.liveTestPhaseDurationMs,
             monitoringNetworks = config.monitoringNetworks,
             manualNetwork = config.preferredTestNetwork.let { if (it == NetworkPreference.AUTO) NetworkPreference.WIFI else it },
             lightDownBytes = config.lightDownBytes,
@@ -120,6 +128,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
                 avgJitterMs = if (rtts.size >= 2) Stats.stdDev(rtts) else null,
                 avgLossPct = lossPct ?: 0.0,
             ),
+            pendingReport = RoomMonitorStore.pendingReport(app),
             meteredBytesThisMonth = store.bytesUsedSince(monthStart, metered = true),
             projectedMeteredBytesPerMonth = DataBudget.project(config).meteredBytesPerMonth,
         )
@@ -142,8 +151,10 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
                 it.copy(
                     manualTestRunning = true,
                     manualTestError = null,
-                    manualTestStep = 1,
+                    manualTestStep = 0,
                     manualTestStepLabel = "Connecting to ${if (it.manualNetwork == NetworkPreference.CELLULAR) "mobile data" else "Wi-Fi"}",
+                    manualTestPhaseDurationMs = null,
+                    manualTestElapsedMs = 0L,
                     livePings = emptyList(),
                     liveDownloadMbps = emptyList(),
                     liveUploadMbps = emptyList(),
@@ -155,7 +166,6 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             val app = getApplication<Application>()
             val config = store.loadConfig()
             val deviceState = readDeviceState()
-            startManualTimer(System.currentTimeMillis())
             try {
                 LiveTestRunner(
                     context = app,
@@ -166,37 +176,40 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
                 ).runSession { sample ->
                     // A cancelled/older run must never repaint a later run or
                     // replace its selected mobile result with a stale Wi-Fi one.
-                    if (runGeneration == manualRunGeneration) {
-                        _state.update { current ->
-                            when (sample) {
-                                is LiveSample.Rate -> when (sample.direction) {
-                                    SweepRunner.Direction.DOWN -> current.copy(
-                                        liveDownloadMbps = (current.liveDownloadMbps + sample.mbps).takeLast(120),
-                                        manualTestStep = 2,
-                                        manualTestStepLabel = "Download stream",
-                                    )
-                                    SweepRunner.Direction.UP -> current.copy(
-                                        liveUploadMbps = (current.liveUploadMbps + sample.mbps).takeLast(120),
-                                        manualTestStep = 3,
-                                        manualTestStepLabel = "Upload stream",
-                                    )
-                                }
-                                is LiveSample.Ping -> current.copy(
-                                    // Pings continue during streaming, but they are
-                                    // not a phase change and must not make the UI
-                                    // look as though the stream never started.
-                                    manualTestStep = current.manualTestStep,
-                                    manualTestStepLabel = current.manualTestStepLabel,
-                                    livePings = (current.livePings + PingSample(
-                                        atEpochMs = sample.atEpochMs,
-                                        rttMs = sample.rttMs,
-                                        networkType = deviceState.networkType,
-                                    )).takeLast(120),
+                    if (runGeneration != manualRunGeneration) return@runSession
+
+                    // The step comes only from an explicit Phase sample. Deriving
+                    // it from whichever measurement arrived last let the ping
+                    // loop — which runs underneath the stream phases — keep
+                    // resetting the visible step to "Ping".
+                    if (sample is LiveSample.Phase) startPhaseTimer(runGeneration, sample)
+
+                    _state.update { current ->
+                        when (sample) {
+                            is LiveSample.Phase -> current.copy(
+                                manualTestStep = sample.step,
+                                manualTestTotalSteps = sample.totalSteps,
+                                manualTestStepLabel = sample.phase.label,
+                                manualTestPhaseDurationMs = sample.durationMs,
+                            )
+                            is LiveSample.Rate -> when (sample.direction) {
+                                SweepRunner.Direction.DOWN -> current.copy(
+                                    liveDownloadMbps = (current.liveDownloadMbps + sample.mbps).takeLast(120),
                                 )
-                                is LiveSample.Sweep -> when (sample.direction) {
-                                    SweepRunner.Direction.DOWN -> current.copy(latestDownloadSweep = sample.results, manualTestStep = 4, manualTestStepLabel = "Download size sweep")
-                                    SweepRunner.Direction.UP -> current.copy(latestUploadSweep = sample.results, manualTestStep = 5, manualTestStepLabel = "Upload size sweep")
-                                }
+                                SweepRunner.Direction.UP -> current.copy(
+                                    liveUploadMbps = (current.liveUploadMbps + sample.mbps).takeLast(120),
+                                )
+                            }
+                            is LiveSample.Ping -> current.copy(
+                                livePings = (current.livePings + PingSample(
+                                    atEpochMs = sample.atEpochMs,
+                                    rttMs = sample.rttMs,
+                                    networkType = deviceState.networkType,
+                                )).takeLast(120),
+                            )
+                            is LiveSample.Sweep -> when (sample.direction) {
+                                SweepRunner.Direction.DOWN -> current.copy(latestDownloadSweep = sample.results)
+                                SweepRunner.Direction.UP -> current.copy(latestUploadSweep = sample.results)
                             }
                         }
                     }
@@ -219,7 +232,13 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
                 if (runGeneration == manualRunGeneration) {
                     manualTimerJob?.cancel()
                     manualTimerJob = null
-                    _state.update { it.copy(manualTestRunning = false, manualTestElapsedMs = 0L) }
+                    _state.update {
+                        it.copy(
+                            manualTestRunning = false,
+                            manualTestElapsedMs = 0L,
+                            manualTestPhaseDurationMs = null,
+                        )
+                    }
                     refresh()
                     manualTestJob = null
                 }
@@ -233,21 +252,38 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
         manualTestJob = null
         manualTimerJob?.cancel()
         manualTimerJob = null
-        _state.update { it.copy(manualTestRunning = false, manualTestElapsedMs = 0L) }
+        _state.update {
+            it.copy(manualTestRunning = false, manualTestElapsedMs = 0L, manualTestPhaseDurationMs = null)
+        }
     }
 
-    private fun startManualTimer(startedAtMs: Long) {
+    /**
+     * Restarts the countdown at each phase boundary.
+     *
+     * The configured duration applies per phase, so a single whole-run
+     * stopwatch would show a 10-second test counting past 30 seconds. Each
+     * phase counts its own clock instead.
+     */
+    private fun startPhaseTimer(runGeneration: Long, phase: LiveSample.Phase) {
         manualTimerJob?.cancel()
+        // elapsedRealtime, not wall-clock time: an NTP correction or a manual
+        // clock change mid-test would otherwise make the countdown jump — or
+        // run backwards — for a duration that did not actually change. Wall
+        // clock stays for persisted timestamps, where it is the right answer.
+        val startedAt = SystemClock.elapsedRealtime()
+        _state.update { it.copy(manualTestElapsedMs = 0L) }
         manualTimerJob = viewModelScope.launch {
-            while (true) {
-                _state.update { it.copy(manualTestElapsedMs = (System.currentTimeMillis() - startedAtMs).coerceAtLeast(0L)) }
+            while (runGeneration == manualRunGeneration) {
+                _state.update {
+                    it.copy(manualTestElapsedMs = (SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(0L))
+                }
                 delay(1_000)
             }
         }
     }
 
     fun setLiveTestDuration(durationMs: Long) = viewModelScope.launch {
-        store.saveConfig(store.loadConfig().copy(liveTestMinDurationMs = durationMs))
+        store.saveConfig(store.loadConfig().copy(liveTestPhaseDurationMs = durationMs))
         refresh()
     }
 
@@ -264,7 +300,10 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
 
         RoomMonitorStore.setMonitoringEnabled(app, enabled)
         if (enabled) {
-            ProbeWorker.schedule(app, store.loadConfig().cycleIntervalMinutes.toLong())
+            // Baseline for the first scheduled report, so the first worker wake
+            // does not treat "never delivered" as "overdue since 1970".
+            RoomMonitorStore.markReportingStarted(app, now)
+            ProbeWorker.scheduleFromConfig(app, store)
             ReportWorker.schedule(app)
             MonitoringNotification.active(app)
         } else {
@@ -272,6 +311,11 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             ReportWorker.cancel(app)
             MonitoringNotification.cancel(app)
         }
+        refresh()
+    }
+
+    fun acknowledgeReport() = viewModelScope.launch {
+        RoomMonitorStore.clearPendingReport(getApplication())
         refresh()
     }
 
@@ -285,7 +329,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             // four calendar cycles before the first one.
             throughputEveryNCycles = if (minutes >= 24 * 60) 1 else store.loadConfig().throughputEveryNCycles,
         ))
-        if (RoomMonitorStore.isMonitoringEnabled(app)) ProbeWorker.schedule(app, minutes.toLong())
+        if (RoomMonitorStore.isMonitoringEnabled(app)) ProbeWorker.scheduleFromConfig(app, store)
         refresh()
     }
 

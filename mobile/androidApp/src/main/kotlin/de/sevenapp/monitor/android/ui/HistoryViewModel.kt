@@ -14,7 +14,11 @@ import de.sevenapp.monitor.core.StabilityScore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import androidx.core.content.FileProvider
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.Calendar
 
 enum class HistoryAggregation(val label: String) { NONE("None — every check"), DAY("Day"), WEEK("Week") }
@@ -59,13 +63,28 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
 
     init { refresh() }
 
+    /**
+     * Changing the connection clears an SSID that cannot apply to it.
+     *
+     * An SSID names a Wi-Fi network, so keeping "Home-5G" selected while
+     * switching to Mobile data asks for cellular samples taken on a Wi-Fi —
+     * a filter that matches nothing, presented as an empty history rather than
+     * as an impossible combination.
+     */
     fun setConnectionFilter(network: NetworkType) {
-        _state.value = _state.value.copy(connectionFilter = network)
+        _state.value = _state.value.copy(
+            connectionFilter = network,
+            ssidFilter = _state.value.ssidFilter.takeIf { network == NetworkType.WIFI },
+        )
         refresh()
     }
 
     fun setSsidFilter(ssid: String?) {
-        _state.value = _state.value.copy(ssidFilter = ssid)
+        // Selecting a network name implies Wi-Fi; the two cannot disagree.
+        _state.value = _state.value.copy(
+            ssidFilter = ssid,
+            connectionFilter = if (ssid != null) NetworkType.WIFI else _state.value.connectionFilter,
+        )
         refresh()
     }
 
@@ -81,9 +100,16 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
         val ssidFilter = _state.value.ssidFilter
         val allPings = store.pingsBetween(start, now)
         val allThroughput = store.throughputBetween(start, now)
-        val samples = allPings.filter { it.networkType == filter && (ssidFilter == null || it.ssid == ssidFilter) }.reversed()
-        val throughput = allThroughput.filter { it.networkType == filter && (ssidFilter == null || it.ssid == ssidFilter) }.reversed()
-        val drops = store.dropsOverlapping(start, now).reversed()
+        // Ascending by timestamp. These lists feed the charts, and `reversed()`
+        // made the x axis run newest-to-oldest — every trend line was drawn
+        // backwards in time.
+        val samples = allPings
+            .filter { it.networkType == filter && (ssidFilter == null || it.ssid == ssidFilter) }
+            .sortedBy { it.atEpochMs }
+        val throughput = allThroughput
+            .filter { it.networkType == filter && (ssidFilter == null || it.ssid == ssidFilter) }
+            .sortedBy { it.atEpochMs }
+        val drops = store.dropsOverlapping(start, now).sortedBy { it.startedAtEpochMs }
         val rtts = samples.mapNotNull { it.rttMs }
         val down = throughput.mapNotNull { it.downMbps }
         val up = throughput.mapNotNull { it.upMbps }
@@ -114,6 +140,11 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
                 uploadP10Mbps = Stats.percentile(up, 0.1),
                 downloadConsistencyPct = consistency(down),
                 uploadConsistencyPct = consistency(up),
+                // Drops and the stability score they feed are deliberately
+                // NOT filtered: a drop is the period with no usable network, so
+                // it cannot be attributed to Wi-Fi or mobile. The UI labels
+                // this figure as covering all connections rather than letting
+                // it look like a per-filter number.
                 stability = if (samples.isEmpty()) null else StabilityScore.compute(
                     windowStartEpochMs = start,
                     nowEpochMs = now,
@@ -173,30 +204,28 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
-    fun shareExport() {
-        val state = _state.value
-        val rows = buildString {
-            appendLine("timestamp,type,connection,ping_ms,download_mbps,upload_mbps")
-            state.samples.forEach { sample ->
-                appendLine("${sample.atEpochMs},ping,${sample.networkType},${sample.rttMs ?: ""},,")
-            }
-            state.throughput.forEach { sample ->
-                appendLine("${sample.atEpochMs},throughput,${sample.networkType},,${sample.downMbps ?: ""},${sample.upMbps ?: ""}")
-            }
-            state.drops.forEach { drop ->
-                appendLine("${drop.startedAtEpochMs},drop,,,${drop.endedAtEpochMs ?: "ongoing"},")
-            }
+    fun shareExport() = viewModelScope.launch {
+        val app = getApplication<Application>()
+        val csv = HistoryCsv.build(_state.value)
+        // Written to a file and shared by URI. A 90-day export in
+        // Intent.EXTRA_TEXT can exceed Android's Binder transaction limit,
+        // which surfaces as a crash rather than a handled failure.
+        val uri = withContext(Dispatchers.IO) {
+            val dir = File(app.cacheDir, "exports").apply { mkdirs() }
+            val file = File(dir, "7even-history.csv")
+            file.writeText(csv)
+            FileProvider.getUriForFile(app, "${app.packageName}.fileprovider", file)
         }
-        getApplication<Application>().startActivity(
+        app.startActivity(
             Intent.createChooser(
                 Intent(Intent.ACTION_SEND).apply {
                     type = "text/csv"
-                    putExtra(Intent.EXTRA_TEXT, rows)
+                    putExtra(Intent.EXTRA_STREAM, uri)
                     putExtra(Intent.EXTRA_TITLE, "7even-history.csv")
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 },
                 "Export 7even history",
-            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
         )
     }
 }

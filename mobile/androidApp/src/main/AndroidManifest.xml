@@ -6,7 +6,12 @@
     <!-- Required to request and bind a foreground test to the selected transport. -->
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <!-- Required by Android to read the connected Wi-Fi name. Requested only from History. -->
+    <!-- Required by Android to read the connected Wi-Fi name. Requested only from
+         History, and only to label measurements with the network they were taken
+         on. Coarse is declared alongside fine because Android 12+ lets the user
+         grant approximate location only; requesting fine without coarse is a
+         lint error and leaves the approximate grant unhandled. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <!-- Reschedule the periodic work after a reboot; without this the monitor
          silently stops until the user next opens the app. -->
@@ -26,6 +31,8 @@
     <application
         android:name=".MonitorApplication"
         android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher"
@@ -41,6 +48,20 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Exports are written to a cache file and shared by content URI.
+             Putting a 90-day CSV in Intent.EXTRA_TEXT risks Android's ~1MB
+             Binder transaction limit, which fails as a crash rather than as a
+             handled error. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <receiver
             android:name=".work.BootReceiver"

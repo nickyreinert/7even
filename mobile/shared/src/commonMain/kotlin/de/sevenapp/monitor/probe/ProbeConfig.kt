@@ -46,13 +46,24 @@ data class ProbeConfig(
     val traceUrl: String = "https://speed.cloudflare.com/cdn-cgi/trace",
     val downUrlTemplate: String = "https://speed.cloudflare.com/__down?bytes={bytes}",
     val upUrl: String = "https://ws-speedtest.nyrt.workers.dev/__up",
-    /** Optional 7even-compatible WebSocket endpoint for bounded stream tests. */
+
+    /**
+     * The one 7even-compatible WebSocket endpoint, used by both the foreground
+     * live test and the background stream tier.
+     *
+     * There used to be two fields holding the same default — `streamUrl`, which
+     * Settings edited and persisted, and `wsUrl`, which the live-test runner
+     * actually dialled. Editing the visible endpoint changed nothing.
+     */
     val streamUrl: String = "wss://ws-speedtest.nyrt.workers.dev",
     val useWebSocketStream: Boolean = false,
 
-    /** Endpoint and controls for the one-minute foreground streaming test. */
-    val wsUrl: String = "wss://ws-speedtest.nyrt.workers.dev",
-    val liveTestMinDurationMs: Long = LiveTestConfig.MIN_DURATION_MS,
+    /**
+     * How long **each** phase of a manual test runs: ping, then download
+     * stream, then upload stream. See [LiveTestConfig] — this is not a
+     * whole-test budget.
+     */
+    val liveTestPhaseDurationMs: Long = LiveTestConfig.DEFAULT_PHASE_DURATION_MS,
     val liveTestSweepEnabled: Boolean = true,
     /** Packet sizes and repeats for the foreground send/receive reliability sweep. */
     val liveTestSweepSteps: List<SweepStep> = SweepPlan.DEFAULT,
@@ -62,6 +73,21 @@ data class ProbeConfig(
     val automaticStreamEnabled: Boolean = false,
     val automaticSweepEnabled: Boolean = false,
     val automaticRequiresCharging: Boolean = false,
+
+    /**
+     * Hard per-run ceilings on automatic stream traffic, and the daily/monthly
+     * ceilings on automatic metered traffic overall.
+     *
+     * A duration-based stream has no inherent size — it moves as much as the
+     * link can carry — so without these the projected cost and the real cost
+     * are unrelated numbers. See [AutomaticTransfers], which is the only place
+     * that reads them, and [DataBudget], which projects from the same plan.
+     */
+    val automaticStreamMaxBytesMetered: Long = 4L * 1000 * 1000,
+    val automaticStreamMaxBytesUnmetered: Long = 40L * 1000 * 1000,
+    val automaticDailyMeteredBytes: Long = 20L * 1000 * 1000,
+    val automaticMonthlyMeteredBytes: Long = 300L * 1000 * 1000,
+
     val preferredTestNetwork: NetworkPreference = NetworkPreference.AUTO,
 ) {
     fun downUrl(bytes: Int): String = downUrlTemplate.replace("{bytes}", bytes.toString())
@@ -130,6 +156,11 @@ object TierPolicy {
  * quietly consumed their data allowance. Showing the number up front is the
  * fix, and it matches the web app's habit of showing its workings rather than
  * asking to be trusted.
+ *
+ * The projection reads [AutomaticTransfers.planFor] — the same plan the worker
+ * is bound by — rather than modelling a separate, dormant code path. It is a
+ * projection of the **maximum**: a duration-based stream can move anything up
+ * to its cap, so the honest figure to show before the fact is the ceiling.
  */
 object DataBudget {
 
@@ -139,6 +170,8 @@ object DataBudget {
     data class Projection(
         val meteredBytesPerDay: Long,
         val unmeteredBytesPerDay: Long,
+        /** True when a duration-based stream is included, so this is a ceiling. */
+        val isMaximum: Boolean = false,
     ) {
         val meteredBytesPerMonth: Long get() = meteredBytesPerDay * 30
         val unmeteredBytesPerMonth: Long get() = unmeteredBytesPerDay * 30
@@ -170,37 +203,30 @@ object DataBudget {
             0L
         }
 
-        val throughputCycles =
-            if (config.throughputEveryNCycles > 0) cycles / config.throughputEveryNCycles else 0
-        val lightBytes = (config.lightDownBytes + config.lightUpBytes).toLong()
+        // Automatic stream/sweep work: the actual expensive path, and the one
+        // the old projection ignored entirely. Every cycle can run it, so the
+        // per-cycle ceiling multiplies by the cycle count — bounded, on metered
+        // connections, by the daily budget the runtime also enforces.
+        val cellularPlan = AutomaticTransfers.planFor(config, NetworkType.CELLULAR)
+        val wifiPlan = AutomaticTransfers.planFor(config, NetworkType.WIFI)
 
-        // Light throughput only runs on the networks the config allows. If
-        // cellular is not in that set, it contributes nothing to the metered
-        // total no matter how often it is scheduled — which is precisely the
-        // property that keeps the default under 10MB/month.
-        val lightOnMetered = NetworkType.CELLULAR in config.monitoringNetworks &&
-            NetworkType.CELLULAR in config.throughputLightNetworks
-        val meteredThroughputCycles = (throughputCycles * assumeMeteredNetwork).toLong()
-        val unmeteredThroughputCycles = throughputCycles - meteredThroughputCycles
-
-        if (lightOnMetered) metered += meteredThroughputCycles * lightBytes
+        if (NetworkType.CELLULAR in config.monitoringNetworks) {
+            val sweepRuns = minOf(meteredCycles, config.fullSweepsPerDay.toLong())
+            val streamRuns = if (cellularPlan.runStream) meteredCycles else 0L
+            val raw = streamRuns * cellularPlan.maxStreamBytes +
+                sweepRuns * cellularPlan.maxSweepBytes
+            metered += minOf(raw, config.automaticDailyMeteredBytes)
+        }
         if (NetworkType.WIFI in config.monitoringNetworks) {
-            unmetered += unmeteredThroughputCycles * lightBytes
+            val sweepRuns = minOf(unmeteredCycles, config.fullSweepsPerDay.toLong())
+            val streamRuns = if (wifiPlan.runStream) unmeteredCycles else 0L
+            unmetered += streamRuns * wifiPlan.maxStreamBytes + sweepRuns * wifiPlan.maxSweepBytes
         }
 
-        // Full sweeps are charging + allowed-network gated; treat as unmetered
-        // unless cellular was explicitly opted in.
-        val fullBytes = FULL_SWEEP_BYTES * config.fullSweepsPerDay
-        when {
-            NetworkType.CELLULAR in config.monitoringNetworks &&
-                NetworkType.CELLULAR in config.fullSweepNetworks -> metered += fullBytes
-            NetworkType.WIFI in config.monitoringNetworks &&
-                NetworkType.WIFI in config.fullSweepNetworks -> unmetered += fullBytes
-        }
-
-        return Projection(meteredBytesPerDay = metered, unmeteredBytesPerDay = unmetered)
+        return Projection(
+            meteredBytesPerDay = metered,
+            unmeteredBytesPerDay = unmetered,
+            isMaximum = cellularPlan.runStream || wifiPlan.runStream,
+        )
     }
-
-    /** Sweep ladder plus a stream episode, matching the web app's defaults. */
-    const val FULL_SWEEP_BYTES = 30L * 1024 * 1024
 }

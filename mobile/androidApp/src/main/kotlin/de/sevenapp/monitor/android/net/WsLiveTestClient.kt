@@ -14,20 +14,40 @@ import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import io.ktor.websocket.send
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import kotlin.random.Random
 
 /**
  * The mobile counterpart of the web app's persistent WebSocket to the
- * ws-speedtest Worker (src/index.js): one connection, driven through
- * repeated back-to-back download/upload rounds for a whole streaming
- * episode — matching the Worker's ping/down_start/down_end/up_start/up_end
- * protocol — rather than one-shot fixed-size requests.
+ * ws-speedtest Worker (src/index.js): one connection, driven through repeated
+ * back-to-back download/upload rounds for a whole streaming phase — matching
+ * the Worker's ping/down_start/down_end/up_start/up_end protocol — rather than
+ * one-shot fixed-size requests.
+ *
+ * Two properties this type is responsible for:
+ *
+ * - **Round correlation.** Every round carries a unique id that the Worker
+ *   echoes in `down_end`/`up_ack`. Without it, an acknowledgement that arrived
+ *   after round N timed out was accepted as round N+1's, so a stalled link
+ *   could report a pass for a round that never completed.
+ * - **A connection is not reused after a failed round.** A timed-out round
+ *   leaves unread frames queued on the socket. Closing and reconnecting is the
+ *   only way to guarantee the next round starts from a clean stream, and it is
+ *   also how the client recovers when the Worker closes a connection that hit
+ *   its byte or lifetime quota.
  */
 class WsLiveTestClient(
     private val wsUrl: String,
-    network: Network? = null,
+    private val network: Network? = null,
+    /**
+     * Called for each connection attempt rather than once, because the native
+     * handshake token is time-limited: a reconnect an hour into a long session
+     * needs a freshly signed one.
+     */
+    private val authHeaderProvider: suspend () -> Pair<String, String>? = { null },
 ) {
     sealed interface EpisodeResult {
         val bytes: Long
@@ -47,37 +67,82 @@ class WsLiveTestClient(
     }
 
     private var session: DefaultClientWebSocketSession? = null
+    private var roundCounter = 0L
 
-    /** Opens the one persistent connection every episode below runs over. */
-    suspend fun connect(authHeader: Pair<String, String>?) {
+    /** Opens the persistent connection every round below runs over. */
+    suspend fun connect() {
+        val header = authHeaderProvider()
         session = client.webSocketSession {
             url(wsUrl)
-            authHeader?.let { (name, value) -> header(name, value) }
+            header?.let { (name, value) -> header(name, value) }
         }
     }
 
-    suspend fun close() {
-        runCatching { session?.close() }
+    /**
+     * Opens a connection if there isn't a usable one.
+     *
+     * Called before each phase so a round that poisoned the previous socket —
+     * or a Worker-side quota close — does not fail every subsequent phase.
+     */
+    suspend fun ensureConnected() {
+        val current = session
+        if (current != null && current.isActive()) return
+        dropSession()
+        connect()
+    }
+
+    private fun DefaultClientWebSocketSession.isActive(): Boolean =
+        !incoming.isClosedForReceive && !outgoing.isClosedForSend
+
+    private suspend fun dropSession() {
+        val current = session ?: return
         session = null
+        runCatching { current.close() }
+    }
+
+    suspend fun close() {
+        dropSession()
         client.close()
     }
 
+    /** Ids only need to be unique within one connection's lifetime. */
+    private fun nextRoundId(): String = "r${++roundCounter}"
+
+    /** Round ids in the frame, or null when the frame is not the expected type. */
+    private fun matchingFrame(frame: Frame, expectedType: String, roundId: String): JSONObject? {
+        if (frame !is Frame.Text) return null
+        val json = runCatching { JSONObject(frame.readText()) }.getOrNull() ?: return null
+        if (json.optString("type") != expectedType) return null
+        // A frame with no id at all is accepted so a client update can ship
+        // ahead of the Worker; a frame with the *wrong* id never is, because
+        // that is precisely the stale acknowledgement being guarded against.
+        val id = json.optString("id", "")
+        if (id.isNotEmpty() && id != roundId) return null
+        return json
+    }
+
     /**
-     * Runs back-to-back download rounds of [roundBytes] each for
-     * [episodeDurationMs], calling [onProgress] roughly every
+     * Runs back-to-back download rounds of [roundBytes] each until
+     * [episodeDurationMs] has elapsed, calling [onProgress] roughly every
      * [progressThrottleMs] with the bytes/elapsed *since the last call* — an
-     * instantaneous rate rather than a cumulative average, so a live chart
-     * fed from it shows what's happening right now, the way the web app's
-     * live-rate chart does.
+     * instantaneous rate rather than a cumulative average, so a live chart fed
+     * from it shows what's happening right now.
+     *
+     * The episode deadline is a hard boundary, enforced *within* a round rather
+     * than only between rounds: each round gets whatever time is left, so a
+     * 10-second phase ends after 10 seconds even if a round would otherwise be
+     * allowed to stall for its full 30-second round timeout. Bytes transferred
+     * before the deadline still count.
      */
     suspend fun runDownEpisode(
         roundBytes: Int,
         episodeDurationMs: Long,
         roundTimeoutMs: Long,
         progressThrottleMs: Long,
+        /** Hard byte ceiling for this episode, or null for none. See TransferPlan. */
+        maxBytes: Long? = null,
         onProgress: (bytes: Long, elapsedMs: Double) -> Unit,
     ): EpisodeResult {
-        val s = session ?: return EpisodeResult.Failed(0, 0.0, FailureReason.UNKNOWN)
         val episodeStart = System.nanoTime()
         var totalBytes = 0L
         var sinceLastSample = 0L
@@ -85,8 +150,17 @@ class WsLiveTestClient(
 
         try {
             while (elapsedMs(episodeStart) < episodeDurationMs) {
-                val completed = withTimeoutOrNull(roundTimeoutMs) {
-                    s.send(Frame.Text(JSONObject().put("type", "down_start").put("bytes", roundBytes).toString()))
+                // The byte ceiling is checked between rounds: a round is at
+                // most roundBytes, so the overshoot is bounded and known.
+                if (maxBytes != null && totalBytes >= maxBytes) break
+                currentCoroutineContext().ensureActive()
+                val s = session ?: return EpisodeResult.Failed(totalBytes, elapsedMs(episodeStart), FailureReason.NO_NETWORK)
+                val budget = roundBudgetMs(episodeStart, episodeDurationMs, roundTimeoutMs)
+                if (budget <= 0) break
+                val roundId = nextRoundId()
+
+                val completed = withTimeoutOrNull(budget) {
+                    s.send(Frame.Text(JSONObject().put("type", "down_start").put("bytes", roundBytes).put("id", roundId).toString()))
                     while (true) {
                         when (val frame = s.incoming.receive()) {
                             is Frame.Binary -> {
@@ -100,21 +174,31 @@ class WsLiveTestClient(
                                     lastSampleAt = now
                                 }
                             }
-                            is Frame.Text -> {
-                                val type = runCatching { JSONObject(frame.readText()).optString("type") }.getOrNull()
-                                if (type == "down_end") return@withTimeoutOrNull true
-                            }
-                            else -> {}
+                            else -> if (matchingFrame(frame, "down_end", roundId) != null) return@withTimeoutOrNull true
                         }
                     }
                     @Suppress("UNREACHABLE_CODE") true
                 }
+
                 if (completed != true) {
+                    // Either way the socket is now mid-transfer from the
+                    // server's point of view: frames it already queued are
+                    // unread, and its protocol state machine still says
+                    // "download in progress". Reusing it for the next phase
+                    // would send a command the server rejects as a violation
+                    // and close the connection. Drop it and let ensureConnected
+                    // open a clean one.
+                    dropSession()
+                    // Out of episode time is normal completion with whatever
+                    // arrived; out of round time while the episode still had
+                    // budget is a genuine stall.
+                    if (elapsedMs(episodeStart) >= episodeDurationMs) break
                     return EpisodeResult.Failed(totalBytes, elapsedMs(episodeStart), FailureReason.TIMEOUT)
                 }
             }
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
+            dropSession()
             return EpisodeResult.Failed(totalBytes, elapsedMs(episodeStart), t.toFailureReason())
         }
 
@@ -128,9 +212,10 @@ class WsLiveTestClient(
         episodeDurationMs: Long,
         roundTimeoutMs: Long,
         progressThrottleMs: Long,
+        /** Hard byte ceiling for this episode, or null for none. See TransferPlan. */
+        maxBytes: Long? = null,
         onProgress: (bytes: Long, elapsedMs: Double) -> Unit,
     ): EpisodeResult {
-        val s = session ?: return EpisodeResult.Failed(0, 0.0, FailureReason.UNKNOWN)
         val episodeStart = System.nanoTime()
         var totalBytes = 0L
         var sinceLastSample = 0L
@@ -138,8 +223,21 @@ class WsLiveTestClient(
 
         try {
             while (elapsedMs(episodeStart) < episodeDurationMs) {
-                val completed = withTimeoutOrNull(roundTimeoutMs) {
-                    s.send(Frame.Text(JSONObject().put("type", "up_start").toString()))
+                // The byte ceiling is checked between rounds: a round is at
+                // most roundBytes, so the overshoot is bounded and known.
+                if (maxBytes != null && totalBytes >= maxBytes) break
+                currentCoroutineContext().ensureActive()
+                val s = session ?: return EpisodeResult.Failed(totalBytes, elapsedMs(episodeStart), FailureReason.NO_NETWORK)
+                val budget = roundBudgetMs(episodeStart, episodeDurationMs, roundTimeoutMs)
+                if (budget <= 0) break
+                val roundId = nextRoundId()
+
+                val completed = withTimeoutOrNull(budget) {
+                    s.send(
+                        Frame.Text(
+                            JSONObject().put("type", "up_start").put("bytes", roundBytes).put("id", roundId).toString(),
+                        ),
+                    )
 
                     var sent = 0
                     while (sent < roundBytes) {
@@ -156,22 +254,25 @@ class WsLiveTestClient(
                         }
                     }
 
-                    s.send(Frame.Text(JSONObject().put("type", "up_end").put("bytesSent", sent).toString()))
+                    s.send(Frame.Text(JSONObject().put("type", "up_end").put("bytesSent", sent).put("id", roundId).toString()))
                     while (true) {
-                        val frame = s.incoming.receive()
-                        if (frame is Frame.Text) {
-                            val type = runCatching { JSONObject(frame.readText()).optString("type") }.getOrNull()
-                            if (type == "up_ack") return@withTimeoutOrNull true
-                        }
+                        if (matchingFrame(s.incoming.receive(), "up_ack", roundId) != null) return@withTimeoutOrNull true
                     }
                     @Suppress("UNREACHABLE_CODE") true
                 }
+
                 if (completed != true) {
+                    // Same reasoning as the download side: the server is still
+                    // in its "upload in progress" state and has unread frames,
+                    // so this connection cannot be reused for the next phase.
+                    dropSession()
+                    if (elapsedMs(episodeStart) >= episodeDurationMs) break
                     return EpisodeResult.Failed(totalBytes, elapsedMs(episodeStart), FailureReason.TIMEOUT)
                 }
             }
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
+            dropSession()
             return EpisodeResult.Failed(totalBytes, elapsedMs(episodeStart), t.toFailureReason())
         }
 
@@ -181,59 +282,76 @@ class WsLiveTestClient(
 
     /** One exact-size download used by the reliability sweep. */
     suspend fun runDownTransfer(bytes: Int, timeoutMs: Long): EpisodeResult {
-        val s = session ?: return EpisodeResult.Failed(0, 0.0, FailureReason.UNKNOWN)
+        ensureConnected()
+        val s = session ?: return EpisodeResult.Failed(0, 0.0, FailureReason.NO_NETWORK)
         val started = System.nanoTime()
         var received = 0L
+        val roundId = nextRoundId()
         return try {
             val completed = withTimeoutOrNull(timeoutMs) {
-                s.send(Frame.Text(JSONObject().put("type", "down_start").put("bytes", bytes).toString()))
+                s.send(Frame.Text(JSONObject().put("type", "down_start").put("bytes", bytes).put("id", roundId).toString()))
                 while (true) {
                     when (val frame = s.incoming.receive()) {
                         is Frame.Binary -> received += frame.data.size
-                        is Frame.Text -> if (JSONObject(frame.readText()).optString("type") == "down_end") return@withTimeoutOrNull true
-                        else -> Unit
+                        else -> if (matchingFrame(frame, "down_end", roundId) != null) return@withTimeoutOrNull true
                     }
                 }
                 @Suppress("UNREACHABLE_CODE") true
             }
-            if (completed == true && received == bytes.toLong()) EpisodeResult.Ok(received, elapsedMs(started))
-            else EpisodeResult.Failed(received, elapsedMs(started), FailureReason.TIMEOUT)
+            // A rung passes only on an exact-size delivery. A short body is a
+            // failure for the sweep's purpose, which is "does this size get
+            // through" — not "did something arrive".
+            if (completed == true && received == bytes.toLong()) {
+                EpisodeResult.Ok(received, elapsedMs(started))
+            } else {
+                dropSession()
+                EpisodeResult.Failed(received, elapsedMs(started), FailureReason.TIMEOUT)
+            }
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
+            dropSession()
             EpisodeResult.Failed(received, elapsedMs(started), t.toFailureReason())
         }
     }
 
     /** One exact-size upload used by the reliability sweep, verified by the Worker's byte acknowledgement. */
     suspend fun runUpTransfer(bytes: Int, timeoutMs: Long): EpisodeResult {
-        val s = session ?: return EpisodeResult.Failed(0, 0.0, FailureReason.UNKNOWN)
+        ensureConnected()
+        val s = session ?: return EpisodeResult.Failed(0, 0.0, FailureReason.NO_NETWORK)
         val started = System.nanoTime()
+        val roundId = nextRoundId()
         return try {
             val acknowledged = withTimeoutOrNull(timeoutMs) {
-                s.send(Frame.Text(JSONObject().put("type", "up_start").toString()))
+                s.send(Frame.Text(JSONObject().put("type", "up_start").put("bytes", bytes).put("id", roundId).toString()))
                 var sent = 0
                 while (sent < bytes) {
                     val n = minOf(UP_CHUNK_SIZE, bytes - sent)
                     s.send(Frame.Binary(fin = true, data = Random.nextBytes(n)))
                     sent += n
                 }
-                s.send(Frame.Text(JSONObject().put("type", "up_end").put("bytesSent", sent).toString()))
+                s.send(Frame.Text(JSONObject().put("type", "up_end").put("bytesSent", sent).put("id", roundId).toString()))
                 while (true) {
-                    val frame = s.incoming.receive()
-                    if (frame is Frame.Text) {
-                        val message = JSONObject(frame.readText())
-                        if (message.optString("type") == "up_ack") return@withTimeoutOrNull message.optLong("bytesReceived", -1)
-                    }
+                    val ack = matchingFrame(s.incoming.receive(), "up_ack", roundId)
+                    if (ack != null) return@withTimeoutOrNull ack.optLong("bytesReceived", -1)
                 }
                 @Suppress("UNREACHABLE_CODE") -1L
             }
-            if (acknowledged == bytes.toLong()) EpisodeResult.Ok(bytes.toLong(), elapsedMs(started))
-            else EpisodeResult.Failed(0, elapsedMs(started), FailureReason.TIMEOUT)
+            if (acknowledged == bytes.toLong()) {
+                EpisodeResult.Ok(bytes.toLong(), elapsedMs(started))
+            } else {
+                dropSession()
+                EpisodeResult.Failed(0, elapsedMs(started), FailureReason.TIMEOUT)
+            }
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
+            dropSession()
             EpisodeResult.Failed(0, elapsedMs(started), t.toFailureReason())
         }
     }
+
+    /** Whatever is left of the episode, never more than one round's stall allowance. */
+    private fun roundBudgetMs(episodeStart: Long, episodeDurationMs: Long, roundTimeoutMs: Long): Long =
+        minOf(roundTimeoutMs, (episodeDurationMs - elapsedMs(episodeStart)).toLong())
 
     private fun elapsedMs(startNanos: Long): Double = (System.nanoTime() - startNanos) / 1_000_000.0
 

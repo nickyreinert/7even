@@ -6,9 +6,7 @@ import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import androidx.work.CoroutineWorker
-import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
-import androidx.work.NetworkType as WorkNetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
@@ -19,9 +17,11 @@ import de.sevenapp.monitor.android.livetest.LiveTestRunner
 import de.sevenapp.monitor.core.Clock
 import de.sevenapp.monitor.core.NetworkType
 import de.sevenapp.monitor.entitlement.FeatureGate
+import de.sevenapp.monitor.probe.AutomaticTransfers
 import de.sevenapp.monitor.probe.DeviceState
 import de.sevenapp.monitor.probe.MonitorCoordinator
 import de.sevenapp.monitor.probe.ProbeEngine
+import kotlinx.coroutines.CancellationException
 import java.util.concurrent.TimeUnit
 
 /**
@@ -56,11 +56,10 @@ class ProbeWorker(
 
         val store = RoomMonitorStore.get(applicationContext)
         val deviceState = readDeviceState(applicationContext)
-        val configured = store.loadConfig()
-        if (configured.automaticRequiresCharging && !deviceState.isCharging) return Result.success()
+        val transport = KtorTransport()
         val coordinator = MonitorCoordinator(
             store = store,
-            engine = ProbeEngine(KtorTransport(), Clock { System.currentTimeMillis() }),
+            engine = ProbeEngine(transport, Clock { System.currentTimeMillis() }),
             clock = Clock { System.currentTimeMillis() },
             // Ratcheted, so neither a lapse nor switching the paywall on ever
             // prunes away history already collected.
@@ -68,26 +67,82 @@ class ProbeWorker(
         )
 
         return try {
+            // Reachability first and unconditionally. It used to sit behind the
+            // charging check, so an unplugged phone recorded nothing at all —
+            // and a monitor that stops observing while unplugged reports the
+            // resulting gap as uptime.
             coordinator.runCycle(deviceState)
-            val config = store.loadConfig()
-            if (config.automaticStreamEnabled || config.automaticSweepEnabled) {
-                LiveTestRunner(
-                    context = applicationContext,
-                    store = store,
-                    probeConfig = config.copy(liveTestMinDurationMs = config.liveTestMinDurationMs.coerceIn(10_000L, 60_000L)),
-                    fallbackNetworkType = deviceState.networkType,
-                    wifiSsid = deviceState.ssid,
-                    runStream = config.automaticStreamEnabled,
-                    runSweep = config.automaticSweepEnabled,
-                ).runSession { }
-            }
+            runAutomaticTransfers(store, deviceState, now)
             MonitoringNotification.completed(applicationContext)
             Result.success()
         } catch (t: Throwable) {
+            if (t is CancellationException) throw t
             // Retry, not failure: Result.failure() would stop the periodic
             // chain permanently, and the usual cause here is a transient
             // network problem — which is itself the thing we are measuring.
             Result.retry()
+        } finally {
+            transport.close()
+        }
+    }
+
+    /**
+     * The expensive half of a cycle, gated by one shared budget.
+     *
+     * The allowance is **reserved at its stated maximum before the work runs**
+     * and reconciled down to what was actually moved afterwards. Charging only
+     * after the fact meant a worker killed mid-transfer spent bytes that were
+     * never recorded, so the running total drifted below reality exactly when
+     * the connection was worst. Over-reserving and refunding errs toward
+     * under-spending the user's data, which is the safe direction.
+     */
+    private suspend fun runAutomaticTransfers(
+        store: RoomMonitorStore,
+        deviceState: DeviceState,
+        nowEpochMs: Long,
+    ) {
+        val config = store.loadConfig()
+        // Re-checked immediately before the heavy work, not only at worker
+        // start: the user may have switched monitoring off during the cheap
+        // ping phase, and that decision should take effect now, not next cycle.
+        if (!RoomMonitorStore.isMonitoringEnabled(applicationContext)) return
+
+        val dayStart = nowEpochMs - 24 * 60 * 60 * 1000
+        val monthStart = nowEpochMs - 30L * 24 * 60 * 60 * 1000
+        val decision = AutomaticTransfers.decide(
+            config = config,
+            deviceState = deviceState,
+            usage = AutomaticTransfers.Usage(
+                fullSweepsToday = store.fullSweepCountSince(dayStart),
+                meteredBytesToday = store.bytesUsedSince(dayStart, metered = true),
+                meteredBytesThisMonth = store.bytesUsedSince(monthStart, metered = true),
+            ),
+        )
+        val plan = (decision as? AutomaticTransfers.Decision.Run)?.plan ?: return
+
+        store.addBytesUsed(plan.maxBytesPerRun, deviceState.isMetered, nowEpochMs)
+        var actualBytes = 0L
+        try {
+            actualBytes = LiveTestRunner(
+                context = applicationContext,
+                store = store,
+                // Automatic work is metered by the plan, not by the manual
+                // test's settings: the same phase length the projection used.
+                probeConfig = config.copy(liveTestPhaseDurationMs = plan.phaseDurationMs),
+                fallbackNetworkType = deviceState.networkType,
+                runStream = plan.runStream,
+                runSweep = plan.runSweep,
+                wifiSsid = deviceState.ssid,
+                maxTransferBytes = plan.maxStreamBytes,
+                isMeteredOverride = deviceState.isMetered,
+                accountBytes = false,
+            ).runSession { }
+            if (plan.runSweep) store.recordFullSweep(nowEpochMs)
+        } finally {
+            // Refund the unused part of the reservation, including on
+            // cancellation or a partial run.
+            val refund = plan.maxBytesPerRun - actualBytes
+            if (refund != 0L) store.addBytesUsed(-refund, deviceState.isMetered, nowEpochMs)
         }
     }
 
@@ -132,23 +187,39 @@ class ProbeWorker(
         fun schedule(context: Context, intervalMinutes: Long, hourOfDay: Int = 0, dayOfWeek: Int = 1) {
             val request = PeriodicWorkRequestBuilder<ProbeWorker>(
                 intervalMinutes.coerceAtLeast(MIN_INTERVAL_MINUTES), TimeUnit.MINUTES,
-            ).setInitialDelay(initialDelayMillis(intervalMinutes, hourOfDay, dayOfWeek), TimeUnit.MILLISECONDS).setConstraints(
-                Constraints.Builder()
-                    // CONNECTED rather than UNMETERED: a cycle that finds no
-                    // usable network is itself a measurement. Gating on
-                    // unmetered here would make outages invisible, which is
-                    // the opposite of what this app is for.
-                    .setRequiredNetworkType(WorkNetworkType.CONNECTED)
-                    .build(),
-            ).build()
+            ).setInitialDelay(initialDelayMillis(intervalMinutes, hourOfDay, dayOfWeek), TimeUnit.MILLISECONDS)
+                // NO network constraint at all. `NetworkType.CONNECTED` meant
+                // WorkManager simply did not run this worker while the device
+                // was offline — so the one event a connection monitor exists to
+                // record was the one event it could never observe, and the gap
+                // was later read as uptime. Connectivity is now checked inside
+                // the worker, which gates transfers while still recording the
+                // disconnected interval.
+                .build()
 
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 UNIQUE_NAME,
-                // UPDATE so an interval change takes effect, without the
-                // schedule-resetting that CANCEL_AND_REENQUEUE would cause on
-                // every app launch.
-                ExistingPeriodicWorkPolicy.UPDATE,
+                // Anchor changes must actually move the next run. UPDATE keeps
+                // the existing enqueue time, so editing "run at 03:00" left the
+                // old anchor in place; CANCEL_AND_REENQUEUE re-applies the
+                // initial delay. It is only called when something changed, so
+                // this does not reset the schedule on every app launch.
+                ExistingPeriodicWorkPolicy.CANCEL_AND_REENQUEUE,
                 request,
+            )
+        }
+
+        /**
+         * The one entry point for scheduling, so no call site can omit the
+         * stored hour/day and silently re-anchor the schedule to "now".
+         */
+        suspend fun scheduleFromConfig(context: Context, store: RoomMonitorStore) {
+            val config = store.loadConfig()
+            schedule(
+                context = context,
+                intervalMinutes = config.cycleIntervalMinutes.toLong(),
+                hourOfDay = config.automaticHourOfDay,
+                dayOfWeek = config.automaticDayOfWeek,
             )
         }
 

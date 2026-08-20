@@ -8,6 +8,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class DropDetectorTest {
@@ -102,9 +103,12 @@ class DropDetectorTest {
         // as a series of unrelated short drops.
         val d = DropDetector()
         d.restore(
-            closedDrops = listOf(DropEvent(0, 500)),
-            openDropStartedAtEpochMs = 1000,
-            consecutiveFailures = 2,
+            DropDetector.Snapshot(
+                closedDrops = listOf(DropEvent(0, 500)),
+                openDropStartedAtEpochMs = 1000,
+                consecutiveFailures = 2,
+                runStartedAtEpochMs = 1000,
+            ),
         )
         assertTrue(d.isDropOpen)
 
@@ -118,5 +122,41 @@ class DropDetectorTest {
     fun thresholdOfOneOpensOnFirstFailure() {
         val d = DropDetector(thresholdConsecutive = 1)
         assertIs<DropDetector.Transition.DropStarted>(d.onSample(fail(1000)))
+    }
+
+    @Test
+    fun failuresAccumulateAcrossProcessDeath() {
+        // The MON-01 regression. Each worker run records ONE failed probe and
+        // then dies; the persisted state used to zero the consecutive-failure
+        // count unless a drop was already open, so the two-failure threshold
+        // was never reached and an offline device recorded no outage at all.
+        var stored = DropDetector.Snapshot(emptyList(), null, 0, null)
+
+        fun oneWorkerRun(atEpochMs: Long, ok: Boolean): DropDetector.Transition {
+            val detector = DropDetector()
+            detector.restore(stored)
+            val transition = detector.onSample(
+                PingSample(atEpochMs, if (ok) 12.0 else null, NetworkType.NONE),
+            )
+            stored = detector.snapshot()
+            return transition
+        }
+
+        assertIs<DropDetector.Transition.None>(oneWorkerRun(1_000, ok = false))
+        assertEquals(1, stored.consecutiveFailures)
+        assertEquals(1_000L, stored.runStartedAtEpochMs)
+
+        val started = oneWorkerRun(2_000, ok = false)
+        assertIs<DropDetector.Transition.DropStarted>(started)
+        // Backdated to the FIRST failure, which happened in the previous
+        // process — not to the one that crossed the threshold.
+        assertEquals(1_000L, started.atEpochMs)
+
+        val ended = oneWorkerRun(5_000, ok = true)
+        assertIs<DropDetector.Transition.DropEnded>(ended)
+        assertEquals(1_000L, ended.event.startedAtEpochMs)
+        assertEquals(5_000L, ended.event.endedAtEpochMs)
+        assertEquals(0, stored.consecutiveFailures)
+        assertNull(stored.runStartedAtEpochMs)
     }
 }

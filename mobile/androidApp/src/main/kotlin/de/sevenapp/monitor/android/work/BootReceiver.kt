@@ -9,10 +9,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /**
- * WorkManager's periodic work does not survive a reboot on its own. Without
- * this the monitor stops at the next restart and stays stopped until the user
- * happens to open the app — which, for a background monitor, may be never. The
- * resulting gap would read as perfect uptime rather than as missing data.
+ * Re-arms scheduling after a reboot.
+ *
+ * WorkManager's own persistence normally restores periodic work on boot, so
+ * this is a belt-and-braces path for OEM builds that clear it — not the primary
+ * mechanism. It therefore reschedules from the **stored config** through the
+ * single [ProbeWorker.scheduleFromConfig] entry point rather than passing a
+ * bare interval: the old version omitted the stored hour and day, so on any
+ * device that did take this path a daily 03:00 schedule silently re-anchored
+ * itself to whenever the phone happened to boot.
  */
 class BootReceiver : BroadcastReceiver() {
 
@@ -27,8 +32,7 @@ class BootReceiver : BroadcastReceiver() {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 if (RoomMonitorStore.isMonitoringEnabled(app)) {
-                    val config = RoomMonitorStore.get(app).loadConfig()
-                    ProbeWorker.schedule(app, config.cycleIntervalMinutes.toLong())
+                    ProbeWorker.scheduleFromConfig(app, RoomMonitorStore.get(app))
                     ReportWorker.schedule(app)
                 }
             } finally {

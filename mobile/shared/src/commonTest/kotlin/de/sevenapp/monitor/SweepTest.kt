@@ -177,4 +177,78 @@ class SweepVerdictTest {
         val cutoff = assertIs<SweepVerdict.Verdict.SizeCutoff>(SweepVerdict.of(shuffled))
         assertEquals(2000, cutoff.lastGoodBytes)
     }
+
+    @Test
+    fun aMixedRungIsNotAClaimOfASizeCutoff() {
+        // 2 of 3 trials passing at 512K is evidence that 512K DOES get through
+        // sometimes — the opposite of a hard size limit. `ok` collapsed it to
+        // "failed", which let intermittent link trouble be diagnosed as
+        // "your ISP drops anything over 128K".
+        val results = listOf(
+            SweepResult(32_000, 3, passCount = 3, avgDurationMs = 10.0, lastError = null),
+            SweepResult(128_000, 3, passCount = 3, avgDurationMs = 20.0, lastError = null),
+            SweepResult(512_000, 3, passCount = 2, avgDurationMs = 30.0, lastError = FailureReason.TIMEOUT),
+        )
+        assertEquals(SweepResult.Outcome.MIXED, results[2].outcome)
+        assertIs<SweepVerdict.Verdict.Scattered>(SweepVerdict.of(results))
+    }
+
+    @Test
+    fun aSustainedAllFailBoundaryIsStillACutoff() {
+        val results = listOf(
+            SweepResult(32_000, 3, passCount = 3, avgDurationMs = 10.0, lastError = null),
+            SweepResult(128_000, 3, passCount = 3, avgDurationMs = 20.0, lastError = null),
+            SweepResult(512_000, 2, passCount = 0, avgDurationMs = null, lastError = FailureReason.TIMEOUT),
+            SweepResult(2_000_000, 1, passCount = 0, avgDurationMs = null, lastError = FailureReason.TIMEOUT),
+        )
+        val verdict = assertIs<SweepVerdict.Verdict.SizeCutoff>(SweepVerdict.of(results))
+        assertEquals(128_000, verdict.lastGoodBytes)
+        assertEquals(512_000, verdict.firstBadBytes)
+    }
+
+    @Test
+    fun aCancelledRungProvesNothingAndIsExcluded() {
+        val cancelled = SweepResult(
+            bytes = 512_000, trials = 3, passCount = 0, avgDurationMs = null,
+            lastError = null, trialOutcomes = emptyList(), cancelled = true,
+        )
+        assertEquals(SweepResult.Outcome.INCOMPLETE, cancelled.outcome)
+        assertEquals(0, cancelled.attempted)
+
+        val results = listOf(
+            SweepResult(32_000, 3, passCount = 3, avgDurationMs = 10.0, lastError = null),
+            cancelled,
+        )
+        // Everything that actually ran passed, so the only honest verdict is
+        // "all passed" over the rungs that produced evidence.
+        assertIs<SweepVerdict.Verdict.AllPassed>(SweepVerdict.of(results))
+    }
+
+    @Test
+    fun cancellingMidLadderRecordsWhatWasAttemptedNotWhatWasPlanned() = runTest {
+        // The old `return@repeat` skipped one trial and kept looping, so the
+        // emitted result still claimed all three configured trials had run.
+        var allowed = 2
+        val transport = object : Transport {
+            override suspend fun timedGet(url: String, timeoutMs: Long): TransportResult =
+                TransportResult.Ok(10.0)
+            override suspend fun download(url: String, expectBytes: Int, timeoutMs: Long): TransferResult {
+                allowed--
+                return TransferResult.Ok(expectBytes.toLong(), 10.0)
+            }
+            override suspend fun upload(url: String, bytes: Int, timeoutMs: Long): TransferResult =
+                TransferResult.Ok(bytes.toLong(), 10.0)
+        }
+        val results = SweepRunner(transport).run(
+            steps = listOf(SweepStep(32_000, 5)),
+            direction = SweepRunner.Direction.DOWN,
+            config = ProbeConfig(),
+            shouldContinue = { allowed > 0 },
+        )
+        assertEquals(1, results.size)
+        assertTrue(results[0].cancelled)
+        assertEquals(2, results[0].attempted)
+        assertEquals(5, results[0].trials)
+        assertEquals(SweepResult.Outcome.INCOMPLETE, results[0].outcome)
+    }
 }

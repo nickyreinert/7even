@@ -70,7 +70,7 @@ class ReportTest {
         )
         assertTrue(report.coverage.isPartial)
         assertEquals(10, report.coverage.samplesCollected)
-        assertTrue(report.coverage.ratio < 0.2)
+        assertTrue(assertNotNull(report.coverage.ratio) < 0.2)
     }
 
     @Test
@@ -148,7 +148,61 @@ class ReportTest {
         )
         assertEquals(0, report.overall.pingCount)
         assertNull(report.overall.latencyMedianMs)
-        assertEquals(0.0, report.overall.lossPct)
         assertTrue(report.coverage.isPartial)
+    }
+
+    @Test
+    fun anEmptyWindowNeverClaimsPerfectStability() {
+        // The REPORT-02 regression. With no observations at all, the old
+        // builder produced 100% uptime, 0% loss and a top composite score —
+        // the strongest possible claim on the weakest possible evidence, which
+        // a fresh install could receive as its very first report.
+        val report = ReportBuilder.build(
+            ReportPeriod.WEEKLY, 0, day * 7, emptyList(), emptyList(), emptyList(), expectedSamples = 672,
+        )
+        assertNull(report.overall.stability, "an unobserved window must not be scored")
+        assertNull(report.overall.lossPct, "no probes is not the same as no loss")
+        assertTrue(!report.coverage.isSufficient)
+    }
+
+    @Test
+    fun aLowCoverageWindowIsNotScoredEither() {
+        val pings = (1..5).map { ping(it * 1000L, 20.0) }
+        val report = ReportBuilder.build(
+            ReportPeriod.DAILY, 0, day, pings, emptyList(), emptyList(), expectedSamples = 288,
+        )
+        assertNull(report.overall.stability)
+        assertTrue(report.coverage.isPartial)
+    }
+
+    @Test
+    fun aSampleExactlyAtTheBoundaryBelongsToOneWindowOnly() {
+        // REPORT-03: inclusive start..end put a midnight sample in both the
+        // report that ended there and the one that began there.
+        val boundary = day
+        val pings = listOf(ping(boundary, 20.0))
+
+        val earlier = ReportBuilder.build(
+            ReportPeriod.DAILY, 0, boundary, pings, emptyList(), emptyList(), expectedSamples = 96,
+        )
+        val later = ReportBuilder.build(
+            ReportPeriod.DAILY, boundary, boundary + day, pings, emptyList(), emptyList(), expectedSamples = 96,
+        )
+        assertEquals(1, earlier.overall.pingCount + later.overall.pingCount)
+        assertEquals(0, earlier.overall.pingCount)
+        assertEquals(1, later.overall.pingCount)
+    }
+
+    @Test
+    fun unknownExpectedCoverageIsNotReportedAsFull() {
+        // A probe cadence longer than the report window predicts no samples at
+        // all. That used to truncate to zero expected and read as ratio 1.0.
+        val report = ReportBuilder.build(
+            ReportPeriod.DAILY, 0, day, listOf(ping(1000, 20.0)), emptyList(), emptyList(),
+            expectedSamples = null,
+        )
+        assertTrue(report.coverage.isUnknown)
+        assertNull(report.coverage.ratio)
+        assertTrue(!report.coverage.isPartial, "unknown is not the same as partial")
     }
 }

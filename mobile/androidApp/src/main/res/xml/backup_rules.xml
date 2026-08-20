@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 11 and below (android:fullBackupContent).
+
+  Settings are backed up; measurement history and entitlement state are not.
+  The Room database holds connection history and Wi-Fi names — a record of
+  where this person has been — and restoring it onto a different device would
+  silently mix another device's measurements into this one's charts. The
+  entitlement cache is excluded because the billing service, not a restored
+  file, is the authority on what has been purchased.
+-->
+<full-backup-content>
+    <exclude domain="database" path="seven-monitor.db" />
+    <exclude domain="database" path="seven-monitor.db-shm" />
+    <exclude domain="database" path="seven-monitor.db-wal" />
+    <exclude domain="file" path="datastore/entitlement.preferences_pb" />
+</full-backup-content>

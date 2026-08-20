@@ -64,6 +64,19 @@ android {
     }
 
     sourceSets["main"].kotlin.srcDir("src/main/kotlin")
+    sourceSets["test"].kotlin.srcDir("src/test/kotlin")
+
+    defaultConfig {
+        // Room migrations are only testable against committed schema JSON, and
+        // `exportSchema = true` writes nothing unless it is told where.
+        ksp { arg("room.schemaLocation", "$projectDir/schemas") }
+    }
+
+    testOptions {
+        unitTests {
+            isReturnDefaultValues = true
+        }
+    }
 }
 
 dependencies {
@@ -88,4 +101,10 @@ dependencies {
     implementation(libs.compose.material3)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
+
+    // Host-side unit tests. The Android module had no test sources at all, so
+    // `testDebugUnitTest` reported NO-SOURCE and every WorkManager, permission,
+    // Room, cancellation, and notification path was untested.
+    testImplementation(libs.kotlin.test.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
 }

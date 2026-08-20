@@ -15,6 +15,7 @@ import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.http.isSuccess
+import io.ktor.utils.io.discard
 import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
@@ -36,6 +37,16 @@ class KtorTransport(
     private val client: HttpClient = defaultClient(),
 ) : Transport {
 
+    /**
+     * Round-trip time to **response headers**, not to a completed body.
+     *
+     * That is the definition deliberately chosen: the probe exists to answer
+     * "did the far end answer, and how quickly", and including body transfer
+     * would make the figure depend on payload size and bandwidth rather than on
+     * latency. The body is still drained afterwards, outside the measurement —
+     * an unread body holds its connection open in the pool, which on a probe
+     * that runs every three seconds leaks sockets steadily.
+     */
     override suspend fun timedGet(url: String, timeoutMs: Long): TransportResult = try {
         var response: HttpResponse? = null
         val nanos = measureNanoTime {
@@ -48,24 +59,38 @@ class KtorTransport(
             }
         }
         val res = response!!
-        if (res.status.isSuccess()) {
-            TransportResult.Ok(nanos / 1_000_000.0)
-        } else {
-            TransportResult.Failed(FailureReason.HTTP_ERROR)
-        }
+        val ok = res.status.isSuccess()
+        // Drain regardless of status: an error body needs releasing too.
+        runCatching { withTimeout(timeoutMs) { res.bodyAsChannel().discard() } }
+        // Any HTTP response used to count as a reachable link. A captive
+        // portal's 302, a 429, or a 500 all prove *something* answered, but
+        // none of them prove the connection works — and counting them as
+        // successful probes is what hides an outage behind a green chart.
+        if (ok) TransportResult.Ok(nanos / 1_000_000.0) else TransportResult.Failed(FailureReason.HTTP_ERROR)
     } catch (t: Throwable) {
         if (t is CancellationException) throw t
         TransportResult.Failed(t.toFailureReason())
     }
 
+    /**
+     * A download is [TransferResult.Ok] only for a 2xx response of exactly
+     * [expectBytes].
+     *
+     * Buffering whatever arrived and calling promise-resolution a success is
+     * how a 200-byte `429` body got recorded as a passing multi-megabyte
+     * transfer. Status and length are both part of "did this size get through".
+     */
     override suspend fun download(url: String, expectBytes: Int, timeoutMs: Long): TransferResult {
         var received = 0L
         val started = System.nanoTime()
         return try {
+            var status: io.ktor.http.HttpStatusCode? = null
             withTimeout(timeoutMs) {
-                val channel = client.get(url) {
+                val response = client.get(url) {
                     header("Cache-Control", "no-cache, no-store")
-                }.bodyAsChannel()
+                }
+                status = response.status
+                val channel = response.bodyAsChannel()
                 val buffer = ByteArray(64 * 1024)
                 while (!channel.isClosedForRead) {
                     val n = channel.readAvailable(buffer, 0, buffer.size)
@@ -73,7 +98,14 @@ class KtorTransport(
                     received += n
                 }
             }
-            TransferResult.Ok(received, elapsedMsSince(started))
+            when {
+                status?.isSuccess() != true -> TransferResult.Failed(FailureReason.HTTP_ERROR)
+                received == expectBytes.toLong() -> TransferResult.Ok(received, elapsedMsSince(started))
+                // A short or over-long body is not the transfer that was asked
+                // for. It is still evidence of *some* throughput, so it is
+                // reported as partial rather than discarded.
+                else -> TransferResult.Partial(received, elapsedMsSince(started), FailureReason.HTTP_ERROR)
+            }
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
             // Bytes that did arrive still measure something real — the web app
@@ -108,6 +140,16 @@ class KtorTransport(
             // count: bytes handed to the socket are not bytes the peer received.
             TransferResult.Failed(t.toFailureReason())
         }
+    }
+
+    /**
+     * Releases the engine's connection pool and dispatcher threads.
+     *
+     * A live test builds a transport bound to one specific [Network]; leaking
+     * it keeps that binding — and its sockets — alive past the run.
+     */
+    fun close() {
+        runCatching { client.close() }
     }
 
     private fun elapsedMsSince(startNanos: Long): Double = (System.nanoTime() - startNanos) / 1_000_000.0

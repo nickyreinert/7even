@@ -26,15 +26,39 @@ data class Report(
     val byNetwork: Map<NetworkType, Segment>,
     val drops: List<DropEvent>,
 ) {
+    /**
+     * How much of the window was actually observed.
+     *
+     * [samplesExpected] of null means "unknown" — the schedule does not predict
+     * a sample count for this window at all, which happens whenever the probe
+     * cadence is longer than the report period (a weekly cycle inside a daily
+     * report). That used to truncate to zero expected samples and then be read
+     * as a ratio of 1.0, so the least-observed case reported the fullest
+     * coverage.
+     */
     data class Coverage(
         val samplesCollected: Int,
-        val samplesExpected: Int,
+        val samplesExpected: Int?,
     ) {
-        val ratio: Double get() = if (samplesExpected <= 0) 1.0 else
-            (samplesCollected.toDouble() / samplesExpected).coerceIn(0.0, 1.0)
+        val ratio: Double? get() = samplesExpected?.takeIf { it > 0 }?.let {
+            (samplesCollected.toDouble() / it).coerceIn(0.0, 1.0)
+        }
 
         /** Below this, the report says so rather than presenting itself as complete. */
-        val isPartial: Boolean get() = ratio < 0.8
+        val isPartial: Boolean get() = ratio?.let { it < MIN_TRUSTWORTHY_RATIO } ?: false
+
+        val isUnknown: Boolean get() = ratio == null
+
+        /**
+         * Enough of the window was seen for aggregate figures to mean anything.
+         * An empty window is never sufficient, regardless of what was expected.
+         */
+        val isSufficient: Boolean get() = samplesCollected > 0 &&
+            (ratio == null || ratio!! >= MIN_TRUSTWORTHY_RATIO)
+
+        companion object {
+            const val MIN_TRUSTWORTHY_RATIO = 0.8
+        }
     }
 
     data class Segment(
@@ -43,7 +67,8 @@ data class Report(
         val latencyMedianMs: Double?,
         val latencyP95Ms: Double?,
         val jitterMs: Double?,
-        val lossPct: Double,
+        /** Null when nothing was measured — distinct from a measured 0%. */
+        val lossPct: Double?,
         val throughputSampleCount: Int,
         val downMedianMbps: Double?,
         val upMedianMbps: Double?,
@@ -60,19 +85,31 @@ object ReportBuilder {
         pings: List<PingSample>,
         throughput: List<ThroughputSample>,
         drops: List<DropEvent>,
-        expectedSamples: Int,
+        expectedSamples: Int?,
     ): Report {
-        val inWindow = pings.filter { it.atEpochMs in windowStartEpochMs..windowEndEpochMs }
-        val tpInWindow = throughput.filter { it.atEpochMs in windowStartEpochMs..windowEndEpochMs }
+        // Half-open [start, end). Inclusive bounds put a sample landing exactly
+        // on midnight into both the report that ended there and the one that
+        // began there, so consecutive reports double-counted their boundary.
+        val inWindow = pings.filter { it.atEpochMs >= windowStartEpochMs && it.atEpochMs < windowEndEpochMs }
+        val tpInWindow = throughput.filter { it.atEpochMs >= windowStartEpochMs && it.atEpochMs < windowEndEpochMs }
 
         // Only drops that overlap the window at all. StabilityScore clips the
-        // partial ones to the window itself.
+        // partial ones to the window itself. Also half-open: a drop that ended
+        // exactly at the boundary belongs to the earlier window.
         val relevantDrops = drops.filter { drop ->
             val end = drop.endedAtEpochMs ?: windowEndEpochMs
-            end >= windowStartEpochMs && drop.startedAtEpochMs <= windowEndEpochMs
+            end > windowStartEpochMs && drop.startedAtEpochMs < windowEndEpochMs
         }
 
-        val overall = segment(inWindow, tpInWindow, relevantDrops, windowStartEpochMs, windowEndEpochMs)
+        val coverage = Report.Coverage(inWindow.size, expectedSamples)
+        val overall = segment(
+            pings = inWindow,
+            throughput = tpInWindow,
+            drops = relevantDrops,
+            windowStartEpochMs = windowStartEpochMs,
+            windowEndEpochMs = windowEndEpochMs,
+            includeStability = coverage.isSufficient,
+        )
 
         val networks = (inWindow.map { it.networkType } + tpInWindow.map { it.networkType }).toSet()
         val byNetwork = networks.associateWith { net ->
@@ -94,13 +131,19 @@ object ReportBuilder {
             period = period,
             windowStartEpochMs = windowStartEpochMs,
             windowEndEpochMs = windowEndEpochMs,
-            coverage = Report.Coverage(inWindow.size, expectedSamples),
+            coverage = coverage,
             overall = overall,
             byNetwork = byNetwork,
             drops = relevantDrops,
         )
     }
 
+    /**
+     * @param includeStability false when the window has too few observations
+     *   for a stability score to mean anything. A score computed from nothing
+     *   is 100% uptime, zero drops and a perfect composite — the most confident
+     *   possible claim, made on the least possible evidence.
+     */
     private fun segment(
         pings: List<PingSample>,
         throughput: List<ThroughputSample>,
@@ -111,7 +154,10 @@ object ReportBuilder {
     ): Report.Segment {
         val rtts = pings.mapNotNull { it.rttMs }
         val failures = pings.count { !it.ok }
-        val lossPct = if (pings.isEmpty()) 0.0 else (failures.toDouble() / pings.size) * 100.0
+        // Null, not zero. "No probes ran" and "every probe succeeded" are
+        // different facts, and reporting the first as 0% loss states the
+        // second.
+        val lossPct = if (pings.isEmpty()) null else (failures.toDouble() / pings.size) * 100.0
         val jitter = if (rtts.size >= 2) Stats.stdDev(rtts) else null
 
         return Report.Segment(
@@ -124,12 +170,12 @@ object ReportBuilder {
             throughputSampleCount = throughput.size,
             downMedianMbps = Stats.median(throughput.mapNotNull { it.downMbps }),
             upMedianMbps = Stats.median(throughput.mapNotNull { it.upMbps }),
-            stability = if (!includeStability) null else StabilityScore.compute(
+            stability = if (!includeStability || pings.isEmpty()) null else StabilityScore.compute(
                 windowStartEpochMs = windowStartEpochMs,
                 nowEpochMs = windowEndEpochMs,
                 drops = drops,
                 avgJitterMs = jitter,
-                avgLossPct = lossPct,
+                avgLossPct = lossPct ?: 0.0,
             ),
         )
     }

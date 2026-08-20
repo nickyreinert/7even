@@ -9,6 +9,7 @@ import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ReportScheduleTest {
@@ -76,9 +77,19 @@ class ReportScheduleTest {
     }
 
     @Test
-    fun expectedSamplesIsZeroForNonsenseInterval() {
-        val w = ReportSchedule.windowFor(ReportPeriod.DAILY, at("2026-08-19T09:00:00Z"), utc)
-        assertEquals(0, ReportSchedule.expectedSamples(w, 0, 3))
+    fun expectedSamplesIsUnknownForANonsenseInterval() {
+        val w = ReportSchedule.Window(0, 86_400_000)
+        assertNull(ReportSchedule.expectedSamples(w, 0, 3))
+        assertNull(ReportSchedule.expectedSamples(w, 15, 0))
+    }
+
+    @Test
+    fun aCadenceLongerThanTheWindowPredictsNothingRatherThanZero() {
+        // A weekly probe cycle inside a daily report. Truncating to zero
+        // expected samples made the coverage ratio read as 1.0, so the
+        // least-observed configuration claimed the most complete report.
+        val w = ReportSchedule.Window(0, 86_400_000)
+        assertNull(ReportSchedule.expectedSamples(w, 7 * 24 * 60, 3))
     }
 }
 

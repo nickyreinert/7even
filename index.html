@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<!-- No maximum-scale/user-scalable: blocking pinch zoom makes the charts and
+     the log unreadable for anyone who needs to magnify them, and the layout is
+     responsive enough not to need the lock. -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>7even</title>
 <meta name="description" content="7even — continuous connection speed test: latency, jitter, request loss, throughput, and drop detection.">
 <meta name="theme-color" content="#0a0a0a">
@@ -42,6 +45,15 @@
   button:disabled { background: #333; color: #666; }
   button:active:not(:disabled) { background: #1d4ed8; }
 
+  .archive-warning {
+    margin: 6px 0;
+    padding: 8px 10px;
+    border-radius: 4px;
+    background: #3a2a12;
+    color: #fbbf24;
+    font-size: 12px;
+    line-height: 1.4;
+  }
   .phase {
     font-size: 13px;
     color: #aaa;
@@ -165,6 +177,7 @@
   }
   .log.visible { display: block; }
 
+  /* Real <button> elements; the resets keep the original link-like look. */
   .toggle-log {
     font-size: 11px;
     color: #808080;
@@ -172,6 +185,16 @@
     margin-top: 10px;
     text-decoration: underline;
     cursor: pointer;
+    display: block;
+    width: 100%;
+    background: none;
+    border: none;
+    padding: 0;
+    font-family: inherit;
+  }
+  .toggle-log:focus-visible {
+    outline: 2px solid #2563eb;
+    outline-offset: 2px;
   }
 
   .toggle-log-row {
@@ -344,10 +367,22 @@
     text-transform: uppercase;
     letter-spacing: 0.5px;
   }
+  /* Applied to real <button> elements now, so the resets below keep the
+     original link-like appearance while restoring keyboard operability. */
   .history-clear {
     font-size: 11px;
     color: #808080;
     text-decoration: underline;
+    background: none;
+    border: none;
+    padding: 0;
+    font-family: inherit;
+    cursor: pointer;
+  }
+  .history-clear:focus-visible,
+  .clickable:focus-visible {
+    outline: 2px solid #2563eb;
+    outline-offset: 2px;
   }
   .history-row {
     font-size: 12px;
@@ -493,7 +528,7 @@
 
   <div class="chart-block">
     <div class="chart-title-row">
-      <div class="chart-title">Live — last 65s (ping ms bars + stream Mbps line)</div>
+      <div class="chart-title">Live — last 65s (ping ms bars + stream rate line)</div>
       <div class="chart-legend">
         <span class="chart-legend-item"><span class="chart-legend-dot" style="background:#3b82f6"></span>down</span>
         <span class="chart-legend-item"><span class="chart-legend-dot" style="background:#f59e0b"></span>up</span>
@@ -504,21 +539,21 @@
   </div>
 
   <div class="toggle-log-row">
-    <div class="toggle-log" id="toggleLog">show probe log</div>
-    <div class="toggle-log" id="copyLog">copy probe log</div>
+    <button type="button" class="toggle-log" id="toggleLog">show probe log</button>
+    <button type="button" class="toggle-log" id="copyLog">copy probe log</button>
   </div>
   <div class="log" id="log"></div>
 
   <div class="grid">
     <div class="card">
       <div class="card-label">Download</div>
-      <div class="card-value" id="valDown">—<span class="card-unit"> Mbps</span></div>
-      <div class="card-desc">Peak sustained download throughput, measured by continuously streaming binary data from the ws-speedtest Worker over WebSocket for each streaming episode.</div>
+      <div class="card-value" id="valDown">—</div>
+      <div class="card-desc">Average download throughput across every completed streaming episode this session — not a peak. Measured by continuously streaming binary data from the ws-speedtest Worker over WebSocket. The chart below shows each episode separately, and the export carries the session average, the per-episode series, and the last episode.</div>
     </div>
     <div class="card">
       <div class="card-label">Upload</div>
-      <div class="card-value" id="valUp">—<span class="card-unit"> Mbps</span></div>
-      <div class="card-desc">Peak sustained upload throughput, measured by continuously streaming binary data to the ws-speedtest Worker over WebSocket for each streaming episode.</div>
+      <div class="card-value" id="valUp">—</div>
+      <div class="card-desc">Average upload throughput across every completed streaming episode this session — not a peak. Measured by continuously streaming binary data to the ws-speedtest Worker over WebSocket. The chart below shows each episode separately, and the export carries the session average, the per-episode series, and the last episode.</div>
     </div>
     <div class="card">
       <div class="card-label">Latency</div>
@@ -558,12 +593,12 @@
 </div>
 
 <div class="chart-block">
-  <div class="chart-title">Download — per-check result (Mbps)</div>
+  <div class="chart-title">Download — per-check result</div>
   <canvas id="chartDown" class="chart-canvas"></canvas>
   <div class="chart-explanation">Throughput of each continuous streaming download episode, over the ws-speedtest WebSocket.</div>
 </div>
 <div class="chart-block">
-  <div class="chart-title">Upload — per-check result (Mbps)</div>
+  <div class="chart-title">Upload — per-check result</div>
   <canvas id="chartUp" class="chart-canvas"></canvas>
   <div class="chart-explanation">Throughput of each continuous streaming upload episode, over the same WebSocket connection.</div>
 </div>
@@ -587,10 +622,14 @@
   <div class="history-header">
     <span class="history-title">Session History</span>
     <span class="history-header-links">
-      <span class="history-clear" id="historyClearBtn">clear history</span>
-      <span class="history-clear" id="exportBtn">export</span>
+      <!-- Real buttons, not clickable spans: a span carries no role, is not in
+           the tab order, and does not respond to Enter or Space, so these
+           controls were unreachable without a mouse. -->
+      <button type="button" class="history-clear" id="historyClearBtn">clear history</button>
+      <button type="button" class="history-clear" id="exportBtn">export</button>
     </span>
   </div>
+  <div id="archiveWarning" class="archive-warning" role="status" style="display:none"></div>
   <div id="historyTable"><span class="no-drops">no completed sessions yet</span></div>
 </div>
 
@@ -908,7 +947,17 @@
   // value it captured at entry and bails if the session ended meanwhile.
   // Without it, a stop landing during an early stage still let LATER stages
   // start afterwards — e.g. a full 30s stream test kicking off after "Done".
+  // allRtts is a ROLLING WINDOW, not the whole session. Latency/jitter over a
+  // multi-hour run are computed from the most recent samples only; keeping
+  // every RTT would grow without bound. Exports say so explicitly.
+  const ALL_RTTS_WINDOW = 2000;
+
   let sessionGeneration = 0;
+  // One AbortController per session generation, reached by EVERY async
+  // operation the session starts. Individual operations used to own private
+  // controllers that Stop could not reach, so an in-flight ping could settle
+  // after Stop — or after a new Start — and mutate/archive the wrong session.
+  let sessionAbort = new AbortController();
 
   // Combined rolling live view: ping RTT bars + streaming rate line on one
   // shared, scrolling real-time window — not persisted (transient, live-only;
@@ -933,8 +982,16 @@
   // ---- Persistence ----
   const STORAGE_KEY = 'speedtest_session_v1';
 
+  // Bumped whenever the shape of the saved snapshot changes incompatibly.
+  // Without a version, a value written by an older build (or a corrupted one)
+  // was assigned straight back into live variables — a `dropEvents: {}` would
+  // then throw at the first array operation and break EVERY startup until the
+  // user found their way to clearing site data.
+  const SESSION_SCHEMA_VERSION = 2;
+
   function saveSession() {
     const snapshot = {
+      schemaVersion: SESSION_SCHEMA_VERSION,
       running,
       sessionStartMs,
       sessionDurationSec,
@@ -1015,15 +1072,80 @@
 
     try {
       localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+      archiveWriteFailed = false;
     } catch (e) {
       // Quota exceeded or storage unavailable. This must NEVER throw up into
-      // the caller and block the live session's own state from saving — a
-      // full history is a real problem to eventually surface to the user via
-      // the table UI (e.g. "archive full, oldest sessions may not be kept"),
-      // but it is a strictly lower priority than the active session continuing
-      // to function. Silently degrade here; the live saveSession() call this
-      // is paired with is unaffected since it's a separate try/catch already.
+      // the caller and block the live session's own state from saving — the
+      // active session continuing to function is the higher priority. But it
+      // is recorded and shown: an archive that silently stops keeping sessions
+      // while the UI still presents itself as a history is worse than one that
+      // says so, because the user only finds out when they go looking for a
+      // measurement that is no longer there.
+      archiveWriteFailed = true;
+      renderArchiveWarning();
     }
+  }
+
+  let archiveWriteFailed = false;
+
+  function renderArchiveWarning() {
+    const el = document.getElementById('archiveWarning');
+    if (!el) return;
+    el.style.display = archiveWriteFailed ? 'block' : 'none';
+    el.textContent = archiveWriteFailed
+      ? 'This session could not be saved to the history below — browser storage is full or unavailable. '
+        + 'Export the results you need; older sessions are no longer being kept.'
+      : '';
+  }
+
+  const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
+  const asArray = (v) => (Array.isArray(v) ? v : []);
+
+  /**
+   * Validates and normalises a persisted snapshot.
+   *
+   * Every field is coerced to its expected type here rather than trusted at the
+   * point of use, so a corrupt or foreign value becomes a harmless default
+   * instead of an exception thrown from inside a render loop. Returns null when
+   * the snapshot is not recognisably one of ours at all.
+   */
+  function sanitizeSession(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    // Version 1 had no schemaVersion field. Its shape is compatible with this
+    // sanitizer, so it is migrated by being read through it.
+    const version = isNum(value.schemaVersion) ? value.schemaVersion : 1;
+    if (version > SESSION_SCHEMA_VERSION) return null; // written by a newer build
+    if (!isNum(value.sessionStartMs)) return null;
+
+    const numbers = (arr) => asArray(arr).filter(isNum);
+    const points = (arr, key) => asArray(arr)
+      .filter((p) => p && typeof p === 'object' && isNum(p.t))
+      .map((p) => ({ t: p.t, [key]: isNum(p[key]) ? p[key] : null }));
+
+    return {
+      schemaVersion: SESSION_SCHEMA_VERSION,
+      running: value.running === true,
+      sessionStartMs: value.sessionStartMs,
+      sessionDurationSec: isNum(value.sessionDurationSec) ? value.sessionDurationSec : 0,
+      allRtts: numbers(value.allRtts).slice(-ALL_RTTS_WINDOW),
+      totalProbes: isNum(value.totalProbes) ? value.totalProbes : 0,
+      totalFailures: isNum(value.totalFailures) ? value.totalFailures : 0,
+      consecutiveFailures: isNum(value.consecutiveFailures) ? value.consecutiveFailures : 0,
+      currentDropStart: isNum(value.currentDropStart) ? value.currentDropStart : null,
+      dropEvents: asArray(value.dropEvents).filter((d) => d && isNum(d.start)),
+      lastDownMbps: isNum(value.lastDownMbps) ? value.lastDownMbps : null,
+      lastUpMbps: isNum(value.lastUpMbps) ? value.lastUpMbps : null,
+      downHistory: points(value.downHistory, 'mbps'),
+      upHistory: points(value.upHistory, 'mbps'),
+      lossHistory: points(value.lossHistory, 'lossPct'),
+      sizeSweepHistory: asArray(value.sizeSweepHistory),
+      uploadSweepHistory: asArray(value.uploadSweepHistory),
+      probesAtLastTick: isNum(value.probesAtLastTick) ? value.probesAtLastTick : 0,
+      failuresAtLastTick: isNum(value.failuresAtLastTick) ? value.failuresAtLastTick : 0,
+      connTypeLabel: typeof value.connTypeLabel === 'string' ? value.connTypeLabel : '',
+      logLines: asArray(value.logLines).filter((l) => typeof l === 'string'),
+      settings: value.settings && typeof value.settings === 'object' ? value.settings : null,
+    };
   }
 
   function loadSession() {
@@ -1034,11 +1156,17 @@
       return null;
     }
     if (!raw) return null;
+    let parsed;
     try {
-      return JSON.parse(raw);
+      parsed = JSON.parse(raw);
     } catch (e) {
       return null;
     }
+    const clean = sanitizeSession(parsed);
+    // An unusable snapshot is discarded rather than left to fail again on the
+    // next load, which is what turned one bad write into a permanent breakage.
+    if (!clean) clearSession();
+    return clean;
   }
 
   function clearSession() {
@@ -1078,7 +1206,17 @@
   // Purely a display toggle — the underlying value keeps updating normally
   // underneath while a description is showing.
   document.querySelectorAll('.grid .card').forEach((card) => {
-    card.addEventListener('click', () => card.classList.toggle('showing-desc'));
+    // Operable by keyboard as well as pointer: a bare div with a click handler
+    // is invisible to tab navigation and to a screen reader, so the
+    // description these cards hide was unreachable without a mouse.
+    card.setAttribute('role', 'button');
+    card.setAttribute('tabindex', '0');
+    card.classList.add('clickable');
+    const toggle = () => card.classList.toggle('showing-desc');
+    card.addEventListener('click', toggle);
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+    });
   });
 
   function setPhase(text) {
@@ -1181,7 +1319,7 @@
     }
 
     const values = points.map(p => p[valueKey]).filter(v => v != null);
-    const maxVal = opts.fixedMax != null ? opts.fixedMax : Math.max(1, ...values);
+    const maxVal = opts.fixedMax != null ? opts.fixedMax : rateScaleMax(values);
 
     const padding = 4;
     const barGap = 2;
@@ -1267,7 +1405,7 @@
     // check actually runs), so gaps between checks are real gaps, not drawn
     // as a misleading line bridging two unrelated episodes ~60s apart.
     if (liveRateSamples.length > 0) {
-      const maxVal = Math.max(1, ...liveRateSamples.map(p => p.mbps));
+      const maxVal = rateScaleMax(liveRateSamples.map(p => p.mbps));
       const toY = (mbps) => padding + plotHeight - (mbps / maxVal) * plotHeight;
       // Deliberately different hues, not two shades of blue — at this line
       // width two blues were near-indistinguishable on a phone screen.
@@ -1304,8 +1442,29 @@
         ctx.fill();
       }
 
-      drawValueAxisTicks(ctx, liveRateSamples.map(p => p.mbps), toY, 'left', cssWidth, padding, plotHeight, (v) => `${v.toFixed(v >= 10 ? 0 : 1)} Mbps`);
+      drawValueAxisTicks(ctx, liveRateSamples.map(p => p.mbps), toY, 'left', cssWidth, padding, plotHeight, rateAxisLabel);
     }
+  }
+
+  // A fixed 1 Mbps floor flattens a sub-Mbps connection into an invisible line
+  // at the very bottom of the chart — the same reading problem as labelling it
+  // "0.0 Mbps". Below 1, scale to the observed range instead, so a 40Kbps link
+  // gets a chart with actual shape in it.
+  function rateScaleMax(values) {
+    const present = values.filter(v => v != null && Number.isFinite(v));
+    if (!present.length) return 1;
+    const observed = Math.max(...present);
+    if (observed >= 1) return observed;
+    return Math.max(observed * 1.1, 0.001);
+  }
+
+  // Chart axes carried a hardcoded " Mbps" while the cards below them already
+  // switched units, so a connection sitting at 40Kbps was labelled "0.0 Mbps"
+  // on every tick — the exact reading formatMbps() exists to avoid. One
+  // formatter now, shared by the live chart and both per-check charts.
+  function rateAxisLabel(mbps) {
+    const f = formatMbps(mbps);
+    return `${f.value} ${f.unit}`;
   }
 
   function lossBarColor(lossPct) {
@@ -1318,9 +1477,8 @@
 
   function renderCharts() {
     renderLiveRateChart();
-    const mbpsFmt = (v) => `${v.toFixed(v >= 10 ? 0 : 1)} Mbps`;
-    drawBarChart(canvasDown, downHistory, 'mbps', { colorFn: () => '#3b82f6', axisFmt: mbpsFmt });
-    drawBarChart(canvasUp, upHistory, 'mbps', { colorFn: () => '#f59e0b', axisFmt: mbpsFmt });
+    drawBarChart(canvasDown, downHistory, 'mbps', { colorFn: () => '#3b82f6', axisFmt: rateAxisLabel });
+    drawBarChart(canvasUp, upHistory, 'mbps', { colorFn: () => '#f59e0b', axisFmt: rateAxisLabel });
     drawBarChart(canvasLoss, lossHistory, 'lossPct', { fixedMax: 100, colorFn: lossBarColor, axisFmt: (v) => `${v.toFixed(1)}%` });
     const sweepSizes = SWEEP_PLAN.map(p => p.bytes);
     renderSweepChart(canvasSweep, sizeSweepHistory, sweepSizes);
@@ -1487,25 +1645,66 @@
     renderDropEvents();
   }
 
-  async function runSinglePing() {
+  async function runSinglePing(gen) {
     const t0 = performance.now();
+    let rtt = null;
+    let failure = null;
     try {
-      await fetchWithTimeout(`${TRACE_URL}?cb=${Date.now()}`, {}, PROBE_TIMEOUT_MS);
-      const rtt = performance.now() - t0;
+      const resp = await fetchWithTimeout(
+        `${TRACE_URL}?cb=${Date.now()}`, { signal: sessionAbort.signal }, PROBE_TIMEOUT_MS,
+      );
+      // Any HTTP response used to count as a successful probe. A captive
+      // portal's redirect, a 429, or a 500 all prove something answered — none
+      // of them prove the connection works, and scoring them as successes is
+      // what hides a real outage behind a green chart.
+      if (!resp.ok) throw Object.assign(new Error(`HTTP ${resp.status}`), { name: `HTTP${resp.status}` });
+      rtt = performance.now() - t0;
+    } catch (e) {
+      failure = e;
+    }
+
+    // Nothing below this line may run for a session that has already been
+    // stopped or replaced: it all mutates visible state and persists it.
+    if (gen !== sessionGeneration) return;
+
+    if (failure) {
+      recordProbeResult(false);
+      log(`ping FAILED (${failure.name})`);
+      livePingSamples.push({ t: Date.now(), rttMs: null });
+    } else {
       allRtts.push(rtt);
-      if (allRtts.length > 2000) allRtts.shift(); // cap memory over long sessions
+      if (allRtts.length > ALL_RTTS_WINDOW) allRtts.shift(); // rolling window, see buildExportData
       recordProbeResult(true);
       log(`ping ok, ${rtt.toFixed(1)}ms`);
       livePingSamples.push({ t: Date.now(), rttMs: rtt });
-    } catch (e) {
-      recordProbeResult(false);
-      log(`ping FAILED (${e.name})`);
-      livePingSamples.push({ t: Date.now(), rttMs: null });
     }
     if (livePingSamples.length > LIVE_PING_SAMPLE_CAP) livePingSamples.shift();
     renderLiveRateChart();
     updateStatsDisplay();
     saveSession();
+  }
+
+  // Serial, not setInterval. PROBE_TIMEOUT_MS can be configured well above
+  // PING_INTERVAL_MS (30s vs 3s by default), and a fixed interval would then
+  // keep launching probes on top of stalled ones — up to ten in flight,
+  // settling out of order, driving the consecutive-failure counter and drop
+  // transitions from whichever happened to finish first. The next probe is
+  // scheduled only once the current one has settled.
+  function schedulePingLoop(gen) {
+    if (gen !== sessionGeneration || !running) return;
+    pingTimer = setTimeout(async () => {
+      pingTimer = null;
+      if (gen !== sessionGeneration || !running) return;
+      await runSinglePing(gen);
+      schedulePingLoop(gen);
+    }, PING_INTERVAL_MS);
+  }
+
+  async function startPingLoop(gen) {
+    // Fire immediately, then keep going — otherwise a short session could end
+    // before a single probe ran.
+    await runSinglePing(gen);
+    schedulePingLoop(gen);
   }
 
   async function timedFetch(url, opts, timeoutMs, externalSignal) {
@@ -1528,6 +1727,14 @@
     try {
       const resp = await fetch(url, { ...opts, signal: controller.signal, cache: 'no-store' });
       const buf = await resp.arrayBuffer(); // now covered by the same controller/timer
+      // Status is part of the measurement. Buffering whatever came back and
+      // treating resolution as success meant a 200-byte 429/403/404/500 body
+      // was recorded as a passing multi-megabyte transfer.
+      if (!resp.ok) {
+        throw Object.assign(new Error(`HTTP ${resp.status}`), {
+          name: `HTTP${resp.status}`, status: resp.status, actualBytes: buf.byteLength,
+        });
+      }
       return buf;
     } finally {
       clearTimeout(timer);
@@ -1561,7 +1768,15 @@
           if (gen !== sessionGeneration) break;
           const t0 = performance.now();
           try {
-            await timedFetch(DOWN_URL + bytes, {}, SWEEP_TIMEOUT_MS, abort.signal);
+            const buf = await timedFetch(DOWN_URL + bytes, {}, SWEEP_TIMEOUT_MS, abort.signal);
+            // The sweep asks "does this size get through". A truncated body did
+            // not, so an exact length is the pass condition — anything else
+            // would blur the very cutoff this exists to find.
+            if (buf.byteLength !== bytes) {
+              throw Object.assign(new Error('short body'), {
+                name: 'ShortBody', actualBytes: buf.byteLength,
+              });
+            }
             const durationMs = performance.now() - t0;
             passCount++;
             durationSum += durationMs;
@@ -1569,7 +1784,8 @@
           } catch (e) {
             if (gen !== sessionGeneration) break; // aborted by stop, not a real failure
             lastError = e.name;
-            log(`sweep down ${formatBytes(bytes)} (${attempt}/${trials}): FAILED (${e.name})`);
+            const detail = e.actualBytes != null ? `, got ${formatBytes(e.actualBytes)} of ${formatBytes(bytes)}` : '';
+            log(`sweep down ${formatBytes(bytes)} (${attempt}/${trials}): FAILED (${e.name}${detail})`);
           }
         }
         if (gen !== sessionGeneration) break;
@@ -1590,8 +1806,9 @@
   // than HTTP because there's no third-party upload endpoint that accepts
   // arbitrary sizes cross-origin — and it reuses one connection for all
   // sizes so connection setup isn't charged to the first size's duration.
-  function openStreamSocket(timeoutMs) {
+  function openStreamSocket(timeoutMs, signal) {
     return new Promise((resolve, reject) => {
+      if (signal && signal.aborted) { reject(new Error('aborted')); return; }
       let ws;
       try {
         ws = new WebSocket(WS_URL);
@@ -1600,40 +1817,75 @@
         return;
       }
       ws.binaryType = 'arraybuffer';
-      const timer = setTimeout(() => { try { ws.close(); } catch (e) {} reject(new Error('connect-timeout')); }, timeoutMs);
-      ws.addEventListener('open', () => { clearTimeout(timer); resolve(ws); });
-      ws.addEventListener('error', () => { clearTimeout(timer); reject(new Error('connect-error')); });
+      let settled = false;
+      const finish = (fn, arg) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (signal) signal.removeEventListener('abort', onAbort);
+        fn(arg);
+      };
+      // Stop must reach the connect attempt too, not only an established
+      // socket — otherwise Stop waits out the whole connect timeout.
+      const onAbort = () => { try { ws.close(); } catch (e) {} finish(reject, new Error('aborted')); };
+      if (signal) signal.addEventListener('abort', onAbort);
+      const timer = setTimeout(() => { try { ws.close(); } catch (e) {} finish(reject, new Error('connect-timeout')); }, timeoutMs);
+      ws.addEventListener('open', () => finish(resolve, ws));
+      ws.addEventListener('error', () => finish(reject, new Error('connect-error')));
     });
   }
+
+  // Round ids only need to be unique within one socket's lifetime.
+  let uploadRoundCounter = 0;
 
   // One sized upload round on an already-open socket. Resolves (never
   // rejects) with a pass/fail record so a single bad size doesn't abort the
   // remaining sizes — the per-size pass/fail pattern IS the signal here.
-  function uploadOneSize(ws, bytes, timeoutMs) {
+  function uploadOneSize(ws, bytes, timeoutMs, signal) {
     return new Promise(async (resolve) => {
       let settled = false;
       const CHUNK = 65536;
       const HIGH_WATER = 262144;
       const t0 = performance.now();
+      // Every round is tagged and the Worker echoes the tag back. Without it,
+      // an ack from a round that already timed out was accepted as the NEXT
+      // round's, so a stalled link could report a pass for a round that never
+      // finished — the later the link degraded, the more passes it invented.
+      const roundId = `u${++uploadRoundCounter}`;
 
       const done = (result) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         ws.removeEventListener('message', onMessage);
+        if (signal) signal.removeEventListener('abort', onAbort);
         resolve(result);
       };
+      const onAbort = () => done({ bytes, ok: false, durationMs: null, error: 'aborted', aborted: true });
+      if (signal) {
+        if (signal.aborted) { onAbort(); return; }
+        signal.addEventListener('abort', onAbort);
+      }
       const timer = setTimeout(() => done({ bytes, ok: false, durationMs: null, error: 'timeout' }), timeoutMs);
       function onMessage(event) {
         if (typeof event.data !== 'string') return;
         let msg;
         try { msg = JSON.parse(event.data); } catch (e) { return; }
-        if (msg.type === 'up_ack') done({ bytes, ok: true, durationMs: performance.now() - t0, error: null });
+        if (msg.type !== 'up_ack') return;
+        // A Worker old enough to send no id is still accepted; a *wrong* id
+        // never is, because that is exactly the stale ack being guarded against.
+        if (msg.id != null && msg.id !== roundId) return;
+        // The Worker reports what it actually received. A short count is a
+        // failed round, not a pass with a smaller number.
+        const ok = !Number.isFinite(msg.bytesReceived) || msg.bytesReceived === bytes;
+        done(ok
+          ? { bytes, ok: true, durationMs: performance.now() - t0, error: null }
+          : { bytes, ok: false, durationMs: null, error: `short-ack(${msg.bytesReceived})` });
       }
       ws.addEventListener('message', onMessage);
 
       try {
-        ws.send(JSON.stringify({ type: 'up_start' }));
+        ws.send(JSON.stringify({ type: 'up_start', bytes, id: roundId }));
         let sent = 0;
         const chunk = new Uint8Array(CHUNK);
         crypto.getRandomValues(chunk);
@@ -1648,7 +1900,7 @@
           ws.send(toSend);
           sent += toSend.byteLength;
         }
-        if (!settled) ws.send(JSON.stringify({ type: 'up_end', bytesSent: sent }));
+        if (!settled) ws.send(JSON.stringify({ type: 'up_end', bytesSent: sent, id: roundId }));
       } catch (e) {
         done({ bytes, ok: false, durationMs: null, error: 'send-failed' });
       }
@@ -1656,10 +1908,15 @@
   }
 
   async function runUploadSweep(gen) {
+    // UPLOAD_TIMEOUT_MS, not SWEEP_TIMEOUT_MS. The upload timeout setting was
+    // declared, shown, and persisted while the upload sweep quietly used the
+    // download one — so changing it did nothing at all.
+    const signal = sessionAbort.signal;
     let ws;
     try {
-      ws = await openStreamSocket(SWEEP_TIMEOUT_MS);
+      ws = await openStreamSocket(UPLOAD_TIMEOUT_MS, signal);
     } catch (e) {
+      if (gen !== sessionGeneration) return [];
       log(`sweep up: connection FAILED (${e.message})`);
       return SWEEP_PLAN.map(({ bytes, trials }) => ({ bytes, trials, passCount: 0, ok: false, durationMs: null, error: e.message }));
     }
@@ -1672,12 +1929,28 @@
         let lastError = null;
         for (let attempt = 1; attempt <= trials; attempt++) {
           if (gen !== sessionGeneration) break;
-          const r = await uploadOneSize(ws, bytes, SWEEP_TIMEOUT_MS);
+          let r = await uploadOneSize(ws, bytes, UPLOAD_TIMEOUT_MS, signal);
+          if (r.aborted || gen !== sessionGeneration) break;
           if (r.ok) { passCount++; durationSum += r.durationMs; }
           else lastError = r.error;
           log(r.ok
             ? `sweep up ${formatBytes(bytes)} (${attempt}/${trials}): ok, ${r.durationMs.toFixed(0)}ms`
             : `sweep up ${formatBytes(bytes)} (${attempt}/${trials}): FAILED (${r.error})`);
+          // Any failed round leaves this socket mid-upload from the server's
+          // point of view: it still has unread frames and its protocol state
+          // machine says "upload in progress", so the next round's up_start is
+          // a violation it closes the connection over. Reconnect instead of
+          // reusing a stream neither side can reason about — that reuse is
+          // also how a late ack from round N used to pass round N+1.
+          if (!r.ok) {
+            try { ws.close(); } catch (e) { /* already closing */ }
+            try {
+              ws = await openStreamSocket(UPLOAD_TIMEOUT_MS, signal);
+            } catch (e) {
+              lastError = `reconnect-${e.message}`;
+              break;
+            }
+          }
         }
         if (gen !== sessionGeneration) break;
         results.push({
@@ -1709,9 +1982,13 @@
   // governed by STREAM_PHASE_DURATION_MS instead. If a round genuinely
   // stalls partway through a phase, whatever was already transferred still
   // produces a best-effort Mbps rather than being discarded.
-  function runStreamTest(onDownProgress, onUpProgress) {
+  // Round ids only need to be unique within one socket's lifetime.
+  let streamRoundCounter = 0;
+
+  function runStreamTest(gen, onDownProgress, onUpProgress) {
     return new Promise((resolve) => {
       let settled = false;
+      const signal = sessionAbort.signal;
       let downMbps = null;
       let upMbps = null;
       let downBytesTotal = 0;
@@ -1723,6 +2000,8 @@
       let lastDownProgressT = 0;
       let lastUpProgressT = 0;
       let pendingRoundBytes = 0;      // bytes queued for the in-flight up round, credited on its ack
+      let downRoundId = null;         // echoed by down_end; rejects a late frame from a previous round
+      let upRoundId = null;           // echoed by up_ack; see uploadOneSize for why this matters
       let serverAckBytesTotal = 0;    // what the server claims it received (cross-check only)
       let upAckMismatchRounds = 0;    // rounds where server tally != what we sent
       let phase = 'connecting'; // 'connecting' | 'down' | 'up' — for diagnostics on failure
@@ -1738,6 +2017,7 @@
         if (settled) return;
         settled = true;
         clearTimeout(stallTimer);
+        signal.removeEventListener('abort', onSessionAbort);
         // Best-effort numbers from whatever transferred so far, even on a
         // stall/error mid-phase — partial data from 20 continuous seconds is
         // real signal, not nothing.
@@ -1765,6 +2045,13 @@
       function cancelThisTest(reason) { finish(reason || 'cancelled'); }
       activeStreamTestCancel = cancelThisTest;
 
+      // Belt and braces alongside activeStreamTestCancel: the session-wide
+      // signal reaches this test even if a newer test has already replaced
+      // the activeStreamTestCancel handle.
+      const onSessionAbort = () => finish('cancelled');
+      if (signal.aborted) { finish('cancelled'); return; }
+      signal.addEventListener('abort', onSessionAbort);
+
       try {
         ws = new WebSocket(WS_URL);
       } catch (e) {
@@ -1783,11 +2070,19 @@
 
       function startDownRound() {
         armStallTimer();
-        ws.send(JSON.stringify({ type: 'down_start', bytes: DOWN_ROUND_BYTES }));
+        downRoundId = `d${++streamRoundCounter}`;
+        ws.send(JSON.stringify({ type: 'down_start', bytes: DOWN_ROUND_BYTES, id: downRoundId }));
+      }
+
+      // A frame with no id is accepted so this page keeps working against a
+      // Worker deployed before round ids; a frame with the WRONG id never is.
+      function isForCurrentRound(msg, expectedId) {
+        return msg.id == null || msg.id === expectedId;
       }
 
       ws.addEventListener('message', (event) => {
         if (settled) return;
+        if (gen !== sessionGeneration) { finish('cancelled'); return; }
 
         if (typeof event.data !== 'string') {
           // binary frame — part of the current download round
@@ -1815,6 +2110,7 @@
         try { msg = JSON.parse(event.data); } catch (e) { return; }
 
         if (msg.type === 'down_end') {
+          if (!isForCurrentRound(msg, downRoundId)) return;
           if (Date.now() < downPhaseDeadline) {
             startDownRound(); // keep streaming — this is a continuous phase, not a one-shot
           } else {
@@ -1824,6 +2120,7 @@
             pumpUploadPhase();
           }
         } else if (msg.type === 'up_ack') {
+          if (!isForCurrentRound(msg, upRoundId)) return;
           // Count what WE sent, not what the server reports it received.
           // up_ack only arrives after the server processed up_end, and up_end
           // was queued after every binary frame of this round — TCP ordering
@@ -1871,7 +2168,8 @@
       async function startUpRound() {
         if (settled) return;
         armStallTimer();
-        ws.send(JSON.stringify({ type: 'up_start' }));
+        upRoundId = `u${++streamRoundCounter}`;
+        ws.send(JSON.stringify({ type: 'up_start', bytes: UP_ROUND_BYTES, id: upRoundId }));
         let sent = 0;
         const chunk = new Uint8Array(ROUND_CHUNK_SIZE);
         crypto.getRandomValues(chunk);
@@ -1901,7 +2199,7 @@
         }
         if (!settled) {
           pendingRoundBytes = sent; // credited to upBytesTotal once this round's ack lands
-          ws.send(JSON.stringify({ type: 'up_end', bytesSent: sent }));
+          ws.send(JSON.stringify({ type: 'up_end', bytesSent: sent, id: upRoundId }));
         }
       }
     });
@@ -1929,6 +2227,11 @@
     // connection merely sitting close to one, which defeats the purpose of
     // this display when it's being used as evidence of a specific threshold.
     return { value: kbps.toFixed(1), unit: 'Kbps' };
+  }
+
+  function peakMbps(history) {
+    const vals = history.map(h => h.mbps).filter(v => v != null);
+    return vals.length ? Math.max(...vals) : null;
   }
 
   function averageMbps(history) {
@@ -1979,17 +2282,25 @@
     }
 
     const streamResult = await runStreamTest(
+      gen,
       (liveDownMbps) => {
+        if (gen !== sessionGeneration) return;
         const f = formatMbps(liveDownMbps);
         els.down.innerHTML = `${f.value}<span class="card-unit"> ${f.unit}</span>`;
         recordLiveSample(liveDownMbps, 'down');
       },
       (liveUpMbps) => {
+        if (gen !== sessionGeneration) return;
         const f = formatMbps(liveUpMbps);
         els.up.innerHTML = `${f.value}<span class="card-unit"> ${f.unit}</span>`;
         recordLiveSample(liveUpMbps, 'up');
       }
     );
+    // Checked BEFORE anything is written, not after. The old order assigned
+    // lastDownMbps/lastUpMbps and pushed history first and only then noticed
+    // the session had been stopped or restarted, so a cancelled run's numbers
+    // ended up credited to whatever session came next.
+    if (gen !== sessionGeneration) return;
     lastDownMbps = streamResult.downMbps;
     lastUpMbps = streamResult.upMbps;
 
@@ -2002,8 +2313,8 @@
 
     if (lastDownMbps != null) {
       log(downPartial
-        ? `stream download: ${lastDownMbps.toFixed(2)} Mbps (partial — ${streamResult.reason}, ${formatBytes(streamResult.downBytes)} transferred)`
-        : `stream download: ${lastDownMbps.toFixed(2)} Mbps`);
+        ? `stream download: ${rateAxisLabel(lastDownMbps)} (partial — ${streamResult.reason}, ${formatBytes(streamResult.downBytes)} transferred)`
+        : `stream download: ${rateAxisLabel(lastDownMbps)}`);
     } else {
       log(`stream download FAILED (${streamResult.reason}, stalled in ${streamResult.phase} phase, ${formatBytes(streamResult.downBytes)} received)`);
     }
@@ -2013,8 +2324,8 @@
 
     if (lastUpMbps != null) {
       log(upPartial
-        ? `stream upload: ${lastUpMbps.toFixed(2)} Mbps (partial — ${streamResult.reason}, ${formatBytes(streamResult.upBytesSent)} transferred)`
-        : `stream upload: ${lastUpMbps.toFixed(2)} Mbps`);
+        ? `stream upload: ${rateAxisLabel(lastUpMbps)} (partial — ${streamResult.reason}, ${formatBytes(streamResult.upBytesSent)} transferred)`
+        : `stream upload: ${rateAxisLabel(lastUpMbps)}`);
     } else if (streamResult.phase === 'up') {
       log(`stream upload FAILED (${streamResult.reason}, ${formatBytes(streamResult.upBytesSent)} sent, no bytes acknowledged)`);
     } else {
@@ -2189,6 +2500,11 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
 
   function resetSessionState() {
     allRtts = [];
+    // Reset with everything else. These held the previous session's last
+    // episode, so a new session that had not measured anything yet could show
+    // — and export — the old one's throughput as its own.
+    lastDownMbps = null;
+    lastUpMbps = null;
     totalProbes = 0;
     totalFailures = 0;
     consecutiveFailures = 0;
@@ -2227,14 +2543,11 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     setPhase('Monitoring…');
     setLiveIndicator(true);
 
-    // fire the ping loop immediately, then on interval — otherwise
-    // setInterval's delayed-first-fire means a short session could end
-    // before a single ping runs. Throughput has no timer at all: it's a
-    // continuous self-rescheduling loop (see throughputLoop()) that starts
-    // right here and keeps running, one cycle after another, until stopped.
-    runSinglePing();
+    // Both loops are self-rescheduling rather than interval-driven: the next
+    // ping is scheduled once the current one settles (see schedulePingLoop),
+    // and throughputLoop() runs one cycle after another until stopped.
+    startPingLoop(sessionGeneration);
     throughputLoop(sessionGeneration);
-    pingTimer = setInterval(runSinglePing, PING_INTERVAL_MS);
     elapsedTimer = setInterval(() => {
       updateElapsedDisplay();
       renderProtocolPanel();
@@ -2252,7 +2565,7 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     running = false;
     isResumedRun = false;
     setLiveIndicator(false);
-    clearInterval(pingTimer);
+    clearTimeout(pingTimer);
     clearInterval(elapsedTimer);
     pingTimer = null;
     elapsedTimer = null;
@@ -2265,6 +2578,10 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     // Invalidate any in-flight check pipeline: this both cancels the current
     // stage and stops later stages from starting once earlier ones settle.
     sessionGeneration++;
+    // Aborts every request the session started, including ones whose own
+    // helper-local controller Stop could not otherwise reach.
+    sessionAbort.abort();
+    sessionAbort = new AbortController();
     if (activeStreamTestCancel) {
       activeStreamTestCancel(reason);
       activeStreamTestCancel = null;
@@ -2380,9 +2697,8 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
     setPhase('Monitoring… (resumed)');
     setLiveIndicator(true);
 
-    runSinglePing();
+    startPingLoop(sessionGeneration);
     throughputLoop(sessionGeneration);
-    pingTimer = setInterval(runSinglePing, PING_INTERVAL_MS);
     elapsedTimer = setInterval(() => {
       updateElapsedDisplay();
       renderProtocolPanel();
@@ -2424,13 +2740,25 @@ Status: ${running ? `RUNNING — ${totalProbes} pings sent, ${totalFailures} fai
           latencyMs: latency,
           jitterMs: jitter,
           lossPct: lossRate * 100,
-          downloadMbps: lastDownMbps,
-          uploadMbps: lastUpMbps,
+          // Three different throughput numbers, named for what each one is.
+          // A single "downloadMbps" field was the last episode's value while
+          // the card above it showed the session average, so an export and a
+          // screenshot of the same moment disagreed with no way to tell why.
+          downloadAverageMbps: averageMbps(downHistory),
+          uploadAverageMbps: averageMbps(upHistory),
+          downloadPeakMbps: peakMbps(downHistory),
+          uploadPeakMbps: peakMbps(upHistory),
+          downloadLastEpisodeMbps: lastDownMbps,
+          uploadLastEpisodeMbps: lastUpMbps,
           stability,
         },
         totalProbes,
         totalFailures,
         dropEvents,
+        // A ROLLING WINDOW of the most recent samples, not the whole session —
+        // latencyMs/jitterMs above are computed from exactly these values.
+        allRttsWindowSize: ALL_RTTS_WINDOW,
+        allRttsIsComplete: totalProbes <= ALL_RTTS_WINDOW,
         allRtts,
         downHistory,
         upHistory,

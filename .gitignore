@@ -1,1 +1,20 @@
 .wrangler/
+
+# Local machine config and secrets. mobile/local.properties holds both the
+# Android SDK path and sevenNativeWsSecret (see androidApp/build.gradle.kts),
+# so committing it would publish the Worker's signing key.
+**/local.properties
+.dev.vars*
+.env*
+node_modules/
+
+# Build output.
+mobile/build/
+mobile/*/build/
+mobile/.gradle/
+mobile/.kotlin/
+
+# ...but example/template files are meant to be committed.
+!*.example
+!.env.example
+!.dev.vars.example

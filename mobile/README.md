@@ -7,40 +7,44 @@ in [`../app.md`](../app.md); this file covers the code.
 
 | Part | State | Verified how |
 |---|---|---|
-| `:shared` measurement engine | **working** | 119 unit tests, green on JDK 21 |
+| `:shared` measurement engine | **working** | 154 unit tests, green on JDK 17 |
 | `checkNoPlatformImports` gate | **working** | verified to fail on a deliberate `import android.*` |
-| `androidApp` module | **written, never compiled** | ⚠️ no Android SDK in this environment |
+| `androidApp` module | **working** | debug APK builds; `lintDebug` clean; host unit tests green |
 
-`androidApp` is a skeleton written against the APIs, not a build that has ever
-run. **Assume it does not compile until someone opens it in Android Studio.**
-Expect import and dependency fixes on first build; the architecture is the part
-worth reviewing, not the syntax.
+Both modules build and their tests run in CI (`.github/workflows/deploy.yml`),
+which gates every deploy. `:shared` still holds all the logic worth trusting —
+it is the part that is portable and exhaustively tested — while `androidApp`
+holds the platform glue that can only be exercised on a device.
 
-`:shared` is the opposite — it genuinely compiles and its tests genuinely pass,
-which is why it holds all the logic worth trusting.
+Building `androidApp` needs a local Android SDK. `mobile/local.properties` is
+gitignored; copy [`local.properties.example`](local.properties.example) and
+fill it in.
 
 ## Layout
 
 ```
 mobile/
-├── settings.gradle.kts        :androidApp is commented out on purpose (see below)
+├── settings.gradle.kts        both modules
 ├── shared/                    pure Kotlin, KMP-ready, fully tested
 │   └── src/commonMain/kotlin/de/sevenapp/monitor/
 │       ├── core/              models, stats, stability score, drop detection
 │       ├── probe/             transport interface, tier policy, engine, data budget
 │       └── report/            daily/weekly/monthly report building
-└── androidApp/                WorkManager + Ktor + UI  ⚠️ uncompiled
+└── androidApp/                WorkManager + Ktor + Compose UI, host unit tests
 ```
 
 ## Running the tests
 
 ```bash
 cd mobile
-./gradlew :shared:check
+./gradlew :shared:check                     # engine tests + platform-import gate
+./gradlew :androidApp:testDebugUnitTest     # host-side Android tests
+./gradlew :androidApp:lintDebug             # manifest/API lint
 ```
 
-That runs the unit tests *and* the platform-import gate. No Android SDK, no
-Xcode, no device needed — which is the point.
+`:shared:check` runs the unit tests *and* the platform-import gate, with no
+Android SDK, no Xcode and no device needed — which is the point. The
+`:androidApp` tasks need a local SDK.
 
 ## The one rule
 
@@ -66,13 +70,13 @@ Practical consequences you will hit immediately:
 
 All three restrictions are why the engine is testable at all.
 
-## Why `:androidApp` is excluded from `settings.gradle.kts`
+## Why `:shared` is kept separately runnable
 
-So `./gradlew check` stays green on a machine without the Android SDK. The
-shared engine is the part that must always build; adding the app module to the
-build on an SDK-less machine would fail at configuration time and take the
-tests down with it. Uncomment the `include(":androidApp")` line once you have
-a local SDK.
+`./gradlew :shared:check` deliberately needs nothing but a JDK. The shared
+engine is the part that must always build, and keeping its test run free of the
+Android SDK means a contributor — or a CI job — can verify the measurement
+logic without a 3GB toolchain. `:androidApp` is in the build; just don't reach
+for it when all you changed was the engine.
 
 ## Design decisions worth knowing before editing
 
@@ -129,7 +133,7 @@ a default and that test fails, the fix is the default, not the test.
 - `data/` — `MonitorStore`, the persistence contract
 - `entitlement/` — `Tier`, `Entitlement`, `FeatureGate`, `Paywall`
 
-`androidApp` (uncompiled):
+`androidApp`:
 - Room schema + `RoomMonitorStore` implementing `MonitorStore`
 - `KtorTransport` (OkHttp engine)
 - `ProbeWorker` (WorkManager), `ReportWorker` (report + notification),

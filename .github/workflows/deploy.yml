@@ -3,28 +3,80 @@ name: Deploy to Cloudflare
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch: {}
 
+# One production deploy at a time, and a superseded run is cancelled rather
+# than left racing. Two rapid pushes could otherwise finish out of order and
+# publish the older revision last.
+concurrency:
+  group: production-deploy
+  cancel-in-progress: true
+
 jobs:
-  deploy-worker:
-    name: Deploy Worker (ws-speedtest)
+  verify:
+    name: Verify
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      - name: Worker and service-worker syntax
+        run: |
+          node --check src/index.js
+          node --check sw.js
+
+      - name: Inline browser script syntax
+        run: node scripts/check-inline-script.mjs
+
+      - name: Worker protocol tests
+        run: node --test "test/**/*.test.mjs"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Shared engine tests
+        working-directory: mobile
+        run: ./gradlew :shared:check --no-daemon
+
+      - name: Android lint, build and unit tests
+        working-directory: mobile
+        run: ./gradlew :androidApp:lintDebug :androidApp:assembleDebug :androidApp:testDebugUnitTest --no-daemon
+
+  deploy-worker:
+    name: Deploy Worker (ws-speedtest)
+    # The browser and Android clients talk this Worker's protocol, so it goes
+    # first: a client deployed against a protocol the Worker does not yet speak
+    # is broken for every user until the second job lands.
+    needs: verify
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
       - name: Deploy
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: '4.42.0'
           command: deploy
 
   deploy-pages:
     name: Deploy Pages (static site)
+    needs: deploy-worker
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # The repo root is no longer a valid site root: it also holds mobile/
       # (the Android app's Gradle build, Kotlin source, and gradle-wrapper.jar).
@@ -35,20 +87,16 @@ jobs:
       - name: Stage site
         run: |
           mkdir -p _site
-          cp index.html manifest.json sw.js favicon.svg CNAME _site/
+          cp index.html manifest.json sw.js favicon.svg CNAME _headers _site/
           cp -r icons _site/
 
+      # cloudflare/pages-action@v1 is archived. Wrangler is Cloudflare's
+      # current guidance for Pages CI:
+      # https://developers.cloudflare.com/pages/how-to/use-direct-upload-with-continuous-integration/
       - name: Deploy
-        uses: cloudflare/pages-action@v1
+        uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          projectName: ${{ vars.CLOUDFLARE_PAGES_PROJECT || '7even' }}
-          directory: _site
-          # gitHubToken is deliberately omitted. When set, pages-action first
-          # POSTs a GitHub Deployment record to api.github.com/.../deployments
-          # purely for the Deployments tab in the GitHub UI — and a sustained
-          # 503 on that endpoint failed this job four times in a row while the
-          # Cloudflare upload itself was never even attempted. The deployment
-          # record is cosmetic; the actual Pages deploy does not need it, so
-          # this job no longer takes a hard dependency on that API being up.
+          wranglerVersion: '4.42.0'
+          command: pages deploy _site --project-name=${{ vars.CLOUDFLARE_PAGES_PROJECT || '7even' }} --branch=main

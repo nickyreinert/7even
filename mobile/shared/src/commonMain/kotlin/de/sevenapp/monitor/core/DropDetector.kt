@@ -79,13 +79,48 @@ class DropDetector(
     fun allDrops(): List<DropEvent> =
         closed + listOfNotNull(openDropStartedAtEpochMs?.let { DropEvent(it, null) })
 
+    /**
+     * The detector's exact internal state, for persisting between worker runs.
+     *
+     * All four fields matter. Reconstructing [consecutiveFailures] from
+     * `isDropOpen` (as the coordinator used to, writing `pingsPerCycle` or 0)
+     * threw away every pre-threshold failure: two offline worker runs each
+     * recorded one failure, each was then persisted as zero, and the
+     * two-consecutive-failure threshold was therefore never reached across
+     * process boundaries — so a device that was offline for hours never opened
+     * a single drop. [runStartedAtEpochMs] matters for the same reason: without
+     * it the drop would be backdated to the failure that crossed the threshold
+     * rather than to the one that started the outage.
+     */
+    data class Snapshot(
+        val closedDrops: List<DropEvent>,
+        val openDropStartedAtEpochMs: Long?,
+        val consecutiveFailures: Int,
+        val runStartedAtEpochMs: Long?,
+    )
+
+    fun snapshot(): Snapshot = Snapshot(
+        closedDrops = closed.toList(),
+        openDropStartedAtEpochMs = openDropStartedAtEpochMs,
+        consecutiveFailures = consecutiveFailures,
+        runStartedAtEpochMs = runStartedAtEpochMs,
+    )
+
     /** Restores state across process death — background workers are not long-lived. */
-    fun restore(closedDrops: List<DropEvent>, openDropStartedAtEpochMs: Long?, consecutiveFailures: Int) {
+    fun restore(snapshot: Snapshot) {
         closed.clear()
-        closed += closedDrops
-        this.openDropStartedAtEpochMs = openDropStartedAtEpochMs
-        this.consecutiveFailures = consecutiveFailures
-        this.runStartedAtEpochMs = openDropStartedAtEpochMs
+        closed += snapshot.closedDrops
+        openDropStartedAtEpochMs = snapshot.openDropStartedAtEpochMs
+        consecutiveFailures = snapshot.consecutiveFailures
+        // A stored state written before run timestamps existed has no
+        // pre-threshold start to restore. Falling back to the open-drop start
+        // keeps an in-progress outage intact; a pre-threshold run from such a
+        // state simply loses its original first-failure timestamp and is
+        // backdated from the next failure instead, which is the old behaviour
+        // and never worse than it.
+        runStartedAtEpochMs = snapshot.runStartedAtEpochMs
+            ?: snapshot.openDropStartedAtEpochMs
+            ?: null
     }
 
     sealed interface Transition {

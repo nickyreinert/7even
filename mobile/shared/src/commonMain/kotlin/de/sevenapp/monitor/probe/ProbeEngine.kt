@@ -123,33 +123,53 @@ class ProbeEngine(
         )
     }
 
-    /** @return the sample plus the bytes it actually moved. */
+    /**
+     * @return the sample plus the bytes it actually moved.
+     *
+     * The light tier moves [ProbeConfig.lightDownBytes] down and
+     * [ProbeConfig.lightUpBytes] up — the same two fields the settings screen
+     * edits. They used to be display-only: execution read
+     * [ProbeConfig.measurementSizes] and used one size for both directions, so
+     * changing the visible light sizes altered the projected cost without
+     * altering a single byte of real traffic.
+     */
     private suspend fun measureThroughput(
         input: CycleInput,
         tier: ProbeTier,
     ): Pair<ThroughputSample?, Long> {
         val config = input.config
-        // THROUGHPUT_FULL's sweep ladder and WebSocket stream test are Phase 2;
-        // until then a full-tier cycle runs the light measurement rather than
-        // nothing, so a charging-and-on-Wi-Fi cycle still yields a data point.
+        val pairs: List<Pair<Int, Int>> = if (tier == ProbeTier.THROUGHPUT_LIGHT) {
+            listOf(config.lightDownBytes to config.lightUpBytes)
+        } else {
+            config.measurementSizes(input.deviceState.networkType).map { it to it }
+        }
+
         var moved = 0L
         val downRates = mutableListOf<Double>()
         val upRates = mutableListOf<Double>()
+        var downAttempted = false
+        var upAttempted = false
+        var downSucceeded = false
+        var upSucceeded = false
         var partial = false
-        config.measurementSizes(input.deviceState.networkType).forEach { bytes ->
-            val down = if (config.useWebSocketStream) transport.webSocketDownload(config.streamUrl, bytes, config.transferTimeoutMs)
-            else transport.download(config.downUrl(bytes), bytes, config.transferTimeoutMs)
+
+        pairs.forEach { (downBytes, upBytes) ->
+            downAttempted = true
+            val down = if (config.useWebSocketStream) transport.webSocketDownload(config.streamUrl, downBytes, config.transferTimeoutMs)
+            else transport.download(config.downUrl(downBytes), downBytes, config.transferTimeoutMs)
             when (down) {
-                is TransferResult.Ok -> { moved += down.bytes; mbpsOf(down.bytes, down.elapsedMs)?.let(downRates::add) }
+                is TransferResult.Ok -> { moved += down.bytes; downSucceeded = true; mbpsOf(down.bytes, down.elapsedMs)?.let(downRates::add) }
                 is TransferResult.Partial -> { moved += down.bytes; partial = true; mbpsOf(down.bytes, down.elapsedMs)?.let(downRates::add) }
-                is TransferResult.Failed -> Unit
+                is TransferResult.Failed -> partial = true
             }
-            val up = if (config.useWebSocketStream) transport.webSocketUpload(config.streamUrl, bytes, config.transferTimeoutMs)
-            else transport.upload(config.upUrl, bytes, config.transferTimeoutMs)
+
+            upAttempted = true
+            val up = if (config.useWebSocketStream) transport.webSocketUpload(config.streamUrl, upBytes, config.transferTimeoutMs)
+            else transport.upload(config.upUrl, upBytes, config.transferTimeoutMs)
             when (up) {
-                is TransferResult.Ok -> { moved += up.bytes; mbpsOf(up.bytes, up.elapsedMs)?.let(upRates::add) }
+                is TransferResult.Ok -> { moved += up.bytes; upSucceeded = true; mbpsOf(up.bytes, up.elapsedMs)?.let(upRates::add) }
                 is TransferResult.Partial -> { moved += up.bytes; partial = true; mbpsOf(up.bytes, up.elapsedMs)?.let(upRates::add) }
-                is TransferResult.Failed -> Unit
+                is TransferResult.Failed -> partial = true
             }
         }
         val downMbps = downRates.average().takeIf { downRates.isNotEmpty() }
@@ -163,7 +183,13 @@ class ProbeEngine(
             upMbps = upMbps,
             networkType = input.deviceState.networkType,
             tier = tier,
-            partial = partial,
+            // Partial means "an expected direction did not complete". A failed
+            // direction used to leave the flag clear whenever the other
+            // direction succeeded, so a half-measured sample was indexed and
+            // charted as a complete one.
+            partial = partial ||
+                (downAttempted && !downSucceeded) ||
+                (upAttempted && !upSucceeded),
             ssid = input.deviceState.ssid,
         ) to moved
     }

@@ -12,10 +12,30 @@ data class SweepResult(
     val passCount: Int,
     val avgDurationMs: Double?,
     val lastError: FailureReason?,
-    /** One entry per configured try; used to render every block in the sweep chart. */
+    /** One entry per **attempted** try; shorter than [trials] if the rung was cut short. */
     val trialOutcomes: List<Boolean> = List(trials) { it < passCount },
+    /** True when the rung stopped early because the test was cancelled. */
+    val cancelled: Boolean = false,
 ) {
-    val ok: Boolean get() = passCount == trials
+    val attempted: Int get() = trialOutcomes.size
+
+    val ok: Boolean get() = passCount == trials && !cancelled
+
+    /**
+     * What this rung actually demonstrated.
+     *
+     * `ok` alone collapses 2-of-3 into "failed", which then reads as part of a
+     * clean size cutoff — the strongest claim the sweep can make, drawn from
+     * evidence that actually says the opposite.
+     */
+    val outcome: Outcome get() = when {
+        cancelled || attempted == 0 -> Outcome.INCOMPLETE
+        passCount == attempted -> Outcome.ALL_PASSED
+        passCount == 0 -> Outcome.ALL_FAILED
+        else -> Outcome.MIXED
+    }
+
+    enum class Outcome { ALL_PASSED, MIXED, ALL_FAILED, INCOMPLETE }
 }
 
 /** Latest foreground sweep retained for the Monitor screen after an app restart. */
@@ -128,9 +148,14 @@ class SweepRunner(private val transport: Transport) {
             val outcomes = mutableListOf<Boolean>()
             var durationSum = 0.0
             var lastError: FailureReason? = null
+            var cancelled = false
 
-            repeat(step.trials) {
-                if (!shouldContinue()) return@repeat
+            // A plain `repeat` with `return@repeat` skips one iteration and
+            // keeps going, so a cancelled rung still emitted a result claiming
+            // every configured trial had been run. `while` with an explicit
+            // break stops the rung and records how many trials really happened.
+            while (outcomes.size < step.trials) {
+                if (!shouldContinue()) { cancelled = true; break }
 
                 val result = when (direction) {
                     Direction.DOWN -> transport.download(
@@ -157,9 +182,11 @@ class SweepRunner(private val transport: Transport) {
                 trials = step.trials,
                 passCount = passCount,
                 avgDurationMs = if (passCount > 0) durationSum / passCount else null,
-                lastError = if (passCount == step.trials) null else lastError,
+                lastError = if (passCount == outcomes.size) null else lastError,
                 trialOutcomes = outcomes,
+                cancelled = cancelled,
             )
+            if (cancelled) break
         }
 
         return results
@@ -189,26 +216,34 @@ object SweepVerdict {
     }
 
     fun of(results: List<SweepResult>): Verdict {
-        if (results.isEmpty()) return Verdict.NoData
-        if (results.all { it.ok }) return Verdict.AllPassed
+        // A rung that never finished proves nothing about its size, so it
+        // cannot support or refute a cutoff.
+        val usable = results.filter { it.outcome != SweepResult.Outcome.INCOMPLETE }
+        if (usable.isEmpty()) return Verdict.NoData
+        if (usable.all { it.outcome == SweepResult.Outcome.ALL_PASSED }) return Verdict.AllPassed
 
-        val sorted = results.sortedBy { it.bytes }
-        val firstFailureIdx = sorted.indexOfFirst { !it.ok }
+        val sorted = usable.sortedBy { it.bytes }
+        val firstNotAllPassed = sorted.indexOfFirst { it.outcome != SweepResult.Outcome.ALL_PASSED }
 
-        // A genuine size cutoff means: everything below the boundary passed AND
-        // everything from it upward failed. Anything else is scattered, and
-        // saying "your ISP drops large packets" on scattered data would be
-        // inventing a diagnosis the evidence does not support.
-        val cleanCutoff = sorted.take(firstFailureIdx).all { it.ok } &&
-            sorted.drop(firstFailureIdx).all { !it.ok }
+        // A genuine size cutoff means: everything below the boundary passed
+        // *completely* AND everything from it upward failed *completely*.
+        //
+        // A MIXED rung — say 2 of 3 trials passing — is evidence AGAINST a hard
+        // size limit, because packets of that size demonstrably did get
+        // through. Treating it as a failure (which `ok` does, since `ok` means
+        // "every trial passed") let intermittent link trouble masquerade as
+        // "your ISP drops anything over 512KB", which is a specific, actionable,
+        // and wrong diagnosis.
+        val cleanCutoff = sorted.take(firstNotAllPassed).all { it.outcome == SweepResult.Outcome.ALL_PASSED } &&
+            sorted.drop(firstNotAllPassed).all { it.outcome == SweepResult.Outcome.ALL_FAILED }
 
-        return if (cleanCutoff && firstFailureIdx > 0) {
+        return if (cleanCutoff && firstNotAllPassed > 0) {
             Verdict.SizeCutoff(
-                lastGoodBytes = sorted[firstFailureIdx - 1].bytes,
-                firstBadBytes = sorted[firstFailureIdx].bytes,
+                lastGoodBytes = sorted[firstNotAllPassed - 1].bytes,
+                firstBadBytes = sorted[firstNotAllPassed].bytes,
             )
         } else {
-            Verdict.Scattered(sorted.count { !it.ok }, sorted.size)
+            Verdict.Scattered(sorted.count { it.outcome != SweepResult.Outcome.ALL_PASSED }, sorted.size)
         }
     }
 }

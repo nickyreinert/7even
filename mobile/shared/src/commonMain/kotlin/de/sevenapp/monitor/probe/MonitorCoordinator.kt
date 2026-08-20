@@ -51,9 +51,12 @@ class MonitorCoordinator(
 
         val detector = DropDetector().apply {
             restore(
-                closedDrops = dropState.closedDrops,
-                openDropStartedAtEpochMs = dropState.openDropStartedAtEpochMs,
-                consecutiveFailures = dropState.consecutiveFailures,
+                DropDetector.Snapshot(
+                    closedDrops = dropState.closedDrops,
+                    openDropStartedAtEpochMs = dropState.openDropStartedAtEpochMs,
+                    consecutiveFailures = dropState.consecutiveFailures,
+                    runStartedAtEpochMs = dropState.runStartedAtEpochMs,
+                ),
             )
         }
 
@@ -68,24 +71,34 @@ class MonitorCoordinator(
             ),
         )
 
-        store.appendPings(output.pings)
-        output.throughput?.let { store.appendThroughput(it) }
+        // One unit of work. These writes describe the same cycle, and a process
+        // death between them leaves the database claiming a cycle that only
+        // half-happened — samples with no detector state, or usage charged for
+        // measurements that were never stored.
+        store.transaction {
+            store.appendPings(output.pings)
+            output.throughput?.let { store.appendThroughput(it) }
 
-        // Persist the detector's *whole* state, not just the closed drops —
-        // dropping the open-drop marker would split an ongoing outage into
-        // separate events at every worker invocation.
-        store.saveDropState(
-            MonitorStore.DropState(
-                closedDrops = detector.allDrops().filter { !it.ongoing },
-                openDropStartedAtEpochMs = detector.allDrops().firstOrNull { it.ongoing }?.startedAtEpochMs,
-                consecutiveFailures = if (detector.isDropOpen) config.pingsPerCycle else 0,
-            ),
-        )
+            // The detector's exact snapshot, not a reconstruction of it. The old
+            // code wrote `if (isDropOpen) pingsPerCycle else 0`, which zeroed the
+            // consecutive-failure count after every pre-threshold failure — so
+            // failures spread across separate worker runs never accumulated to the
+            // threshold and an offline device recorded no outage at all.
+            val snapshot = detector.snapshot()
+            store.saveDropState(
+                MonitorStore.DropState(
+                    closedDrops = snapshot.closedDrops,
+                    openDropStartedAtEpochMs = snapshot.openDropStartedAtEpochMs,
+                    consecutiveFailures = snapshot.consecutiveFailures,
+                    runStartedAtEpochMs = snapshot.runStartedAtEpochMs,
+                ),
+            )
 
-        if (output.tier == ProbeTier.THROUGHPUT_FULL) store.recordFullSweep(now)
-        if (output.bytesUsed > 0) store.addBytesUsed(output.bytesUsed, deviceState.isMetered, now)
+            if (output.tier == ProbeTier.THROUGHPUT_FULL) store.recordFullSweep(now)
+            if (output.bytesUsed > 0) store.addBytesUsed(output.bytesUsed, deviceState.isMetered, now)
 
-        store.pruneOlderThan(now - retentionMs)
+            store.pruneOlderThan(now - retentionMs)
+        }
 
         return output
     }

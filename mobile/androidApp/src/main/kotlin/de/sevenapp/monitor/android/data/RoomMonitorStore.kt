@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.room.Room
+import androidx.room.withTransaction
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import de.sevenapp.monitor.core.DropEvent
@@ -57,7 +58,7 @@ class RoomMonitorStore(
                 ?: defaults.throughputLightNetworks,
             fullSweepRequiresCharging = prefs[KEY_FULL_CHARGING] ?: defaults.fullSweepRequiresCharging,
             fullSweepsPerDay = prefs[KEY_FULL_PER_DAY] ?: defaults.fullSweepsPerDay,
-            liveTestMinDurationMs = prefs[KEY_LIVE_DURATION] ?: defaults.liveTestMinDurationMs,
+            liveTestPhaseDurationMs = prefs[KEY_LIVE_DURATION] ?: defaults.liveTestPhaseDurationMs,
             liveTestSweepEnabled = prefs[KEY_LIVE_SWEEP] ?: defaults.liveTestSweepEnabled,
             liveTestSweepSteps = prefs[KEY_LIVE_SWEEP_PLAN]?.let(SweepPlan::parse) ?: defaults.liveTestSweepSteps,
             wifiLiveTestSweepSteps = prefs[KEY_WIFI_LIVE_SWEEP_PLAN]?.let(SweepPlan::parse) ?: defaults.wifiLiveTestSweepSteps,
@@ -91,7 +92,7 @@ class RoomMonitorStore(
             p[KEY_TP_NETWORKS] = config.throughputLightNetworks.map { it.name }.toSet()
             p[KEY_FULL_CHARGING] = config.fullSweepRequiresCharging
             p[KEY_FULL_PER_DAY] = config.fullSweepsPerDay
-            p[KEY_LIVE_DURATION] = config.liveTestMinDurationMs
+            p[KEY_LIVE_DURATION] = config.liveTestPhaseDurationMs
             p[KEY_LIVE_SWEEP] = config.liveTestSweepEnabled
             p[KEY_LIVE_SWEEP_PLAN] = SweepPlan.format(config.liveTestSweepSteps)
             p[KEY_WIFI_LIVE_SWEEP_PLAN] = SweepPlan.format(config.wifiLiveTestSweepSteps)
@@ -159,11 +160,26 @@ class RoomMonitorStore(
         )
     }
 
-    override suspend fun loadDropState(): MonitorStore.DropState = MonitorStore.DropState(
-        closedDrops = dao.closedDrops().map { it.toDomain() },
-        openDropStartedAtEpochMs = dao.openDrop()?.startedAtEpochMs,
-        consecutiveFailures = context.settings.data.first()[KEY_CONSECUTIVE_FAILURES] ?: 0,
-    )
+    /**
+     * Room's transaction, so a cycle's sample/drop/usage writes land together.
+     *
+     * DataStore-backed counters inside [block] are not covered — they are a
+     * separate storage engine — so they are deliberately ordered to fail safe:
+     * see the note on [MonitorStore.transaction].
+     */
+    override suspend fun <T> transaction(block: suspend () -> T): T = db.withTransaction { block() }
+
+    override suspend fun loadDropState(): MonitorStore.DropState {
+        val prefs = context.settings.data.first()
+        return MonitorStore.DropState(
+            closedDrops = dao.closedDrops().map { it.toDomain() },
+            openDropStartedAtEpochMs = dao.openDrop()?.startedAtEpochMs,
+            consecutiveFailures = prefs[KEY_CONSECUTIVE_FAILURES] ?: 0,
+            // Absent in state written before this key existed; the detector
+            // documents how it degrades in that case.
+            runStartedAtEpochMs = prefs[KEY_FAILURE_RUN_STARTED_AT],
+        )
+    }
 
     override suspend fun saveDropState(state: MonitorStore.DropState) {
         val existingOpen = dao.openDrop()
@@ -184,7 +200,11 @@ class RoomMonitorStore(
             }
         }
 
-        context.settings.edit { it[KEY_CONSECUTIVE_FAILURES] = state.consecutiveFailures }
+        context.settings.edit {
+            it[KEY_CONSECUTIVE_FAILURES] = state.consecutiveFailures
+            val runStart = state.runStartedAtEpochMs
+            if (runStart == null) it.remove(KEY_FAILURE_RUN_STARTED_AT) else it[KEY_FAILURE_RUN_STARTED_AT] = runStart
+        }
     }
 
     override suspend fun pingsBetween(startEpochMs: Long, endEpochMs: Long): List<PingSample> =
@@ -238,6 +258,7 @@ class RoomMonitorStore(
             it.remove(KEY_LATEST_DOWN_SWEEP)
             it.remove(KEY_LATEST_UP_SWEEP)
             it.remove(KEY_CONSECUTIVE_FAILURES)
+            it.remove(KEY_FAILURE_RUN_STARTED_AT)
         }
     }
 
@@ -303,10 +324,19 @@ class RoomMonitorStore(
         private val KEY_USE_WS_STREAM = booleanPreferencesKey("use_websocket_stream")
         private val KEY_CYCLE_INDEX = longPreferencesKey("cycle_index")
         private val KEY_CONSECUTIVE_FAILURES = intPreferencesKey("consecutive_failures")
+        private val KEY_FAILURE_RUN_STARTED_AT = longPreferencesKey("failure_run_started_at")
 
         val KEY_MONITORING_ENABLED = booleanPreferencesKey("monitoring_enabled")
         val KEY_REPORT_PERIOD = stringPreferencesKey("report_period")
+        /** When a report was last **generated** — this is what drives scheduling. */
         val KEY_LAST_REPORT_AT = longPreferencesKey("last_report_at")
+        /** When monitoring was first switched on; the baseline for the first report. */
+        private val KEY_REPORTING_SINCE = longPreferencesKey("reporting_since")
+        private val KEY_PENDING_REPORT_TITLE = stringPreferencesKey("pending_report_title")
+        private val KEY_PENDING_REPORT_BODY = stringPreferencesKey("pending_report_body")
+        private val KEY_PENDING_REPORT_AT = longPreferencesKey("pending_report_at")
+        /** When a report was last actually **posted** as a notification. */
+        private val KEY_REPORT_DELIVERED_AT = longPreferencesKey("report_delivered_at")
 
         @Volatile private var instance: RoomMonitorStore? = null
 
@@ -340,6 +370,75 @@ class RoomMonitorStore(
 
         suspend fun setLastReportAt(context: Context, epochMs: Long) {
             context.settings.edit { it[KEY_LAST_REPORT_AT] = epochMs }
+        }
+
+        /**
+         * The moment reporting started, recorded once.
+         *
+         * Report scheduling previously substituted epoch zero for "no report
+         * delivered yet", which makes the very first worker wake immediately
+         * overdue — so a fresh install could be notified about a window in
+         * which it had never measured anything, presented as 100% uptime.
+         */
+        suspend fun reportingSince(context: Context): Long? =
+            context.settings.data.first()[KEY_REPORTING_SINCE]
+
+        suspend fun markReportingStarted(context: Context, epochMs: Long) {
+            context.settings.edit { prefs ->
+                if (prefs[KEY_REPORTING_SINCE] == null) prefs[KEY_REPORTING_SINCE] = epochMs
+            }
+        }
+
+        /** A generated report awaiting acknowledgement, delivered or not. */
+        data class PendingReport(
+            val title: String,
+            val body: String,
+            val generatedAtEpochMs: Long,
+            val deliveredAtEpochMs: Long?,
+        ) {
+            val wasDelivered: Boolean get() = deliveredAtEpochMs != null
+        }
+
+        /**
+         * Stores a generated report **before** delivery is attempted.
+         *
+         * Reports used to exist only as a notification. If notification
+         * permission was missing — the default on Android 13+, since it was
+         * never requested — the result was computed, discarded, and its
+         * timestamp advanced, so the user permanently lost a report they had
+         * asked for and had no way to know it had happened.
+         */
+        suspend fun savePendingReport(context: Context, title: String, body: String, atEpochMs: Long) {
+            context.settings.edit {
+                it[KEY_PENDING_REPORT_TITLE] = title
+                it[KEY_PENDING_REPORT_BODY] = body
+                it[KEY_PENDING_REPORT_AT] = atEpochMs
+                it.remove(KEY_REPORT_DELIVERED_AT)
+            }
+        }
+
+        suspend fun markReportDelivered(context: Context, atEpochMs: Long) {
+            context.settings.edit { it[KEY_REPORT_DELIVERED_AT] = atEpochMs }
+        }
+
+        suspend fun pendingReport(context: Context): PendingReport? {
+            val prefs = context.settings.data.first()
+            val title = prefs[KEY_PENDING_REPORT_TITLE] ?: return null
+            return PendingReport(
+                title = title,
+                body = prefs[KEY_PENDING_REPORT_BODY].orEmpty(),
+                generatedAtEpochMs = prefs[KEY_PENDING_REPORT_AT] ?: 0L,
+                deliveredAtEpochMs = prefs[KEY_REPORT_DELIVERED_AT],
+            )
+        }
+
+        suspend fun clearPendingReport(context: Context) {
+            context.settings.edit {
+                it.remove(KEY_PENDING_REPORT_TITLE)
+                it.remove(KEY_PENDING_REPORT_BODY)
+                it.remove(KEY_PENDING_REPORT_AT)
+                it.remove(KEY_REPORT_DELIVERED_AT)
+            }
         }
 
         suspend fun reportPeriod(context: Context): ReportPeriod {

@@ -132,7 +132,10 @@ fun SettingsScreen(
                 }
                 HorizontalDivider(Modifier.padding(vertical = 8.dp))
                 Text(
-                    "Ping runs on every automatic cycle. Choose whether automatic cycles also run the same sustained stream and/or size sweep used by a manual test.",
+                    "Ping runs on every automatic cycle, including while the device is offline — that is " +
+                        "how an outage gets recorded. Choose whether automatic cycles also run the same " +
+                        "sustained stream and/or size sweep used by a manual test; both are capped by the " +
+                        "data budget shown at the top of this screen.",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 HorizontalDivider(Modifier.padding(vertical = 8.dp))
@@ -156,7 +159,7 @@ fun SettingsScreen(
                     onCheckedChange = viewModel::setAutomaticRequiresCharging,
                 )
                 HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                Text("Manual ping and stream duration", style = MaterialTheme.typography.labelMedium)
+                Text("Manual test duration (per phase)", style = MaterialTheme.typography.labelMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(
                         "10 sec" to 10_000L,
@@ -169,7 +172,14 @@ fun SettingsScreen(
                         FilterChip(selected = state.manualStreamDurationMs == duration, onClick = { viewModel.setManualStreamDuration(duration) }, label = { Text(label) })
                     }
                 }
-                Text("This controls continuous ping, download streaming, and upload streaming. The connection-specific size sweep runs once per test. Automatic tests use only 10 sec, 30 sec, or 1 min; longer and unlimited choices are capped at 1 min.", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "A manual test runs three phases in turn, each for the chosen length: ping on its own, " +
+                        "then a continuous download stream, then a continuous upload stream. The " +
+                        "connection-specific size sweep runs once at the end. A 10 sec choice therefore " +
+                        "takes about 30 seconds plus the sweep. Automatic background tests cap each phase " +
+                        "at 30 seconds regardless of this setting.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
         }
 
@@ -326,8 +336,27 @@ private fun SettingsDataUseCard(state: SettingsState) {
     Card(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text("Data use", style = MaterialTheme.typography.titleMedium)
-            Text("About ${Format.bytes(state.projectedMeteredBytesPerMonth)} mobile data / month", style = MaterialTheme.typography.bodyLarge)
-            Text("Used this month: ${Format.bytes(state.meteredBytesThisMonth)}", style = MaterialTheme.typography.bodySmall)
+            // A duration-based stream moves whatever the link can carry, so the
+            // only honest figure to state before the fact is the ceiling — and
+            // it is the same ceiling the worker refuses to exceed.
+            Text(
+                if (state.projectionIsMaximum) {
+                    "Up to ${Format.bytes(state.projectedMeteredBytesPerMonth)} mobile data / month"
+                } else {
+                    "About ${Format.bytes(state.projectedMeteredBytesPerMonth)} mobile data / month"
+                },
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            Text(
+                "Used in the last 30 days: ${Format.bytes(state.meteredBytesThisMonth)}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            if (state.projectionIsMaximum) {
+                Text(
+                    "Automatic streams are capped per run and per day, so this is a hard ceiling rather than an estimate.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
         }
     }
 }

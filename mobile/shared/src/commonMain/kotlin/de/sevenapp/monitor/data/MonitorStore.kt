@@ -54,13 +54,38 @@ interface MonitorStore {
     /** Discards samples older than the retention window, keeping the DB bounded. */
     suspend fun pruneOlderThan(epochMs: Long)
 
+    /**
+     * Runs [block] as one unit, so a cycle's writes cannot be split.
+     *
+     * A cycle persists samples, detector state, sweep counts and usage as
+     * separate writes; a process death between any two of them leaves the
+     * database describing a cycle that half-happened. The default is a plain
+     * pass-through so a store with no transaction support still compiles and
+     * behaves exactly as before.
+     *
+     * Note the Android implementation covers the Room database only — a few
+     * counters live in DataStore and cannot join a SQLite transaction. Those
+     * are written before the samples they describe, so the failure mode is a
+     * counter that is momentarily ahead of the data, never behind it.
+     */
+    suspend fun <T> transaction(block: suspend () -> T): T = block()
+
+    /**
+     * The detector's exact snapshot, not a summary of it.
+     *
+     * [runStartedAtEpochMs] is the first failure of the *current* run, which
+     * may not have crossed the drop threshold yet. Persisting it is what lets a
+     * drop that develops across several worker invocations be backdated to when
+     * the connection actually went away.
+     */
     data class DropState(
         val closedDrops: List<DropEvent>,
         val openDropStartedAtEpochMs: Long?,
         val consecutiveFailures: Int,
+        val runStartedAtEpochMs: Long? = null,
     ) {
         companion object {
-            val EMPTY = DropState(emptyList(), null, 0)
+            val EMPTY = DropState(emptyList(), null, 0, null)
         }
     }
 }

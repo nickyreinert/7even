@@ -1,0 +1,26 @@
+# Cloudflare Pages response headers.
+#
+# The measurement endpoints are pinned in connect-src rather than left open:
+# this page's entire job is to send traffic to two specific hosts, so anything
+# else reaching out from it is by definition not the app working.
+
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: DENY
+  Cross-Origin-Opener-Policy: same-origin
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  Permissions-Policy: accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()
+  # STAGED. script-src and style-src still allow 'unsafe-inline' because the app
+  # is one large inline <script> plus inline <style>; a strict policy needs them
+  # extracted to files, or hashes maintained on every edit. Everything that does
+  # not depend on that is locked down now rather than waiting for it:
+  # frame-ancestors stops clickjacking, object-src/base-uri/form-action close
+  # the classic injection escalations, and connect-src limits exfiltration to
+  # the two hosts the measurements actually use.
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://speed.cloudflare.com https://ws-speedtest.nyrt.workers.dev wss://ws-speedtest.nyrt.workers.dev; font-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; upgrade-insecure-requests
+
+# The service worker must not be served from cache, or a shipped update can be
+# invisible until the browser happens to revalidate.
+/sw.js
+  Cache-Control: no-cache

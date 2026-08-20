@@ -2,6 +2,7 @@ package de.sevenapp.monitor.android.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -75,6 +76,22 @@ class MainActivity : ComponentActivity() {
                 val ssidPermission = androidx.activity.compose.rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission(),
                 ) { granted -> ssidPermissionGranted = granted }
+                // Asked when the user turns monitoring on, not at launch: that
+                // is the moment the request has a reason the user can evaluate.
+                // The permission was declared in the manifest but never
+                // requested at all, so on Android 13+ every scheduled report
+                // was silently undeliverable.
+                val notificationPermission = androidx.activity.compose.rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission(),
+                ) { /* Denial is handled in-app: reports stay visible on the Monitor screen. */ }
+                val requestNotificationPermission: () -> Unit = {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+                        PackageManager.PERMISSION_GRANTED
+                    ) {
+                        notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }
                 BackHandler(enabled = screen == Screen.HELP) { screen = Screen.MAIN }
                 Scaffold(
                     topBar = {
@@ -105,7 +122,10 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     when (screen) {
-                        Screen.MAIN -> DashboardScreen(contentModifier)
+                        Screen.MAIN -> DashboardScreen(
+                            contentModifier,
+                            onMonitoringEnabled = requestNotificationPermission,
+                        )
                         Screen.HISTORY -> HistoryScreen(contentModifier, onRequestSsidPermission = {
                             ssidPermission.launch(Manifest.permission.ACCESS_FINE_LOCATION)
                         }, ssidPermissionGranted = ssidPermissionGranted)
@@ -140,6 +160,8 @@ private fun NavItem(label: String, selected: Boolean, modifier: Modifier, onClic
 @Composable
 fun DashboardScreen(
     modifier: Modifier = Modifier,
+    /** Invoked when the user switches monitoring on, to ask for notifications. */
+    onMonitoringEnabled: () -> Unit = {},
     viewModel: DashboardViewModel = androidx.lifecycle.viewmodel.compose.viewModel(),
 ) {
     val state by viewModel.state.collectAsState()
@@ -160,7 +182,10 @@ fun DashboardScreen(
                             Text("Measure automatically", style = MaterialTheme.typography.titleMedium)
                             Text("Battery-aware background checks", style = MaterialTheme.typography.bodySmall)
                         }
-                        Switch(state.monitoringEnabled, onCheckedChange = viewModel::setMonitoring)
+                        Switch(state.monitoringEnabled, onCheckedChange = { enabled ->
+                            if (enabled) onMonitoringEnabled()
+                            viewModel.setMonitoring(enabled)
+                        })
                     }
                     Text("Use connection", style = MaterialTheme.typography.labelMedium)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -170,6 +195,9 @@ fun DashboardScreen(
                     state.manualTestError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 }
             }
+        }
+        state.pendingReport?.let { report ->
+            item { PendingReportCard(report, onDismiss = viewModel::acknowledgeReport) }
         }
         item {
             Card(Modifier.fillMaxWidth()) {
@@ -275,7 +303,10 @@ private fun SummaryCards(state: DashboardState) {
             MetricCard("Request loss", Format.percent(loss), Modifier.weight(1f))
             MetricCard("Drops", if (showManualResult) "—" else state.dropCount.toString(), Modifier.weight(1f))
         }
-        MetricCard("Mobile data this month", Format.bytes(state.meteredBytesThisMonth), Modifier.fillMaxWidth())
+        // "Last 30 days", not "this month": the counter is a rolling window, and
+        // calling it a calendar month invites the reader to compare it against a
+        // carrier bill that resets on a different day.
+        MetricCard("Mobile data, last 30 days", Format.bytes(state.meteredBytesThisMonth), Modifier.fillMaxWidth())
         state.stability?.let { score ->
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -310,13 +341,61 @@ private fun formatMbps(value: Double?): String = value?.let {
     }
 } ?: "—"
 
+/**
+ * "Stop · 2/5 · Download stream · 00:07".
+ *
+ * The clock is the *current phase's*, not the whole run's: the configured
+ * duration is what each of ping, download, and upload gets, so a whole-run
+ * stopwatch would run past the number the user picked. A phase with no
+ * deadline (the size sweep, or an unlimited run) counts up instead of down.
+ */
 private fun manualTestButtonLabel(state: DashboardState): String {
     if (!state.manualTestRunning) return "Start monitoring"
-    val displayedMs = if (state.liveTestDurationMs == Long.MAX_VALUE) state.manualTestElapsedMs
-    else (state.liveTestDurationMs - state.manualTestElapsedMs).coerceAtLeast(0L)
+    val phaseMs = state.manualTestPhaseDurationMs
+    val displayedMs = if (phaseMs == null || phaseMs == Long.MAX_VALUE) {
+        state.manualTestElapsedMs
+    } else {
+        (phaseMs - state.manualTestElapsedMs).coerceAtLeast(0L)
+    }
     val seconds = displayedMs / 1_000
-    val timer = if (state.manualTestElapsedMs == 0L) "" else " · %02d:%02d".format(seconds / 60, seconds % 60)
-    return "Stop · ${state.manualTestStep}/5 · ${state.manualTestStepLabel}$timer"
+    val timer = " · %02d:%02d".format(seconds / 60, seconds % 60)
+    val step = if (state.manualTestStep <= 0) "" else "${state.manualTestStep}/${state.manualTestTotalSteps} · "
+    return "Stop · $step${state.manualTestStepLabel}$timer"
+}
+
+/**
+ * A generated report shown in the app itself.
+ *
+ * The report is the product; a notification is one way to deliver it. When
+ * delivery is impossible — notification permission denied, notifications
+ * switched off — this is what stops the result from being computed and thrown
+ * away, which is what used to happen.
+ */
+@Composable
+private fun PendingReportCard(
+    report: de.sevenapp.monitor.android.data.RoomMonitorStore.Companion.PendingReport,
+    onDismiss: () -> Unit,
+) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(report.title, style = MaterialTheme.typography.titleMedium)
+            Text(
+                java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT)
+                    .format(java.util.Date(report.generatedAtEpochMs)),
+                style = MaterialTheme.typography.labelSmall,
+            )
+            Text(report.body, style = MaterialTheme.typography.bodySmall)
+            if (!report.wasDelivered) {
+                Text(
+                    "This report could not be delivered as a notification — notifications are off for 7even. " +
+                        "It is kept here so nothing is lost.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+            }
+            OutlinedButton(onClick = onDismiss) { Text("Dismiss") }
+        }
+    }
 }
 
 private fun sweepHeight(results: List<de.sevenapp.monitor.probe.SweepResult>): Int =

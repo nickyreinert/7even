@@ -14,10 +14,23 @@ import kotlin.math.sqrt
  */
 object Stats {
 
+    /**
+     * Drops values that are not real measurements.
+     *
+     * A NaN or an infinity is not a slow connection, it is a broken
+     * measurement — and NaN propagates silently through every subsequent
+     * average, sort and chart coordinate rather than raising anything. Negative
+     * RTTs and throughputs are impossible by construction and equally
+     * corrupting. Every aggregate below filters first, so one bad sample cannot
+     * void a whole window's statistics.
+     */
+    fun usable(values: List<Double>): List<Double> =
+        values.filter { !it.isNaN() && !it.isInfinite() && it >= 0.0 }
+
     /** Median. Even-sized inputs average the two middle values, as in the web app. */
     fun median(values: List<Double>): Double? {
-        if (values.isEmpty()) return null
-        val s = values.sorted()
+        val s = usable(values).sorted()
+        if (s.isEmpty()) return null
         val mid = s.size / 2
         return if (s.size % 2 != 0) s[mid] else (s[mid - 1] + s[mid]) / 2.0
     }
@@ -33,9 +46,10 @@ object Stats {
      * convention rather than a standard.
      */
     fun stdDev(values: List<Double>): Double {
-        if (values.size < 2) return 0.0
-        val mean = values.sum() / values.size
-        val variance = values.sumOf { (it - mean) * (it - mean) } / values.size
+        val v = usable(values)
+        if (v.size < 2) return 0.0
+        val mean = v.sum() / v.size
+        val variance = v.sumOf { (it - mean) * (it - mean) } / v.size
         return sqrt(variance)
     }
 
@@ -47,8 +61,8 @@ object Stats {
      * occasional spikes" from "uniformly mediocre", which a median hides.
      */
     fun percentile(values: List<Double>, p: Double): Double? {
-        if (values.isEmpty()) return null
-        val s = values.sorted()
+        val s = usable(values).sorted()
+        if (s.isEmpty()) return null
         val rank = (p.coerceIn(0.0, 1.0) * (s.size - 1)).roundToLong().toInt()
         return s[rank.coerceIn(0, s.size - 1)]
     }
@@ -87,15 +101,38 @@ object StabilityScore {
     ): Result {
         val windowMs = max(1L, nowEpochMs - windowStartEpochMs)
 
-        // Clip each drop to the window. The web app could assume every drop
-        // belonged to the current session; a report over "last week" cannot,
-        // because a drop may straddle the boundary and counting it whole would
-        // charge one week for the other's downtime.
-        val totalDropMs = drops.sumOf { drop ->
-            val start = max(drop.startedAtEpochMs, windowStartEpochMs)
-            val end = min(drop.endedAtEpochMs ?: nowEpochMs, nowEpochMs)
-            max(0L, end - start)
+        // Clip each drop to the window, then MERGE overlaps before summing.
+        //
+        // The web app could assume every drop belonged to the current session
+        // and that they never overlapped; a report over "last week" can assume
+        // neither. Two drops that overlap — the same outage recorded twice
+        // across a process restart, say — used to have their durations added
+        // together, so a 10-minute outage recorded twice became 20 minutes of
+        // downtime and could even push total downtime past the window length.
+        val clipped = drops
+            .map { drop ->
+                max(drop.startedAtEpochMs, windowStartEpochMs) to
+                    min(drop.endedAtEpochMs ?: nowEpochMs, nowEpochMs)
+            }
+            .filter { (start, end) -> end > start }
+            .sortedBy { it.first }
+
+        var totalDropMs = 0L
+        var mergedStart = Long.MIN_VALUE
+        var mergedEnd = Long.MIN_VALUE
+        for ((start, end) in clipped) {
+            if (mergedEnd == Long.MIN_VALUE) {
+                mergedStart = start
+                mergedEnd = end
+            } else if (start <= mergedEnd) {
+                mergedEnd = max(mergedEnd, end)
+            } else {
+                totalDropMs += mergedEnd - mergedStart
+                mergedStart = start
+                mergedEnd = end
+            }
         }
+        if (mergedEnd != Long.MIN_VALUE) totalDropMs += mergedEnd - mergedStart
 
         val uptimePct = Stats.clamp(
             ((windowMs - totalDropMs).toDouble() / windowMs) * 100.0,

@@ -2,10 +2,30 @@ name = "ws-speedtest"
 main = "src/index.js"
 compatibility_date = "2026-08-01"
 
+# Sampled request/exception logs. Without this a protocol violation, a quota
+# rejection, or a CPU-limit event is invisible — and those are exactly the
+# signals that say whether the abuse controls in src/index.js are working.
+[observability]
+enabled = true
+head_sampling_rate = 0.1
+
+[vars]
+# Comma-separated. Entries may be written as "https://host", "host", or
+# "*.host" for any subdomain. Leave unset to use the defaults compiled into
+# src/index.js (production plus this project's own Pages previews).
+#
+# This is a cross-site check, NOT authentication: a non-browser client can send
+# any Origin it likes. What actually bounds abuse is the per-connection byte,
+# command, and lifetime quota in src/index.js.
+ALLOWED_ORIGINS = "https://7.1-1-1.de,*.7even.pages.dev,https://7even.pages.dev"
+
 # NATIVE_WS_HMAC_SECRET is a Worker secret, not a var: it must never appear in
 # this file or in source control. Set it once with:
 #   npx wrangler secret put NATIVE_WS_HMAC_SECRET
 # and put the same value in mobile's local.properties (sevenNativeWsSecret=...)
 # or the SEVEN_NATIVE_WS_SECRET env var used by androidApp/build.gradle.kts,
-# so the app's signed handshake tokens verify against it. See src/index.js's
-# isValidNativeAuth for how it's used.
+# so the app's signed handshake tokens verify against it.
+#
+# Note the key ships inside the APK, so this raises the effort bar and does not
+# create a security boundary — see src/index.js's isValidNativeAuth and
+# REVIEW_PLAN.md SEC-02.

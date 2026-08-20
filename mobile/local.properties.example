@@ -1,0 +1,13 @@
+# Copy to local.properties and fill in. This file is committed; local.properties
+# is not (see the repository .gitignore).
+#
+# Android SDK location. Android Studio writes this automatically.
+sdk.dir=/Users/you/Library/Android/sdk
+
+# Must match the Worker secret set with `npx wrangler secret put NATIVE_WS_HMAC_SECRET`.
+# Leaving it empty still builds: NativeAuth.header() returns null and the live
+# test fails closed with a clear error rather than connecting unauthenticated.
+#
+# NOTE: this key ships inside the APK, so it is not a security boundary — see
+# src/index.js's isValidNativeAuth and REVIEW_PLAN.md SEC-02.
+sevenNativeWsSecret=

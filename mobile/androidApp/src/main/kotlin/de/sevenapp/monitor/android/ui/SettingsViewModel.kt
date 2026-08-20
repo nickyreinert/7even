@@ -47,6 +47,8 @@ data class SettingsState(
     val cellularMeasurementSizes: Set<Int> = emptySet(),
     val reportPeriod: ReportPeriod = ReportPeriod.WEEKLY,
     val projectedMeteredBytesPerMonth: Long = 0,
+    /** True when the projection is a ceiling rather than an estimate. */
+    val projectionIsMaximum: Boolean = false,
     val meteredBytesThisMonth: Long = 0,
     val billingUnavailableMessage: String? = null,
 )
@@ -80,7 +82,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             automaticStreamEnabled = config.automaticStreamEnabled,
             automaticSweepEnabled = config.automaticSweepEnabled,
             automaticRequiresCharging = config.automaticRequiresCharging,
-            manualStreamDurationMs = config.liveTestMinDurationMs,
+            manualStreamDurationMs = config.liveTestPhaseDurationMs,
             traceUrl = config.traceUrl,
             downUrlTemplate = config.downUrlTemplate,
             upUrl = config.upUrl,
@@ -93,6 +95,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             cellularMeasurementSizes = config.cellularMeasurementSizes,
             reportPeriod = RoomMonitorStore.reportPeriod(app),
             projectedMeteredBytesPerMonth = DataBudget.project(config).meteredBytesPerMonth,
+            projectionIsMaximum = DataBudget.project(config).isMaximum,
             meteredBytesThisMonth = store.bytesUsedSince(monthStart, metered = true),
         )
     }
@@ -110,7 +113,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
         RoomMonitorStore.setMonitoringEnabled(app, enabled)
         if (enabled) {
-            store.loadConfig().let { ProbeWorker.schedule(app, it.cycleIntervalMinutes.toLong(), it.automaticHourOfDay, it.automaticDayOfWeek) }
+            ProbeWorker.scheduleFromConfig(app, store)
             ReportWorker.schedule(app)
         } else {
             ProbeWorker.cancel(app)
@@ -129,7 +132,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             throughputEveryNCycles = if (minutes >= 24 * 60) 1 else store.loadConfig().throughputEveryNCycles,
         )
         store.saveConfig(config)
-        if (RoomMonitorStore.isMonitoringEnabled(app)) ProbeWorker.schedule(app, minutes.toLong(), config.automaticHourOfDay, config.automaticDayOfWeek)
+        if (RoomMonitorStore.isMonitoringEnabled(app)) ProbeWorker.scheduleFromConfig(app, store)
         refresh()
     }
 
@@ -141,7 +144,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         )
         store.saveConfig(config)
         if (RoomMonitorStore.isMonitoringEnabled(app)) {
-            ProbeWorker.schedule(app, config.cycleIntervalMinutes.toLong(), config.automaticHourOfDay, config.automaticDayOfWeek)
+            ProbeWorker.scheduleFromConfig(app, store)
         }
         refresh()
     }
@@ -203,7 +206,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setManualStreamDuration(durationMs: Long) = viewModelScope.launch {
-        store.saveConfig(store.loadConfig().copy(liveTestMinDurationMs = durationMs))
+        store.saveConfig(store.loadConfig().copy(liveTestPhaseDurationMs = durationMs))
         refresh()
     }
 

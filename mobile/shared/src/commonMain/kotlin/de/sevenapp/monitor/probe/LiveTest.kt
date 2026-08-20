@@ -17,6 +17,26 @@ sealed interface LiveSample {
 
     data class Ping(override val atEpochMs: Long, val rttMs: Double?) : LiveSample
 
+    /**
+     * The run has entered a new phase.
+     *
+     * Emitted explicitly rather than inferred from the first data point of each
+     * kind, because a phase that measures nothing is exactly the case worth
+     * showing: on a dead link the download phase produces no [Rate] samples at
+     * all, and a UI that derives its step from arriving data would sit on
+     * "Connecting" for the whole test. It also keeps the continuous ping loop
+     * from repainting the step while a stream phase is running.
+     */
+    data class Phase(
+        override val atEpochMs: Long,
+        val phase: LivePhase,
+        /** 1-based position in the run; 0 while connecting. */
+        val step: Int,
+        val totalSteps: Int,
+        /** How long this phase will run, or null when it is not time-bounded. */
+        val durationMs: Long?,
+    ) : LiveSample
+
     data class Rate(
         override val atEpochMs: Long,
         val direction: SweepRunner.Direction,
@@ -32,20 +52,43 @@ sealed interface LiveSample {
 }
 
 /**
+ * The ordered stages of one manual run.
+ *
+ * Ping, download, and upload are each given the user's configured duration in
+ * turn; the size sweep runs once at the end. Labels live here rather than in
+ * the Android UI so the phone and a future iOS host describe the same run the
+ * same way.
+ */
+enum class LivePhase(val label: String) {
+    CONNECTING("Connecting"),
+    PING("Ping"),
+    DOWNLOAD_STREAM("Download stream"),
+    UPLOAD_STREAM("Upload stream"),
+    DOWNLOAD_SWEEP("Download size sweep"),
+    UPLOAD_SWEEP("Upload size sweep"),
+}
+
+/**
  * Settings for one foreground, user-triggered test run.
  *
- * Mirrors the web app's advanced settings (`PING_INTERVAL_MS`,
- * `DOWN_ROUND_BYTES`/`UP_ROUND_BYTES`, `STREAM_PHASE_DURATION_MS`,
- * `PROGRESS_THROTTLE_MS`) so the mobile session reads the same way: a
- * continuous ping loop plus back-to-back streaming rounds, with a
- * configurable size sweep run between streaming episodes. A finite duration
- * is a whole-test deadline; the `minDurationMs` name remains for stored-config
- * compatibility.
+ * [phaseDurationMs] is what the Settings screen calls "Manual ping and stream
+ * duration", and it means what that label says: **each** phase runs for that
+ * long. A 10-second choice is a 10-second ping phase, then a 10-second
+ * download stream, then a 10-second upload stream, then one size sweep — not a
+ * 10-second budget for the whole test.
+ *
+ * That distinction is the whole bug this type used to encode. As a single
+ * whole-test deadline, a 10-second choice was consumed entirely by a download
+ * episode hardcoded to 15 seconds, so the upload phase never ran at all and no
+ * upload rate was ever measured on a short test.
+ *
+ * Ping keeps running underneath the stream phases as well, matching the web
+ * app; the dedicated ping phase is what guarantees a clean latency reading
+ * taken while nothing else is saturating the link.
  */
 data class LiveTestConfig(
-    val minDurationMs: Long = MIN_DURATION_MS,
+    val phaseDurationMs: Long = DEFAULT_PHASE_DURATION_MS,
     val pingIntervalMs: Long = 3_000,
-    val streamEpisodeDurationMs: Long = 15_000,
     val downRoundBytes: Int = 500_000,
     val upRoundBytes: Int = 250_000,
     val progressThrottleMs: Long = 200,
@@ -55,8 +98,42 @@ data class LiveTestConfig(
     val streamRoundTimeoutMs: Long = 30_000,
     val sweepTimeoutMs: Long = 10_000,
 ) {
+    /** True when the user picked "Unlimited": phases run until they are stopped. */
+    val isUnlimited: Boolean get() = phaseDurationMs == Long.MAX_VALUE
+
+    /**
+     * How long the whole test takes, for the countdown and for the data
+     * projection. Three phases plus the sweep, which is not duration-bounded
+     * and so is only estimated here.
+     */
+    /** How long one phase actually runs, resolving "Unlimited" to its cycle length. */
+    val effectivePhaseDurationMs: Long
+        get() = if (isUnlimited) UNLIMITED_PHASE_MS else phaseDurationMs
+
+    /** Steps the UI counts through: three phases, plus two sweep directions. */
+    val totalSteps: Int get() = PHASE_COUNT + if (sweepEnabled) 2 else 0
+
+    fun totalDurationMs(sweepEstimateMs: Long = SWEEP_ESTIMATE_MS): Long =
+        if (isUnlimited) Long.MAX_VALUE
+        else phaseDurationMs * PHASE_COUNT + (if (sweepEnabled) sweepEstimateMs else 0L)
+
     companion object {
-        const val MIN_DURATION_MS = 60_000L
+        const val DEFAULT_PHASE_DURATION_MS = 60_000L
+
+        /** Ping, download stream, upload stream. The sweep runs once, after them. */
+        const val PHASE_COUNT = 3
+
+        /**
+         * Phase length used when the user picked "Unlimited".
+         *
+         * Unlimited has no per-phase deadline to divide up, so the run instead
+         * cycles ping -> download -> upload -> sweep on this cadence until it
+         * is stopped, matching the web app's continuous behaviour.
+         */
+        const val UNLIMITED_PHASE_MS = 15_000L
+
+        /** Rough allowance for the size sweep when estimating a whole run. */
+        const val SWEEP_ESTIMATE_MS = 20_000L
 
         /** Offered in Settings; the floor matches the web app's shortest option. */
         val DURATION_OPTIONS_MINUTES = listOf(1, 2, 5, 10)
@@ -67,14 +144,15 @@ data class LiveTestConfig(
 }
 
 /**
- * Legacy pure helper for callers that choose boundary-based scheduling. The
- * Android manual runner deliberately uses a hard user-facing deadline instead.
+ * "Has this phase run long enough yet" as a pure function.
  *
- * Split out as a pure function so "should this cycle happen again" is
- * testable without a network, a clock mock library, or a running coroutine —
- * the same reasoning [TierPolicy] documents for the background cycle.
+ * Split out so the decision is testable without a network, a clock mock
+ * library, or a running coroutine — the same reasoning [TierPolicy] documents
+ * for the background cycle. The Android runner enforces the same boundary with
+ * `withTimeout` so that an in-flight transfer is actually cancelled at it
+ * rather than merely not being started again.
  */
 object LiveTestSchedule {
-    fun isSessionDone(startedAtEpochMs: Long, nowEpochMs: Long, minDurationMs: Long): Boolean =
-        nowEpochMs - startedAtEpochMs >= minDurationMs
+    fun isPhaseDone(startedAtEpochMs: Long, nowEpochMs: Long, phaseDurationMs: Long): Boolean =
+        phaseDurationMs != Long.MAX_VALUE && nowEpochMs - startedAtEpochMs >= phaseDurationMs
 }
