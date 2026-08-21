@@ -97,7 +97,12 @@ data class DashboardState(
     /** Null when monitoring is off. Counts since [monitoringEnabled] was last switched on. */
     val testsSinceActivation: Int? = null,
     val missedSinceActivation: Int? = null,
+    /** Most recent scheduled wakeups, newest first — backs the "Schedule log" section. */
+    val scheduleLog: List<ScheduleLogEntry> = emptyList(),
 )
+
+/** One scheduled [de.sevenapp.monitor.android.work.ProbeWorker] wakeup: whether it ran, and why not if it didn't. */
+data class ScheduleLogEntry(val atEpochMs: Long, val ran: Boolean, val reason: String?)
 
 /**
  * "2/5 · Download stream · 00:07" — shared by the manual-test button label and
@@ -208,11 +213,13 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
         val resolvedManualNetwork = config.preferredTestNetwork.let { if (it == NetworkPreference.AUTO) NetworkPreference.WIFI else it }
         val monitoringEnabled = RoomMonitorStore.isMonitoringEnabled(app)
         val activatedAt = if (monitoringEnabled) RoomMonitorStore.monitoringActivatedAt(app) else null
+        val scheduleLog = store.recentCycleOutcomes(50).map { ScheduleLogEntry(it.atEpochMs, it.ran, it.reason) }
         _state.value = _state.value.copy(
             tier = entitlements.effectiveTier(now),
             monitoringEnabled = monitoringEnabled,
             testsSinceActivation = activatedAt?.let { store.cycleOutcomeCountSince(it, ran = true) },
             missedSinceActivation = activatedAt?.let { store.cycleOutcomeCountSince(it, ran = false) },
+            scheduleLog = scheduleLog,
             intervalMinutes = config.cycleIntervalMinutes,
             liveTestDurationMs = config.liveTestPhaseDurationMs,
             monitoringNetworks = config.monitoringNetworks,

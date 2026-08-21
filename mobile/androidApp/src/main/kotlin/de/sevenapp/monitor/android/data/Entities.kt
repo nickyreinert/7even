@@ -87,10 +87,11 @@ data class DataUsageEntity(
 /**
  * One row per [de.sevenapp.monitor.android.work.ProbeWorker] wakeup: whether
  * the automatic test suite actually ran as scheduled, and — when it did not —
- * why. A skip is only recorded here when the *system* prevented work that was
- * configured to happen (no network, not charging, a budget limit, and so on);
- * a sweep quietly sitting out its own configured cadence, or a suite
- * deliberately scoped to ping-only, is a normal run, not a miss.
+ * why. A skip is recorded here either when the *system* prevented work that
+ * was configured to happen (no network, not charging, a budget limit, and so
+ * on) or when the cycle itself threw before completing (reason prefixed
+ * "error: "); a sweep quietly sitting out its own configured cadence, or a
+ * suite deliberately scoped to ping-only, is a normal run, not a miss.
  */
 @Entity(tableName = "cycle_outcomes", indices = [androidx.room.Index("atEpochMs")])
 data class CycleOutcomeEntity(
@@ -214,6 +215,11 @@ interface MonitorDao {
 
     @Query("SELECT * FROM cycle_outcomes WHERE ran = 0 AND atEpochMs BETWEEN :start AND :end ORDER BY atEpochMs DESC")
     suspend fun missedCycleOutcomesBetween(start: Long, end: Long): List<CycleOutcomeEntity>
+
+    // Both ran and skipped rows, newest first — the Dashboard's "Schedule log"
+    // needs to show every scheduled wakeup, not just the missed ones.
+    @Query("SELECT * FROM cycle_outcomes ORDER BY atEpochMs DESC LIMIT :limit")
+    suspend fun recentCycleOutcomes(limit: Int): List<CycleOutcomeEntity>
 }
 
 @Database(

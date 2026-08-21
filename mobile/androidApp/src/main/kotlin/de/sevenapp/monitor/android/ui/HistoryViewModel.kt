@@ -33,7 +33,7 @@ import java.util.Calendar
 enum class HistoryAggregation(val label: String) { NONE("None — every check"), DAY("Day"), WEEK("Week") }
 
 /** Which query window the date-navigation row selects — independent of [HistoryAggregation], which only buckets points inside that window for the charts. */
-enum class HistoryRangeMode(val label: String) { WEEK("Week"), MONTH("Month") }
+enum class HistoryRangeMode(val label: String) { DAY("Day"), WEEK("Week"), MONTH("Month") }
 
 /** A scheduled automatic cycle the system blocked, and why — see [de.sevenapp.monitor.android.data.CycleOutcomeEntity]. */
 data class MissedCycle(val atEpochMs: Long, val reason: String)
@@ -128,6 +128,7 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
         val current = _state.value.rangeAnchor ?: return
         val sign = if (forward) 1 else -1
         val next = when (_state.value.rangeMode) {
+            HistoryRangeMode.DAY -> current.plus(sign, DateTimeUnit.DAY)
             HistoryRangeMode.WEEK -> current.plus(7 * sign, DateTimeUnit.DAY)
             // Normalized to the 1st of the target month, so repeated stepping
             // cannot drift a day-of-month anchor into the wrong month length.
@@ -149,8 +150,9 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun DayOfWeek.isoDayNumber(): Int = ordinal + 1
 
-    /** The period containing [anchor]: Monday-to-Monday for a week, 1st-to-1st for a month. */
+    /** The period containing [anchor]: the day itself, Monday-to-Monday for a week, or 1st-to-1st for a month. */
     private fun periodFor(anchor: LocalDate, mode: HistoryRangeMode): Pair<LocalDate, LocalDate> = when (mode) {
+        HistoryRangeMode.DAY -> anchor to anchor.plus(1, DateTimeUnit.DAY)
         HistoryRangeMode.WEEK -> {
             val start = anchor.startOfWeek()
             start to start.plus(7, DateTimeUnit.DAY)

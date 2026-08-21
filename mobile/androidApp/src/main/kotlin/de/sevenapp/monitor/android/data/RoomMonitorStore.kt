@@ -292,6 +292,9 @@ class RoomMonitorStore(
     suspend fun missedCycleOutcomesBetween(startEpochMs: Long, endEpochMs: Long): List<CycleOutcomeEntity> =
         dao.missedCycleOutcomesBetween(startEpochMs, endEpochMs)
 
+    suspend fun recentCycleOutcomes(limit: Int): List<CycleOutcomeEntity> =
+        dao.recentCycleOutcomes(limit)
+
     override suspend fun addBytesUsed(bytes: Long, metered: Boolean, atEpochMs: Long) =
         dao.insertDataUsage(DataUsageEntity(atEpochMs = atEpochMs, bytes = bytes, metered = metered))
 

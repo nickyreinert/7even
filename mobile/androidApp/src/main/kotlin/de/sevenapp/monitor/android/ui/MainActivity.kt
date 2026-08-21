@@ -16,9 +16,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.FilterChip
@@ -40,6 +42,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -53,6 +56,7 @@ import de.sevenapp.monitor.core.Format
 import de.sevenapp.monitor.core.NetworkType
 import de.sevenapp.monitor.core.Stats
 import de.sevenapp.monitor.probe.LiveTestConfig
+import kotlinx.coroutines.launch
 
 private enum class Screen { MAIN, HISTORY, SETTINGS, HELP }
 
@@ -177,6 +181,9 @@ fun DashboardScreen(
 ) {
     val state by viewModel.state.collectAsState()
     var logOpen by rememberSaveable { mutableStateOf(false) }
+    var scheduleLogOpen by rememberSaveable { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
     // The Dashboard and Settings screens each hold their own ViewModel
     // instance over the same persisted config — switching to Settings and
     // flipping "automatic measurement" there left this screen's copy of
@@ -186,7 +193,7 @@ fun DashboardScreen(
     // each entry is what actually re-syncs it.
     androidx.compose.runtime.LaunchedEffect(Unit) { viewModel.refresh() }
 
-    LazyColumn(modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    LazyColumn(modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp), state = listState) {
         item {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -224,6 +231,15 @@ fun DashboardScreen(
                                 }
                             },
                             style = MaterialTheme.typography.bodySmall,
+                            // Jumps down to the "Schedule log" section at the
+                            // bottom instead of making the user hunt for why a
+                            // run was missed.
+                            modifier = Modifier.clickable {
+                                scheduleLogOpen = true
+                                // Coerced to the last real item by LazyColumn itself.
+                                coroutineScope.launch { listState.animateScrollToItem(Int.MAX_VALUE) }
+                            },
+                            textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
                         )
                     }
                     Text("Use connection", style = MaterialTheme.typography.labelMedium)
@@ -354,6 +370,41 @@ fun DashboardScreen(
                     Text("Size Sweep · upload — green=passed, red=failed", style = MaterialTheme.typography.labelMedium)
                     SweepResultChart(state.latestUploadSweep, heightDp = sweepHeight(state.latestUploadSweep))
                     Text("Showing only the latest checks. Browse History for older measurements.", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+        item { ScheduleLogCard(state.scheduleLog, expanded = scheduleLogOpen, onToggle = { scheduleLogOpen = !scheduleLogOpen }) }
+    }
+}
+
+/**
+ * Every recent [de.sevenapp.monitor.android.work.ProbeWorker] wakeup — whether
+ * it ran, and briefly why not when it didn't (no power, Android blocked it,
+ * and so on). Collapsed by default; the "N missed since activated" summary
+ * above links straight down to it.
+ */
+@Composable
+private fun ScheduleLogCard(entries: List<ScheduleLogEntry>, expanded: Boolean, onToggle: () -> Unit) {
+    Column {
+        TextButton(onClick = onToggle, modifier = Modifier.fillMaxWidth()) {
+            Text(if (expanded) "Hide schedule log" else "Show schedule log")
+        }
+        if (expanded) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Schedule log", style = MaterialTheme.typography.titleMedium)
+                    if (entries.isEmpty()) {
+                        Text("No scheduled checks yet.", style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        entries.forEach { entry ->
+                            val at = java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT)
+                                .format(java.util.Date(entry.atEpochMs))
+                            Text(
+                                "$at · " + if (entry.ran) "Successful" else "Not run – ${entry.reason ?: "unknown reason"}",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -545,6 +596,7 @@ private fun HistoryScreen(
     val state by viewModel.state.collectAsState()
     var ssidMenuOpen by rememberSaveable { mutableStateOf(false) }
     var aggregationMenuOpen by rememberSaveable { mutableStateOf(false) }
+    var missedCyclesOpen by rememberSaveable { mutableStateOf(false) }
     LazyColumn(modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -655,26 +707,44 @@ private fun HistoryScreen(
             }
         }
         item { SweepOverviewCard(state.sweepSizeStats) }
-        item { MissedCyclesCard(state.missedCycles) }
+        item {
+            MissedCyclesCard(
+                state.missedCycles,
+                expanded = missedCyclesOpen,
+                onToggle = { missedCyclesOpen = !missedCyclesOpen },
+            )
+        }
         if (state.samples.isEmpty()) item { Text("No measurements yet. Start monitoring to build your history.") }
     }
 }
 
+/**
+ * Unsuccessful scheduled checks for the currently selected day/week/month —
+ * brief reason per entry, not a text wall. Collapsed by default, same pattern
+ * as the Dashboard's "Schedule log".
+ */
 @Composable
-private fun MissedCyclesCard(missedCycles: List<MissedCycle>) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Missed automatic checks", style = MaterialTheme.typography.titleMedium)
-            Text(
-                "Cycles the system blocked in this period — not due to your own sweep-frequency setting.",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            if (missedCycles.isEmpty()) {
-                Text("No missed checks in this period.", style = MaterialTheme.typography.bodySmall)
-            } else {
-                missedCycles.forEach { missed ->
-                    val at = java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(java.util.Date(missed.atEpochMs))
-                    Text("$at · ${missed.reason}", style = MaterialTheme.typography.bodyMedium)
+private fun MissedCyclesCard(missedCycles: List<MissedCycle>, expanded: Boolean, onToggle: () -> Unit) {
+    Column {
+        TextButton(onClick = onToggle, modifier = Modifier.fillMaxWidth()) {
+            Text(if (expanded) "Hide schedule log" else "Show schedule log (${missedCycles.size} missed)")
+        }
+        if (expanded) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Missed automatic checks", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Cycles the system blocked in this period — not due to your own sweep-frequency setting.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    if (missedCycles.isEmpty()) {
+                        Text("No missed checks in this period.", style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        missedCycles.forEach { missed ->
+                            val at = java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(java.util.Date(missed.atEpochMs))
+                            Text("$at · ${missed.reason}", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
                 }
             }
         }
@@ -766,6 +836,8 @@ private fun historyRangeLabel(state: HistoryState): String {
     if (state.rangeAnchor == null) return "No data yet"
     val locale = java.util.Locale.getDefault()
     return when (state.rangeMode) {
+        HistoryRangeMode.DAY ->
+            java.text.SimpleDateFormat("EEE, MMM d", locale).format(java.util.Date(state.rangeStartEpochMs))
         HistoryRangeMode.WEEK -> {
             val dayFormat = java.text.SimpleDateFormat("MMM d", locale)
             val start = dayFormat.format(java.util.Date(state.rangeStartEpochMs))

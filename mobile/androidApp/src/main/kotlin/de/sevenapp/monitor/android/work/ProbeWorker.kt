@@ -80,6 +80,10 @@ class ProbeWorker(
             Result.success()
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
+            // Previously this path recorded nothing at all, so a genuinely
+            // broken cycle (as opposed to a recognized system block) was
+            // invisible in the schedule log — it just silently retried.
+            store.recordCycleOutcome(now, ran = false, reason = "error: ${t.message?.take(80) ?: t::class.simpleName ?: "unknown"}")
             // Retry, not failure: Result.failure() would stop the periodic
             // chain permanently, and the usual cause here is a transient
             // network problem — which is itself the thing we are measuring.
