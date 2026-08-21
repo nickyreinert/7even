@@ -56,7 +56,8 @@ object AutomaticTransfers {
 
     /** Usage counters the caller reads from the store. */
     data class Usage(
-        val fullSweepsToday: Int,
+        /** Null if no full sweep has ever run — always allowed in that case. */
+        val lastFullSweepAtEpochMs: Long?,
         val meteredBytesToday: Long,
         val meteredBytesThisMonth: Long,
     )
@@ -82,6 +83,7 @@ object AutomaticTransfers {
         config: ProbeConfig,
         deviceState: DeviceState,
         usage: Usage,
+        nowEpochMs: Long,
     ): Decision {
         val plan = planFor(config, deviceState.networkType)
         if (plan.movesNothing) return Decision.Skip("no automatic transfers enabled")
@@ -96,11 +98,16 @@ object AutomaticTransfers {
             return Decision.Skip("not charging")
         }
 
-        // The per-day sweep cap applies to the path that actually runs sweeps.
-        // It used to be consulted only by the dormant HTTP throughput tier.
-        val sweepAllowed = plan.runSweep && usage.fullSweepsToday < config.fullSweepsPerDay
+        // A cadence, not a count: a sweep is allowed once at least
+        // `sweepFrequency.minGapMs` has passed since the last one. This is a
+        // deliberate, user-chosen pacing decision, not the system blocking
+        // work the schedule expected — callers should not treat this
+        // particular reason as "the suite failed to run".
+        val lastSweep = usage.lastFullSweepAtEpochMs
+        val sweepDue = lastSweep == null || (nowEpochMs - lastSweep) >= config.sweepFrequency.minGapMs
+        val sweepAllowed = plan.runSweep && sweepDue
         val effective = plan.copy(runSweep = sweepAllowed)
-        if (effective.movesNothing) return Decision.Skip("daily sweep limit reached")
+        if (effective.movesNothing) return Decision.Skip("sweep not due yet")
 
         // The OS decides what is metered, not the transport type: a tethered or
         // user-marked Wi-Fi spends the same allowance as cellular, and

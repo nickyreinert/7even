@@ -20,6 +20,7 @@ import de.sevenapp.monitor.core.ProbeTier
 import de.sevenapp.monitor.core.ThroughputSample
 import de.sevenapp.monitor.data.MonitorStore
 import de.sevenapp.monitor.probe.ProbeConfig
+import de.sevenapp.monitor.probe.SweepFrequency
 import de.sevenapp.monitor.probe.SweepPlan
 import de.sevenapp.monitor.probe.FailureReason
 import de.sevenapp.monitor.probe.LatestSweeps
@@ -79,6 +80,9 @@ class RoomMonitorStore(
             automaticStreamEnabled = prefs[KEY_AUTO_STREAM] ?: defaults.automaticStreamEnabled,
             automaticSweepEnabled = prefs[KEY_AUTO_SWEEP] ?: defaults.automaticSweepEnabled,
             automaticRequiresCharging = prefs[KEY_AUTO_CHARGING] ?: defaults.automaticRequiresCharging,
+            sweepFrequency = prefs[KEY_SWEEP_FREQUENCY]?.let {
+                runCatching { SweepFrequency.valueOf(it) }.getOrNull()
+            } ?: defaults.sweepFrequency,
             preferredTestNetwork = prefs[KEY_PREFERRED_NETWORK]?.let {
                 runCatching { NetworkPreference.valueOf(it) }.getOrNull()
             } ?: defaults.preferredTestNetwork,
@@ -117,6 +121,7 @@ class RoomMonitorStore(
             p[KEY_AUTO_STREAM] = config.automaticStreamEnabled
             p[KEY_AUTO_SWEEP] = config.automaticSweepEnabled
             p[KEY_AUTO_CHARGING] = config.automaticRequiresCharging
+            p[KEY_SWEEP_FREQUENCY] = config.sweepFrequency.name
             p[KEY_PREFERRED_NETWORK] = config.preferredTestNetwork.name
             p[KEY_LIGHT_DOWN] = config.lightDownBytes
             p[KEY_LIGHT_UP] = config.lightUpBytes
@@ -249,6 +254,8 @@ class RoomMonitorStore(
 
     suspend fun oldestMeasurementAt(): Long? = listOfNotNull(dao.oldestPingAt(), dao.oldestThroughputAt()).minOrNull()
 
+    suspend fun latestMeasurementAt(): Long? = listOfNotNull(dao.latestPingAt(), dao.latestThroughputAt()).maxOrNull()
+
     override suspend fun throughputBetween(startEpochMs: Long, endEpochMs: Long): List<ThroughputSample> =
         dao.throughputBetween(startEpochMs, endEpochMs).map {
             ThroughputSample(
@@ -267,7 +274,23 @@ class RoomMonitorStore(
 
     override suspend fun fullSweepCountSince(sinceEpochMs: Long): Int = dao.fullSweepCountSince(sinceEpochMs)
 
+    override suspend fun latestFullSweepAt(): Long? = dao.latestFullSweepAt()
+
     override suspend fun recordFullSweep(atEpochMs: Long) = dao.insertFullSweep(FullSweepEntity(atEpochMs = atEpochMs))
+
+    /**
+     * One row per [de.sevenapp.monitor.android.work.ProbeWorker] wakeup — see
+     * [CycleOutcomeEntity]'s doc comment for exactly which skips count as
+     * `ran = false`.
+     */
+    suspend fun recordCycleOutcome(atEpochMs: Long, ran: Boolean, reason: String? = null) =
+        dao.insertCycleOutcome(CycleOutcomeEntity(atEpochMs = atEpochMs, ran = ran, reason = reason))
+
+    suspend fun cycleOutcomeCountSince(sinceEpochMs: Long, ran: Boolean): Int =
+        dao.cycleOutcomeCountSince(sinceEpochMs, ran)
+
+    suspend fun missedCycleOutcomesBetween(startEpochMs: Long, endEpochMs: Long): List<CycleOutcomeEntity> =
+        dao.missedCycleOutcomesBetween(startEpochMs, endEpochMs)
 
     override suspend fun addBytesUsed(bytes: Long, metered: Boolean, atEpochMs: Long) =
         dao.insertDataUsage(DataUsageEntity(atEpochMs = atEpochMs, bytes = bytes, metered = metered))
@@ -392,6 +415,7 @@ class RoomMonitorStore(
         private val KEY_AUTO_STREAM = booleanPreferencesKey("automatic_stream_enabled")
         private val KEY_AUTO_SWEEP = booleanPreferencesKey("automatic_sweep_enabled")
         private val KEY_AUTO_CHARGING = booleanPreferencesKey("automatic_requires_charging")
+        private val KEY_SWEEP_FREQUENCY = stringPreferencesKey("sweep_frequency")
         private val KEY_LATEST_DOWN_SWEEP = stringPreferencesKey("latest_down_sweep")
         private val KEY_LATEST_UP_SWEEP = stringPreferencesKey("latest_up_sweep")
         private val KEY_PREFERRED_NETWORK = stringPreferencesKey("preferred_test_network")
@@ -410,6 +434,12 @@ class RoomMonitorStore(
 
         val KEY_MONITORING_ENABLED = booleanPreferencesKey("monitoring_enabled")
         val KEY_REPORT_PERIOD = stringPreferencesKey("report_period")
+        /** Monday=1 through Sunday=7, matching ProbeConfig.automaticDayOfWeek. Only consulted when the period is WEEKLY. */
+        val KEY_REPORT_DAY_OF_WEEK = intPreferencesKey("report_day_of_week")
+        /** 1..31, clamped to the shorter month when it doesn't have that many days. Only consulted when the period is MONTHLY. */
+        val KEY_REPORT_DAY_OF_MONTH = intPreferencesKey("report_day_of_month")
+        /** Always overwritten on enable — unlike [KEY_REPORTING_SINCE], which tracks the first-ever activation. */
+        val KEY_MONITORING_ACTIVATED_AT = longPreferencesKey("monitoring_activated_at")
         /** When a report was last **generated** — this is what drives scheduling. */
         val KEY_LAST_REPORT_AT = longPreferencesKey("last_report_at")
         /** When monitoring was first switched on; the baseline for the first report. */
@@ -429,7 +459,7 @@ class RoomMonitorStore(
                     context.applicationContext,
                     MonitorDatabase::class.java,
                     "seven-monitor.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build(),
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build(),
             ).also { instance = it }
         }
 
@@ -456,6 +486,22 @@ class RoomMonitorStore(
                 )
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_sweep_rungs_bytes ON sweep_rungs(bytes)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_sweep_rungs_direction ON sweep_rungs(direction)")
+            }
+        }
+
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS cycle_outcomes (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        atEpochMs INTEGER NOT NULL,
+                        ran INTEGER NOT NULL,
+                        reason TEXT
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_cycle_outcomes_atEpochMs ON cycle_outcomes(atEpochMs)")
             }
         }
 
@@ -551,6 +597,27 @@ class RoomMonitorStore(
 
         suspend fun setReportPeriod(context: Context, period: ReportPeriod) {
             context.settings.edit { it[KEY_REPORT_PERIOD] = period.name }
+        }
+
+        suspend fun reportDayOfWeek(context: Context): Int =
+            context.settings.data.first()[KEY_REPORT_DAY_OF_WEEK] ?: 1
+
+        suspend fun setReportDayOfWeek(context: Context, isoDayOfWeek: Int) {
+            context.settings.edit { it[KEY_REPORT_DAY_OF_WEEK] = isoDayOfWeek.coerceIn(1, 7) }
+        }
+
+        suspend fun reportDayOfMonth(context: Context): Int =
+            context.settings.data.first()[KEY_REPORT_DAY_OF_MONTH] ?: 1
+
+        suspend fun setReportDayOfMonth(context: Context, dayOfMonth: Int) {
+            context.settings.edit { it[KEY_REPORT_DAY_OF_MONTH] = dayOfMonth.coerceIn(1, 31) }
+        }
+
+        suspend fun monitoringActivatedAt(context: Context): Long? =
+            context.settings.data.first()[KEY_MONITORING_ACTIVATED_AT]
+
+        suspend fun markMonitoringActivated(context: Context, epochMs: Long) {
+            context.settings.edit { it[KEY_MONITORING_ACTIVATED_AT] = epochMs }
         }
     }
 }

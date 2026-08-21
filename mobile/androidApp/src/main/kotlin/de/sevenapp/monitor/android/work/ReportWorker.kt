@@ -64,6 +64,8 @@ class ReportWorker(
             }
 
             val period = RoomMonitorStore.reportPeriod(ctx)
+            val weekAnchorDay = RoomMonitorStore.reportDayOfWeek(ctx)
+            val monthAnchorDay = RoomMonitorStore.reportDayOfMonth(ctx)
             // First install has no prior delivery. Using epoch zero as the
             // baseline made the very first wake immediately overdue, producing
             // a report about a window the app had not been installed for. The
@@ -75,7 +77,7 @@ class ReportWorker(
                     return Result.success()
                 }
 
-            val report = coordinator.buildDueReport(period, now, baseline)
+            val report = coordinator.buildDueReport(period, now, baseline, weekAnchorDay, monthAnchorDay)
                 ?: return Result.success() // nothing due; not a failure
 
             // Generated and delivered are separate facts. The report is stored
@@ -111,7 +113,7 @@ class ReportWorker(
         val intent = PendingIntent.getActivity(
             context,
             0,
-            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 
@@ -138,29 +140,17 @@ class ReportWorker(
         ReportPeriod.MONTHLY -> "Monthly connection report"
     }
 
+    /** Average download, average upload, and the calculated connection-quality score — the three figures the user reads at a glance. */
     private fun summary(report: Report): String {
         val s = report.overall
-        val uptime = s.stability?.uptimePct?.let { "${it}% uptime" } ?: "no uptime data"
-        val latency = Format.millis(s.latencyMedianMs)
-        return "$uptime · $latency median · ${report.drops.size} drop(s)"
+        val down = Format.mbps(s.downMedianMbps)
+        val up = Format.mbps(s.upMedianMbps)
+        val quality = s.stability?.composite?.let { "%.0f/100".format(it) } ?: "—"
+        return "${down.value} ${down.unit} down · ${up.value} ${up.unit} up · Quality $quality"
     }
 
     private fun detail(report: Report): String = buildString {
-        val s = report.overall
         appendLine(summary(report))
-        appendLine()
-        appendLine("Latency  median ${Format.millis(s.latencyMedianMs)}, p95 ${Format.millis(s.latencyP95Ms)}")
-        appendLine("Jitter   ${Format.millis(s.jitterMs)}")
-        appendLine("Loss     ${Format.percent(s.lossPct)}")
-
-        if (s.throughputSampleCount > 0) {
-            val down = Format.mbps(s.downMedianMbps)
-            val up = Format.mbps(s.upMedianMbps)
-            // State the sample count: throughput is sampled sparsely by design,
-            // and presenting a median of three samples as if it were continuous
-            // would overstate what was measured.
-            appendLine("Speed    ${down.value} ${down.unit} down / ${up.value} ${up.unit} up (${s.throughputSampleCount} samples)")
-        }
 
         if (report.coverage.isPartial) {
             appendLine()

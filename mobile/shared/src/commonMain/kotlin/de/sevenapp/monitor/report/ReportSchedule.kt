@@ -6,6 +6,7 @@ import kotlinx.datetime.Instant
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.LocalTime
+import kotlinx.datetime.Month
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.atStartOfDayIn
 import kotlinx.datetime.plus
@@ -34,8 +35,19 @@ object ReportSchedule {
      * complete preceding period, not a rolling window ending now. A "weekly"
      * report that covers a partial current week can never be compared against
      * the previous one.
+     *
+     * [weekAnchorDay] (Monday=1..Sunday=7) and [monthAnchorDay] (1..31, clamped
+     * to the shorter month when it doesn't have that many days) let the user
+     * choose which day a week/month period starts on; they default to the
+     * calendar's own Monday/1st.
      */
-    fun windowFor(period: ReportPeriod, deliveryEpochMs: Long, zone: TimeZone): Window {
+    fun windowFor(
+        period: ReportPeriod,
+        deliveryEpochMs: Long,
+        zone: TimeZone,
+        weekAnchorDay: Int = 1,
+        monthAnchorDay: Int = 1,
+    ): Window {
         val deliveryDate = Instant.fromEpochMilliseconds(deliveryEpochMs).toLocalDateTime(zone).date
 
         val (start, end) = when (period) {
@@ -44,14 +56,13 @@ object ReportSchedule {
                 yesterday to deliveryDate
             }
             ReportPeriod.WEEKLY -> {
-                // Previous Monday 00:00 through this Monday 00:00.
-                val thisWeekStart = deliveryDate.startOfWeek()
+                val thisWeekStart = deliveryDate.startOfWeek(weekAnchorDay)
                 thisWeekStart.minusDays(7) to thisWeekStart
             }
             ReportPeriod.MONTHLY -> {
-                val thisMonthStart = LocalDate(deliveryDate.year, deliveryDate.month, 1)
-                val prevMonthStart = thisMonthStart.plus(-1, DateTimeUnit.MONTH)
-                prevMonthStart to thisMonthStart
+                val thisPeriodStart = monthPeriodStart(deliveryDate, monthAnchorDay)
+                val prevPeriodStart = monthPeriodStart(thisPeriodStart.minusDays(1), monthAnchorDay)
+                prevPeriodStart to thisPeriodStart
             }
         }
 
@@ -61,13 +72,19 @@ object ReportSchedule {
         )
     }
 
-    /** Next delivery instant strictly after [afterEpochMs]. */
-    fun nextDelivery(period: ReportPeriod, afterEpochMs: Long, zone: TimeZone): Long {
+    /** Next delivery instant strictly after [afterEpochMs]. See [windowFor] for the anchor parameters. */
+    fun nextDelivery(
+        period: ReportPeriod,
+        afterEpochMs: Long,
+        zone: TimeZone,
+        weekAnchorDay: Int = 1,
+        monthAnchorDay: Int = 1,
+    ): Long {
         val after = Instant.fromEpochMilliseconds(afterEpochMs).toLocalDateTime(zone)
         var candidateDate = when (period) {
             ReportPeriod.DAILY -> after.date
-            ReportPeriod.WEEKLY -> after.date.startOfWeek()
-            ReportPeriod.MONTHLY -> LocalDate(after.date.year, after.date.month, 1)
+            ReportPeriod.WEEKLY -> after.date.startOfWeek(weekAnchorDay)
+            ReportPeriod.MONTHLY -> monthPeriodStart(after.date, monthAnchorDay)
         }
 
         fun instantOf(d: LocalDate) = LocalDateTime(d, DELIVERY_TIME).toInstant(zone).toEpochMilliseconds()
@@ -76,7 +93,7 @@ object ReportSchedule {
             candidateDate = when (period) {
                 ReportPeriod.DAILY -> candidateDate.plusDays(1)
                 ReportPeriod.WEEKLY -> candidateDate.plusDays(7)
-                ReportPeriod.MONTHLY -> candidateDate.plus(1, DateTimeUnit.MONTH)
+                ReportPeriod.MONTHLY -> monthPeriodStart(candidateDate.plus(1, DateTimeUnit.MONTH), monthAnchorDay)
             }
         }
         return instantOf(candidateDate)
@@ -101,9 +118,25 @@ object ReportSchedule {
         return expected.takeIf { it > 0 }
     }
 
-    private fun LocalDate.startOfWeek(): LocalDate {
-        val shift = (dayOfWeek.isoDayNumber() - DayOfWeek.MONDAY.isoDayNumber())
+    /** The most recent [anchorIsoDay] (Monday=1..Sunday=7) on or before this date. */
+    private fun LocalDate.startOfWeek(anchorIsoDay: Int): LocalDate {
+        val shift = ((dayOfWeek.isoDayNumber() - anchorIsoDay) % 7 + 7) % 7
         return minusDays(shift.toLong())
+    }
+
+    /** The last valid day of [year]/[month], for clamping an anchor day that doesn't fit every month. */
+    private fun lastDayOfMonth(year: Int, month: Month): Int =
+        LocalDate(year, month, 1).plus(1, DateTimeUnit.MONTH).minusDays(1).dayOfMonth
+
+    private fun clampedAnchor(year: Int, month: Month, anchorDay: Int): LocalDate =
+        LocalDate(year, month, anchorDay.coerceAtMost(lastDayOfMonth(year, month)))
+
+    /** The most recent month-anchor date (clamped per month) on or before this date. */
+    private fun monthPeriodStart(date: LocalDate, anchorDay: Int): LocalDate {
+        val thisMonthAnchor = clampedAnchor(date.year, date.month, anchorDay)
+        if (date >= thisMonthAnchor) return thisMonthAnchor
+        val prevMonth = LocalDate(date.year, date.month, 1).plus(-1, DateTimeUnit.MONTH)
+        return clampedAnchor(prevMonth.year, prevMonth.month, anchorDay)
     }
 
     private fun DayOfWeek.isoDayNumber(): Int = ordinal + 1

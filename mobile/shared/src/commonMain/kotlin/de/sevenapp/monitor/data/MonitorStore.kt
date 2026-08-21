@@ -60,6 +60,9 @@ interface MonitorStore {
     suspend fun fullSweepCountSince(sinceEpochMs: Long): Int
     suspend fun recordFullSweep(atEpochMs: Long)
 
+    /** When the most recent full sweep ran, for the sweep-frequency cadence gate. Null if none yet. */
+    suspend fun latestFullSweepAt(): Long? = null
+
     suspend fun addBytesUsed(bytes: Long, metered: Boolean, atEpochMs: Long)
     suspend fun bytesUsedSince(sinceEpochMs: Long, metered: Boolean): Long
 

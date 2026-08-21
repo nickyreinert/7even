@@ -91,6 +91,50 @@ class ReportScheduleTest {
         val w = ReportSchedule.Window(0, 86_400_000)
         assertNull(ReportSchedule.expectedSamples(w, 7 * 24 * 60, 3))
     }
+
+    @Test
+    fun weeklyWindowHonorsACustomAnchorDay() {
+        // 2026-08-19 is itself a Wednesday (isoDayNumber 3), so with a
+        // Wednesday anchor the previous complete period is Aug 12 .. Aug 19.
+        val w = ReportSchedule.windowFor(ReportPeriod.WEEKLY, at("2026-08-19T09:00:00Z"), utc, weekAnchorDay = 3)
+        assertEquals("2026-08-12T00:00", Instant.fromEpochMilliseconds(w.startEpochMs).toLocalDateTime(utc).toString())
+        assertEquals("2026-08-19T00:00", Instant.fromEpochMilliseconds(w.endEpochMs).toLocalDateTime(utc).toString())
+    }
+
+    @Test
+    fun monthlyWindowHonorsACustomAnchorDay() {
+        // Delivered after the 15th: the just-completed period is Jul15..Aug15.
+        val after = ReportSchedule.windowFor(ReportPeriod.MONTHLY, at("2026-08-19T09:00:00Z"), utc, monthAnchorDay = 15)
+        assertEquals("2026-07-15T00:00", Instant.fromEpochMilliseconds(after.startEpochMs).toLocalDateTime(utc).toString())
+        assertEquals("2026-08-15T00:00", Instant.fromEpochMilliseconds(after.endEpochMs).toLocalDateTime(utc).toString())
+
+        // Delivered before the 15th: August's anchor has not arrived yet, so
+        // the just-completed period is the one before it, Jun15..Jul15.
+        val before = ReportSchedule.windowFor(ReportPeriod.MONTHLY, at("2026-08-10T09:00:00Z"), utc, monthAnchorDay = 15)
+        assertEquals("2026-06-15T00:00", Instant.fromEpochMilliseconds(before.startEpochMs).toLocalDateTime(utc).toString())
+        assertEquals("2026-07-15T00:00", Instant.fromEpochMilliseconds(before.endEpochMs).toLocalDateTime(utc).toString())
+    }
+
+    @Test
+    fun monthlyAnchorDayClampsToShortMonths() {
+        // April has 30 days: an anchor of 31 must land on April 30, not spill
+        // into May.
+        val w = ReportSchedule.windowFor(ReportPeriod.MONTHLY, at("2026-05-05T09:00:00Z"), utc, monthAnchorDay = 31)
+        assertEquals("2026-04-30T00:00", Instant.fromEpochMilliseconds(w.endEpochMs).toLocalDateTime(utc).toString())
+    }
+
+    @Test
+    fun nextDeliveryHonorsACustomWeekAnchor() {
+        // Landing exactly on the anchor's delivery instant must advance to the
+        // following week, not repeat the same one.
+        val next = ReportSchedule.nextDelivery(
+            ReportPeriod.WEEKLY,
+            at("2026-08-19T09:00:00Z"),
+            utc,
+            weekAnchorDay = 3,
+        )
+        assertEquals("2026-08-26T09:00", Instant.fromEpochMilliseconds(next).toLocalDateTime(utc).toString())
+    }
 }
 
 class FormatTest {

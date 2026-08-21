@@ -3,6 +3,7 @@ package de.sevenapp.monitor.android.work
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -10,6 +11,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.content.ContextCompat
+import de.sevenapp.monitor.android.ui.MainActivity
 
 /**
  * Keeps a manual live test alive and visible while the app is minimized.
@@ -60,14 +62,22 @@ class LiveTestForegroundService : Service() {
         manager.notify(ID, buildNotification(text))
     }
 
-    private fun buildNotification(text: String): Notification =
-        Notification.Builder(this, CHANNEL)
+    private fun buildNotification(text: String): Notification {
+        val contentIntent = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        return Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentTitle("7even — live test running")
             .setContentText(text)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setContentIntent(contentIntent)
             .build()
+    }
 
     companion object {
         private const val CHANNEL = "live_test_progress"

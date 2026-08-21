@@ -84,6 +84,23 @@ data class DataUsageEntity(
     val metered: Boolean,
 )
 
+/**
+ * One row per [de.sevenapp.monitor.android.work.ProbeWorker] wakeup: whether
+ * the automatic test suite actually ran as scheduled, and — when it did not —
+ * why. A skip is only recorded here when the *system* prevented work that was
+ * configured to happen (no network, not charging, a budget limit, and so on);
+ * a sweep quietly sitting out its own configured cadence, or a suite
+ * deliberately scoped to ping-only, is a normal run, not a miss.
+ */
+@Entity(tableName = "cycle_outcomes", indices = [androidx.room.Index("atEpochMs")])
+data class CycleOutcomeEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val atEpochMs: Long,
+    val ran: Boolean,
+    /** Null when [ran] is true. */
+    val reason: String?,
+)
+
 @Dao
 interface MonitorDao {
 
@@ -99,11 +116,17 @@ interface MonitorDao {
     @Query("SELECT MIN(atEpochMs) FROM ping_samples")
     suspend fun oldestPingAt(): Long?
 
+    @Query("SELECT MAX(atEpochMs) FROM ping_samples")
+    suspend fun latestPingAt(): Long?
+
     @Query("SELECT * FROM throughput_samples WHERE atEpochMs BETWEEN :start AND :end ORDER BY atEpochMs")
     suspend fun throughputBetween(start: Long, end: Long): List<ThroughputEntity>
 
     @Query("SELECT MIN(atEpochMs) FROM throughput_samples")
     suspend fun oldestThroughputAt(): Long?
+
+    @Query("SELECT MAX(atEpochMs) FROM throughput_samples")
+    suspend fun latestThroughputAt(): Long?
 
     @Query("SELECT * FROM ping_samples ORDER BY atEpochMs DESC LIMIT :limit")
     suspend fun recentPings(limit: Int): List<PingEntity>
@@ -136,6 +159,9 @@ interface MonitorDao {
 
     @Query("SELECT COUNT(*) FROM full_sweeps WHERE atEpochMs >= :since")
     suspend fun fullSweepCountSince(since: Long): Int
+
+    @Query("SELECT MAX(atEpochMs) FROM full_sweeps")
+    suspend fun latestFullSweepAt(): Long?
 
     @Query(
         """
@@ -180,6 +206,14 @@ interface MonitorDao {
     suspend fun pruneDrops(before: Long)
 
     @Query("DELETE FROM drop_events") suspend fun clearDrops()
+
+    @Insert suspend fun insertCycleOutcome(row: CycleOutcomeEntity)
+
+    @Query("SELECT COUNT(*) FROM cycle_outcomes WHERE ran = :ran AND atEpochMs >= :since")
+    suspend fun cycleOutcomeCountSince(since: Long, ran: Boolean): Int
+
+    @Query("SELECT * FROM cycle_outcomes WHERE ran = 0 AND atEpochMs BETWEEN :start AND :end ORDER BY atEpochMs DESC")
+    suspend fun missedCycleOutcomesBetween(start: Long, end: Long): List<CycleOutcomeEntity>
 }
 
 @Database(
@@ -190,8 +224,9 @@ interface MonitorDao {
         FullSweepEntity::class,
         DataUsageEntity::class,
         SweepRungEntity::class,
+        CycleOutcomeEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class MonitorDatabase : RoomDatabase() {

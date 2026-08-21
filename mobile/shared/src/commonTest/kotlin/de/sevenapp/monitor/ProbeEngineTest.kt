@@ -10,6 +10,7 @@ import de.sevenapp.monitor.probe.DeviceState
 import de.sevenapp.monitor.probe.FailureReason
 import de.sevenapp.monitor.probe.ProbeConfig
 import de.sevenapp.monitor.probe.ProbeEngine
+import de.sevenapp.monitor.probe.SweepFrequency
 import de.sevenapp.monitor.probe.TierPolicy
 import de.sevenapp.monitor.probe.Transport
 import de.sevenapp.monitor.probe.TransferResult
@@ -334,33 +335,37 @@ class AutomaticTransfersTest {
         metered: Boolean = true,
     ) = DeviceState(networkType = network, isCharging = charging, isMetered = metered)
 
-    private val noUsage = AutomaticTransfers.Usage(0, 0, 0)
+    private val now = 1_700_000_000_000L
+    private val noUsage = AutomaticTransfers.Usage(null, 0, 0)
 
     @Test
     fun nothingRunsWhenNoAutomaticTransferIsEnabled() {
-        val decision = AutomaticTransfers.decide(ProbeConfig(), state(), noUsage)
+        val decision = AutomaticTransfers.decide(ProbeConfig(), state(), noUsage, now)
         assertIs<AutomaticTransfers.Decision.Skip>(decision)
     }
 
     @Test
-    fun theDailySweepCapBoundsTheRunnerNotJustTheDormantHttpTier() {
-        // 96 wakes a day at the 15-minute default. The cap, not the WorkManager
-        // cadence, is what has to bound the number of sweeps.
-        val config = ProbeConfig(automaticSweepEnabled = true, fullSweepsPerDay = 2)
-        var sweepsToday = 0
+    fun theSweepFrequencyCadenceBoundsHowOftenASweepRuns() {
+        // 96 wakes a day at the 15-minute default. The configured cadence, not
+        // the WorkManager interval, is what has to bound how often a sweep
+        // actually runs.
+        val config = ProbeConfig(automaticSweepEnabled = true, sweepFrequency = SweepFrequency.HOURLY)
+        var lastSweepAt: Long? = null
         var runs = 0
-        repeat(96) {
+        repeat(96) { i ->
+            val wakeAt = now + i * 15 * 60_000L
             val decision = AutomaticTransfers.decide(
                 config,
                 state(network = NetworkType.WIFI, metered = false),
-                AutomaticTransfers.Usage(sweepsToday, 0, 0),
+                AutomaticTransfers.Usage(lastSweepAt, 0, 0),
+                wakeAt,
             )
             if (decision is AutomaticTransfers.Decision.Run && decision.plan.runSweep) {
                 runs++
-                sweepsToday++
+                lastSweepAt = wakeAt
             }
         }
-        assertEquals(2, runs, "the configured daily sweep cap did not bound execution")
+        assertEquals(24, runs, "the hourly sweep cadence did not bound execution to once per hour")
     }
 
     @Test
@@ -369,7 +374,7 @@ class AutomaticTransfersTest {
         // from "is it cellular" spent this allowance silently.
         val config = ProbeConfig(automaticStreamEnabled = true)
         val exhausted = AutomaticTransfers.Usage(
-            fullSweepsToday = 0,
+            lastFullSweepAtEpochMs = null,
             meteredBytesToday = config.automaticDailyMeteredBytes,
             meteredBytesThisMonth = 0,
         )
@@ -377,6 +382,7 @@ class AutomaticTransfersTest {
             config,
             state(network = NetworkType.WIFI, metered = true),
             exhausted,
+            now,
         )
         assertIs<AutomaticTransfers.Decision.Skip>(decision)
     }
@@ -387,7 +393,8 @@ class AutomaticTransfersTest {
         val decision = AutomaticTransfers.decide(
             config,
             state(network = NetworkType.WIFI, metered = false),
-            AutomaticTransfers.Usage(0, Long.MAX_VALUE / 4, Long.MAX_VALUE / 4),
+            AutomaticTransfers.Usage(null, Long.MAX_VALUE / 4, Long.MAX_VALUE / 4),
+            now,
         )
         assertIs<AutomaticTransfers.Decision.Run>(decision)
     }
@@ -396,10 +403,10 @@ class AutomaticTransfersTest {
     fun chargingIsRequiredOnlyWhenConfigured() {
         val config = ProbeConfig(automaticStreamEnabled = true, automaticRequiresCharging = true)
         assertIs<AutomaticTransfers.Decision.Skip>(
-            AutomaticTransfers.decide(config, state(charging = false, metered = false), noUsage),
+            AutomaticTransfers.decide(config, state(charging = false, metered = false), noUsage, now),
         )
         assertIs<AutomaticTransfers.Decision.Run>(
-            AutomaticTransfers.decide(config, state(charging = true, metered = false), noUsage),
+            AutomaticTransfers.decide(config, state(charging = true, metered = false), noUsage, now),
         )
     }
 
@@ -418,7 +425,7 @@ class AutomaticTransfersTest {
             monitoringNetworks = setOf(NetworkType.WIFI),
         )
         assertIs<AutomaticTransfers.Decision.Skip>(
-            AutomaticTransfers.decide(config, state(network = NetworkType.CELLULAR), noUsage),
+            AutomaticTransfers.decide(config, state(network = NetworkType.CELLULAR), noUsage, now),
         )
     }
 }

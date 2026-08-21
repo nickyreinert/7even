@@ -19,10 +19,24 @@ import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.datetime.DateTimeUnit
+import kotlinx.datetime.DayOfWeek
+import kotlinx.datetime.Instant
+import kotlinx.datetime.LocalDate
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.atStartOfDayIn
+import kotlinx.datetime.plus
+import kotlinx.datetime.toLocalDateTime
 import java.io.File
 import java.util.Calendar
 
 enum class HistoryAggregation(val label: String) { NONE("None — every check"), DAY("Day"), WEEK("Week") }
+
+/** Which query window the date-navigation row selects — independent of [HistoryAggregation], which only buckets points inside that window for the charts. */
+enum class HistoryRangeMode(val label: String) { WEEK("Week"), MONTH("Month") }
+
+/** A scheduled automatic cycle the system blocked, and why — see [de.sevenapp.monitor.android.data.CycleOutcomeEntity]. */
+data class MissedCycle(val atEpochMs: Long, val reason: String)
 
 data class HistoryState(
     val historyDays: Int = 0,
@@ -40,6 +54,15 @@ data class HistoryState(
     val summary: HistorySummary = HistorySummary(),
     /** Every recorded rung, totalled per size — not filtered by [connectionFilter], since the two sweep ladders barely share sizes anyway. */
     val sweepSizeStats: List<SweepSizeStats> = emptyList(),
+    val rangeMode: HistoryRangeMode = HistoryRangeMode.WEEK,
+    /** The period currently on screen; null only when there is no data at all yet. */
+    val rangeAnchor: LocalDate? = null,
+    val rangeStartEpochMs: Long = 0L,
+    val rangeEndEpochMs: Long = 0L,
+    val canStepBackward: Boolean = false,
+    val canStepForward: Boolean = false,
+    /** Automatic cycles the system blocked within the selected range, newest first. */
+    val missedCycles: List<MissedCycle> = emptyList(),
 )
 
 /**
@@ -96,13 +119,93 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
         refresh()
     }
 
+    fun setRangeMode(mode: HistoryRangeMode) {
+        _state.value = _state.value.copy(rangeMode = mode)
+        refresh()
+    }
+
+    fun stepRange(forward: Boolean) {
+        val current = _state.value.rangeAnchor ?: return
+        val sign = if (forward) 1 else -1
+        val next = when (_state.value.rangeMode) {
+            HistoryRangeMode.WEEK -> current.plus(7 * sign, DateTimeUnit.DAY)
+            // Normalized to the 1st of the target month, so repeated stepping
+            // cannot drift a day-of-month anchor into the wrong month length.
+            HistoryRangeMode.MONTH -> LocalDate(current.year, current.month, 1).plus(sign, DateTimeUnit.MONTH)
+        }
+        _state.value = _state.value.copy(rangeAnchor = next)
+        refresh()
+    }
+
+    private val zone = TimeZone.currentSystemDefault()
+
+    private fun Long.toLocalDate(): LocalDate = Instant.fromEpochMilliseconds(this).toLocalDateTime(zone).date
+    private fun LocalDate.toEpochMs(): Long = atStartOfDayIn(zone).toEpochMilliseconds()
+
+    private fun LocalDate.startOfWeek(): LocalDate {
+        val shift = dayOfWeek.isoDayNumber() - DayOfWeek.MONDAY.isoDayNumber()
+        return plus(-shift, DateTimeUnit.DAY)
+    }
+
+    private fun DayOfWeek.isoDayNumber(): Int = ordinal + 1
+
+    /** The period containing [anchor]: Monday-to-Monday for a week, 1st-to-1st for a month. */
+    private fun periodFor(anchor: LocalDate, mode: HistoryRangeMode): Pair<LocalDate, LocalDate> = when (mode) {
+        HistoryRangeMode.WEEK -> {
+            val start = anchor.startOfWeek()
+            start to start.plus(7, DateTimeUnit.DAY)
+        }
+        HistoryRangeMode.MONTH -> {
+            val start = LocalDate(anchor.year, anchor.month, 1)
+            start to start.plus(1, DateTimeUnit.MONTH)
+        }
+    }
+
     fun refresh() = viewModelScope.launch {
         val now = System.currentTimeMillis()
-        val start = store.oldestMeasurementAt() ?: now
+        val oldest = store.oldestMeasurementAt()
+        val latest = store.latestMeasurementAt()
         val filter = _state.value.connectionFilter
         val ssidFilter = _state.value.ssidFilter
-        val allPings = store.pingsBetween(start, now)
-        val allThroughput = store.throughputBetween(start, now)
+        val mode = _state.value.rangeMode
+        val historyDays = if (oldest == null) 0 else ((now - oldest) / (24L * 60 * 60 * 1000) + 1).toInt().coerceAtLeast(1)
+
+        if (latest == null) {
+            // No data at all — reset any stale anchor rather than keep
+            // navigating a range that no longer refers to anything.
+            _state.value = _state.value.copy(
+                samples = emptyList(),
+                throughput = emptyList(),
+                drops = emptyList(),
+                historyDays = 0,
+                ssids = emptyList(),
+                chartPings = emptyList(),
+                chartThroughput = emptyList(),
+                chartLossPct = emptyList(),
+                chartJitterMs = emptyList(),
+                sweepSizeStats = store.sweepRungTotals(),
+                summary = HistorySummary(),
+                rangeAnchor = null,
+                rangeStartEpochMs = 0L,
+                rangeEndEpochMs = 0L,
+                canStepBackward = false,
+                canStepForward = false,
+                missedCycles = emptyList(),
+            )
+            return@launch
+        }
+
+        val latestDate = latest.toLocalDate()
+        val oldestDate = (oldest ?: latest).toLocalDate()
+        val anchor = _state.value.rangeAnchor ?: latestDate
+        val (rangeStartDate, rangeEndDate) = periodFor(anchor, mode)
+        val rangeStart = rangeStartDate.toEpochMs()
+        val rangeEnd = rangeEndDate.toEpochMs()
+        val oldestPeriodStart = periodFor(oldestDate, mode).first
+        val latestPeriodStart = periodFor(latestDate, mode).first
+
+        val allPings = store.pingsBetween(rangeStart, rangeEnd)
+        val allThroughput = store.throughputBetween(rangeStart, rangeEnd)
         // Ascending by timestamp. These lists feed the charts, and `reversed()`
         // made the x axis run newest-to-oldest — every trend line was drawn
         // backwards in time.
@@ -112,7 +215,10 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
         val throughput = allThroughput
             .filter { it.networkType == filter && (ssidFilter == null || it.ssid == ssidFilter) }
             .sortedBy { it.atEpochMs }
-        val drops = store.dropsOverlapping(start, now).sortedBy { it.startedAtEpochMs }
+        val drops = store.dropsOverlapping(rangeStart, rangeEnd).sortedBy { it.startedAtEpochMs }
+        val missedCycles = store.missedCycleOutcomesBetween(rangeStart, rangeEnd)
+            .sortedByDescending { it.atEpochMs }
+            .map { MissedCycle(it.atEpochMs, it.reason ?: "unknown") }
         val rtts = samples.mapNotNull { it.rttMs }
         val down = throughput.mapNotNull { it.downMbps }
         val up = throughput.mapNotNull { it.upMbps }
@@ -127,13 +233,19 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
             samples = samples,
             throughput = throughput,
             drops = drops,
-            historyDays = if (start == now) 0 else ((now - start) / (24L * 60 * 60 * 1000) + 1).toInt().coerceAtLeast(1),
+            historyDays = historyDays,
             ssids = allPings.mapNotNull { it.ssid }.distinct().sorted(),
             chartPings = aggregated.pings,
             chartThroughput = aggregated.throughput,
             chartLossPct = aggregated.lossPct,
             chartJitterMs = aggregated.jitterMs,
             sweepSizeStats = store.sweepRungTotals(),
+            rangeAnchor = anchor,
+            rangeStartEpochMs = rangeStart,
+            rangeEndEpochMs = rangeEnd,
+            canStepBackward = rangeStartDate > oldestPeriodStart,
+            canStepForward = rangeStartDate < latestPeriodStart,
+            missedCycles = missedCycles,
             summary = HistorySummary(
                 averageDownloadMbps = down.takeIf { it.isNotEmpty() }?.average(),
                 averageUploadMbps = up.takeIf { it.isNotEmpty() }?.average(),
@@ -150,8 +262,8 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
                 // this figure as covering all connections rather than letting
                 // it look like a per-filter number.
                 stability = if (samples.isEmpty()) null else StabilityScore.compute(
-                    windowStartEpochMs = start,
-                    nowEpochMs = now,
+                    windowStartEpochMs = rangeStart,
+                    nowEpochMs = minOf(rangeEnd, now),
                     drops = drops,
                     avgJitterMs = rtts.takeIf { it.size >= 2 }?.let(Stats::stdDev),
                     avgLossPct = loss ?: 0.0,

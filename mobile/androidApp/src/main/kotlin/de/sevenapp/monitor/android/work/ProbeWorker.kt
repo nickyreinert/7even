@@ -48,13 +48,15 @@ class ProbeWorker(
         val entitlements = EntitlementRepository.get(applicationContext)
         val entitlement = entitlements.current()
 
+        val store = RoomMonitorStore.get(applicationContext)
+
         if (!FeatureGate.shouldBackgroundWorkRun(entitlement, now)) {
+            store.recordCycleOutcome(now, ran = false, reason = "entitlement inactive")
             cancel(applicationContext)
             // Not a failure: this is the intended end state for a free account.
             return Result.success()
         }
 
-        val store = RoomMonitorStore.get(applicationContext)
         val deviceState = readDeviceState(applicationContext)
         val transport = KtorTransport()
         val coordinator = MonitorCoordinator(
@@ -72,7 +74,8 @@ class ProbeWorker(
             // and a monitor that stops observing while unplugged reports the
             // resulting gap as uptime.
             coordinator.runCycle(deviceState)
-            runAutomaticTransfers(store, deviceState, now)
+            val blockedReason = runAutomaticTransfers(store, deviceState, now)
+            store.recordCycleOutcome(now, ran = blockedReason == null, reason = blockedReason)
             MonitoringNotification.completed(applicationContext)
             Result.success()
         } catch (t: Throwable) {
@@ -95,17 +98,22 @@ class ProbeWorker(
      * never recorded, so the running total drifted below reality exactly when
      * the connection was worst. Over-reserving and refunding errs toward
      * under-spending the user's data, which is the safe direction.
+     *
+     * @return null when the cycle ran as configured (including a sweep quietly
+     * sitting out its own cadence, or automatic transfers being disabled
+     * entirely) — otherwise the reason the *system* prevented work that was
+     * configured to happen, for [CycleOutcomeEntity].
      */
     private suspend fun runAutomaticTransfers(
         store: RoomMonitorStore,
         deviceState: DeviceState,
         nowEpochMs: Long,
-    ) {
+    ): String? {
         val config = store.loadConfig()
         // Re-checked immediately before the heavy work, not only at worker
         // start: the user may have switched monitoring off during the cheap
         // ping phase, and that decision should take effect now, not next cycle.
-        if (!RoomMonitorStore.isMonitoringEnabled(applicationContext)) return
+        if (!RoomMonitorStore.isMonitoringEnabled(applicationContext)) return null
 
         val dayStart = nowEpochMs - 24 * 60 * 60 * 1000
         val monthStart = nowEpochMs - 30L * 24 * 60 * 60 * 1000
@@ -113,12 +121,16 @@ class ProbeWorker(
             config = config,
             deviceState = deviceState,
             usage = AutomaticTransfers.Usage(
-                fullSweepsToday = store.fullSweepCountSince(dayStart),
+                lastFullSweepAtEpochMs = store.latestFullSweepAt(),
                 meteredBytesToday = store.bytesUsedSince(dayStart, metered = true),
                 meteredBytesThisMonth = store.bytesUsedSince(monthStart, metered = true),
             ),
+            nowEpochMs = nowEpochMs,
         )
-        val plan = (decision as? AutomaticTransfers.Decision.Run)?.plan ?: return
+        val plan = when (decision) {
+            is AutomaticTransfers.Decision.Run -> decision.plan
+            is AutomaticTransfers.Decision.Skip -> return decision.reason.takeIf { it in SYSTEM_BLOCK_REASONS }
+        }
 
         store.addBytesUsed(plan.maxBytesPerRun, deviceState.isMetered, nowEpochMs)
         var actualBytes = 0L
@@ -144,6 +156,7 @@ class ProbeWorker(
             val refund = plan.maxBytesPerRun - actualBytes
             if (refund != 0L) store.addBytesUsed(-refund, deviceState.isMetered, nowEpochMs)
         }
+        return null
     }
 
     private fun readDeviceState(context: Context): DeviceState {
@@ -177,6 +190,21 @@ class ProbeWorker(
 
     companion object {
         private const val UNIQUE_NAME = "seven-probe-cycle"
+
+        /**
+         * [AutomaticTransfers.Decision.Skip] reasons that mean the *system*
+         * blocked work the schedule expected — as opposed to "sweep not due
+         * yet" (the user's own cadence choice) or "no automatic transfers
+         * enabled" (ping-only is a valid steady state), neither of which count
+         * as a missed cycle.
+         */
+        private val SYSTEM_BLOCK_REASONS = setOf(
+            "no network",
+            "connection type not selected",
+            "not charging",
+            "daily data budget reached",
+            "monthly data budget reached",
+        )
 
         /**
          * WorkManager silently clamps anything shorter to 15 minutes, so the

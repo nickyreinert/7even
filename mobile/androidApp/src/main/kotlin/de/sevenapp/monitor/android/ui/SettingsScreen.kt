@@ -47,6 +47,7 @@ import de.sevenapp.monitor.entitlement.FeatureGate
 import de.sevenapp.monitor.entitlement.Paywall
 import de.sevenapp.monitor.entitlement.Tier
 import de.sevenapp.monitor.report.ReportPeriod
+import de.sevenapp.monitor.probe.SweepFrequency
 import de.sevenapp.monitor.probe.SweepPlan
 import de.sevenapp.monitor.probe.SweepStep
 
@@ -59,6 +60,10 @@ fun SettingsScreen(
     val state by viewModel.state.collectAsState()
     var recurrenceMenuOpen by remember { mutableStateOf(false) }
     var clearHistoryDialogOpen by remember { mutableStateOf(false) }
+    var sweepFrequencyMenuOpen by remember { mutableStateOf(false) }
+    var reportPeriodMenuOpen by remember { mutableStateOf(false) }
+    var reportDayOfWeekMenuOpen by remember { mutableStateOf(false) }
+    var reportDayOfMonthMenuOpen by remember { mutableStateOf(false) }
     // Mirrors the same fix on DashboardScreen: this screen's own ViewModel
     // instance doesn't otherwise notice a setting (like "automatic
     // measurement" or "sustained speed check") changed from the Monitor
@@ -123,6 +128,69 @@ fun SettingsScreen(
             }
         }
 
+        item {
+            SettingsCard("Automatic reporting") {
+                Text(
+                    "A notification summarizing average download, average upload, and " +
+                        "connection quality for the period just finished.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                Text("How often", style = MaterialTheme.typography.labelMedium)
+                Box {
+                    OutlinedButton(onClick = { reportPeriodMenuOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                        Text(reportPeriodLabel(state.reportPeriod), modifier = Modifier.weight(1f))
+                        Text("⌄")
+                    }
+                    DropdownMenu(expanded = reportPeriodMenuOpen, onDismissRequest = { reportPeriodMenuOpen = false }) {
+                        ReportPeriod.entries.forEach { period ->
+                            DropdownMenuItem(
+                                text = { Text(reportPeriodLabel(period)) },
+                                onClick = {
+                                    reportPeriodMenuOpen = false
+                                    viewModel.setReportPeriod(period)
+                                },
+                            )
+                        }
+                    }
+                }
+                if (state.reportPeriod == ReportPeriod.WEEKLY) {
+                    Text("Day of week", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 8.dp))
+                    Box {
+                        OutlinedButton(onClick = { reportDayOfWeekMenuOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                            Text(dayOfWeekLabel(state.reportDayOfWeek), modifier = Modifier.weight(1f))
+                            Text("⌄")
+                        }
+                        DropdownMenu(expanded = reportDayOfWeekMenuOpen, onDismissRequest = { reportDayOfWeekMenuOpen = false }) {
+                            (1..7).forEach { day ->
+                                DropdownMenuItem(
+                                    text = { Text(dayOfWeekLabel(day)) },
+                                    onClick = { reportDayOfWeekMenuOpen = false; viewModel.setReportDayOfWeek(day) },
+                                )
+                            }
+                        }
+                    }
+                }
+                if (state.reportPeriod == ReportPeriod.MONTHLY) {
+                    Text("Day of month", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 8.dp))
+                    Box {
+                        OutlinedButton(onClick = { reportDayOfMonthMenuOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                            Text(state.reportDayOfMonth.toString(), modifier = Modifier.weight(1f))
+                            Text("⌄")
+                        }
+                        DropdownMenu(expanded = reportDayOfMonthMenuOpen, onDismissRequest = { reportDayOfMonthMenuOpen = false }) {
+                            (1..31).forEach { day ->
+                                DropdownMenuItem(
+                                    text = { Text(day.toString()) },
+                                    onClick = { reportDayOfMonthMenuOpen = false; viewModel.setReportDayOfMonth(day) },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         stickyHeader {
             SettingsDataUseCard(state)
         }
@@ -158,6 +226,26 @@ fun SettingsScreen(
                     enabled = true,
                     onCheckedChange = viewModel::setAutomaticSweep,
                 )
+                if (state.automaticSweepEnabled) {
+                    Text("Sweep frequency", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 8.dp))
+                    Box {
+                        OutlinedButton(onClick = { sweepFrequencyMenuOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                            Text(state.sweepFrequency.label, modifier = Modifier.weight(1f))
+                            Text("⌄")
+                        }
+                        DropdownMenu(expanded = sweepFrequencyMenuOpen, onDismissRequest = { sweepFrequencyMenuOpen = false }) {
+                            SweepFrequency.entries.forEach { frequency ->
+                                DropdownMenuItem(
+                                    text = { Text(frequency.label) },
+                                    onClick = {
+                                        sweepFrequencyMenuOpen = false
+                                        viewModel.setSweepFrequency(frequency)
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
                 CheckRow(
                     label = "When charging only",
                     checked = state.automaticRequiresCharging,
@@ -303,6 +391,12 @@ private fun AutomaticScheduleTimeControls(state: SettingsState, viewModel: Setti
 private fun dayOfWeekLabel(day: Int): String = listOf(
     "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
 ).getOrElse(day - 1) { "Monday" }
+
+private fun reportPeriodLabel(period: ReportPeriod): String = when (period) {
+    ReportPeriod.DAILY -> "Day"
+    ReportPeriod.WEEKLY -> "Week"
+    ReportPeriod.MONTHLY -> "Month"
+}
 
 @Composable
 private fun SweepSettingsCard(state: SettingsState, viewModel: SettingsViewModel) {

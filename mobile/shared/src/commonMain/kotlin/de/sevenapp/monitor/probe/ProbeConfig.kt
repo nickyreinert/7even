@@ -155,6 +155,14 @@ data class ProbeConfig(
     val automaticStreamEnabled: Boolean = false,
     val automaticSweepEnabled: Boolean = false,
     val automaticRequiresCharging: Boolean = false,
+    /**
+     * How often an automatic cycle may run a full sweep, independent of how
+     * often the cycle itself wakes up. A sweep is the expensive half of
+     * automatic monitoring, so this exists to let it run far less often than
+     * pings/streams do — see [AutomaticTransfers.decide], the only place this
+     * is enforced.
+     */
+    val sweepFrequency: SweepFrequency = SweepFrequency.ALWAYS,
 
     /**
      * Hard per-run ceilings on automatic stream traffic, and the daily/monthly
@@ -197,6 +205,27 @@ data class ProbeConfig(
         NetworkType.CELLULAR -> cellularMeasurementSizes
         else -> setOf(lightDownBytes)
     }.filter { it in 16 * 1024..10 * 1024 * 1024 }.sorted().ifEmpty { listOf(lightDownBytes) }
+}
+
+/** How often an automatic cycle may run a full sweep. No weekly option: a sweep this infrequent is not worth a dedicated cadence. */
+enum class SweepFrequency(val label: String) {
+    ALWAYS("Always"),
+    HOURLY("Once an hour"),
+    DAILY("Once a day");
+
+    /** Minimum gap since the last sweep before another may run. */
+    val minGapMs: Long get() = when (this) {
+        ALWAYS -> 0L
+        HOURLY -> 60 * 60 * 1000L
+        DAILY -> 24 * 60 * 60 * 1000L
+    }
+
+    /** Upper bound on sweep runs per day this cadence implies, for [DataBudget]'s projection. */
+    val maxRunsPerDay: Long get() = when (this) {
+        ALWAYS -> Long.MAX_VALUE
+        HOURLY -> 24L
+        DAILY -> 1L
+    }
 }
 
 /** Conditions at the moment a cycle runs, supplied by the platform host. */
@@ -309,14 +338,14 @@ object DataBudget {
         val wifiPlan = AutomaticTransfers.planFor(config, NetworkType.WIFI)
 
         if (NetworkType.CELLULAR in config.monitoringNetworks) {
-            val sweepRuns = minOf(meteredCycles, config.fullSweepsPerDay.toLong())
+            val sweepRuns = minOf(meteredCycles, config.sweepFrequency.maxRunsPerDay)
             val streamRuns = if (cellularPlan.runStream) meteredCycles else 0L
             val raw = streamRuns * cellularPlan.maxStreamBytes +
                 sweepRuns * cellularPlan.maxSweepBytes
             metered += minOf(raw, config.automaticDailyMeteredBytes)
         }
         if (NetworkType.WIFI in config.monitoringNetworks) {
-            val sweepRuns = minOf(unmeteredCycles, config.fullSweepsPerDay.toLong())
+            val sweepRuns = minOf(unmeteredCycles, config.sweepFrequency.maxRunsPerDay)
             val streamRuns = if (wifiPlan.runStream) unmeteredCycles else 0L
             unmetered += streamRuns * wifiPlan.maxStreamBytes + sweepRuns * wifiPlan.maxSweepBytes
         }

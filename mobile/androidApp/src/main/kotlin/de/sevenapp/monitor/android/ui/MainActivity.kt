@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -211,6 +212,19 @@ fun DashboardScreen(
                             if (enabled) requestNotificationPermission()
                             viewModel.setMonitoring(enabled)
                         })
+                    }
+                    if (state.monitoringEnabled) {
+                        Text(
+                            when (val tests = state.testsSinceActivation) {
+                                null, 0 -> "No tests run yet since activated"
+                                else -> {
+                                    val missed = state.missedSinceActivation ?: 0
+                                    "$tests test${if (tests == 1) "" else "s"} run" +
+                                        if (missed > 0) " · $missed missed since activated" else " since activated"
+                                }
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
                     Text("Use connection", style = MaterialTheme.typography.labelMedium)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -521,6 +535,7 @@ private fun MetricCard(label: String, value: String, modifier: Modifier) {
 }
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 private fun HistoryScreen(
     modifier: Modifier,
     onRequestSsidPermission: () -> Unit,
@@ -578,6 +593,7 @@ private fun HistoryScreen(
                 }
             }
         }
+        stickyHeader { HistoryDateNavigationRow(state, viewModel) }
         item { HistorySummaryCards(state.summary) }
         item { HistoryEvidenceCard(state.summary) }
         item {
@@ -639,7 +655,29 @@ private fun HistoryScreen(
             }
         }
         item { SweepOverviewCard(state.sweepSizeStats) }
+        item { MissedCyclesCard(state.missedCycles) }
         if (state.samples.isEmpty()) item { Text("No measurements yet. Start monitoring to build your history.") }
+    }
+}
+
+@Composable
+private fun MissedCyclesCard(missedCycles: List<MissedCycle>) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Missed automatic checks", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Cycles the system blocked in this period — not due to your own sweep-frequency setting.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            if (missedCycles.isEmpty()) {
+                Text("No missed checks in this period.", style = MaterialTheme.typography.bodySmall)
+            } else {
+                missedCycles.forEach { missed ->
+                    val at = java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(java.util.Date(missed.atEpochMs))
+                    Text("$at · ${missed.reason}", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
     }
 }
 
@@ -686,6 +724,58 @@ private fun SweepOverviewCard(stats: List<de.sevenapp.monitor.probe.SweepSizeSta
 
 private fun sweepCountLabel(stats: de.sevenapp.monitor.probe.SweepSizeStats?): String =
     if (stats == null || stats.trialsTotal == 0) "—" else "${stats.trialsPassed}/${stats.trialsTotal} passed"
+
+@Composable
+private fun HistoryDateNavigationRow(state: HistoryState, viewModel: HistoryViewModel) {
+    var rangeMenuOpen by remember { mutableStateOf(false) }
+    // A Card, not a bare Row: as a sticky header this must visually occlude
+    // the content scrolling underneath it, which needs an opaque surface.
+    Card(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(onClick = { viewModel.stepRange(forward = false) }, enabled = state.canStepBackward) {
+                Text("‹")
+            }
+            Box {
+                TextButton(onClick = { if (state.rangeAnchor != null) rangeMenuOpen = true }) {
+                    Text(historyRangeLabel(state), style = MaterialTheme.typography.bodyLarge)
+                }
+                DropdownMenu(expanded = rangeMenuOpen, onDismissRequest = { rangeMenuOpen = false }) {
+                    HistoryRangeMode.entries.forEach { mode ->
+                        DropdownMenuItem(
+                            text = { Text(mode.label) },
+                            onClick = {
+                                rangeMenuOpen = false
+                                viewModel.setRangeMode(mode)
+                            },
+                        )
+                    }
+                }
+            }
+            TextButton(onClick = { viewModel.stepRange(forward = true) }, enabled = state.canStepForward) {
+                Text("›")
+            }
+        }
+    }
+}
+
+private fun historyRangeLabel(state: HistoryState): String {
+    if (state.rangeAnchor == null) return "No data yet"
+    val locale = java.util.Locale.getDefault()
+    return when (state.rangeMode) {
+        HistoryRangeMode.WEEK -> {
+            val dayFormat = java.text.SimpleDateFormat("MMM d", locale)
+            val start = dayFormat.format(java.util.Date(state.rangeStartEpochMs))
+            val end = dayFormat.format(java.util.Date(state.rangeEndEpochMs - 24L * 60 * 60 * 1000))
+            "$start – $end"
+        }
+        HistoryRangeMode.MONTH ->
+            java.text.SimpleDateFormat("MMMM yyyy", locale).format(java.util.Date(state.rangeStartEpochMs))
+    }
+}
 
 @Composable
 private fun HistorySummaryCards(summary: HistorySummary) {

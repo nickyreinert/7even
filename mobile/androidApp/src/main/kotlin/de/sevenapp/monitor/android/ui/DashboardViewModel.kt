@@ -94,6 +94,9 @@ data class DashboardState(
     /** A generated report the user has not acknowledged, delivered or not. */
     val pendingReport: RoomMonitorStore.Companion.PendingReport? = null,
     val stability: StabilityScore.Result? = null,
+    /** Null when monitoring is off. Counts since [monitoringEnabled] was last switched on. */
+    val testsSinceActivation: Int? = null,
+    val missedSinceActivation: Int? = null,
 )
 
 /**
@@ -203,9 +206,13 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
         // to set it (the callback is only for live changes after this point).
         val wifiAvailable = currentlyHasWifi()
         val resolvedManualNetwork = config.preferredTestNetwork.let { if (it == NetworkPreference.AUTO) NetworkPreference.WIFI else it }
+        val monitoringEnabled = RoomMonitorStore.isMonitoringEnabled(app)
+        val activatedAt = if (monitoringEnabled) RoomMonitorStore.monitoringActivatedAt(app) else null
         _state.value = _state.value.copy(
             tier = entitlements.effectiveTier(now),
-            monitoringEnabled = RoomMonitorStore.isMonitoringEnabled(app),
+            monitoringEnabled = monitoringEnabled,
+            testsSinceActivation = activatedAt?.let { store.cycleOutcomeCountSince(it, ran = true) },
+            missedSinceActivation = activatedAt?.let { store.cycleOutcomeCountSince(it, ran = false) },
             intervalMinutes = config.cycleIntervalMinutes,
             liveTestDurationMs = config.liveTestPhaseDurationMs,
             monitoringNetworks = config.monitoringNetworks,
@@ -483,6 +490,9 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             // Baseline for the first scheduled report, so the first worker wake
             // does not treat "never delivered" as "overdue since 1970".
             RoomMonitorStore.markReportingStarted(app, now)
+            // Unlike markReportingStarted, always overwritten — the Monitor
+            // screen's counter is "since THIS activation," not the first ever.
+            RoomMonitorStore.markMonitoringActivated(app, now)
             ProbeWorker.scheduleFromConfig(app, store)
             ReportWorker.schedule(app)
             MonitoringNotification.active(app)

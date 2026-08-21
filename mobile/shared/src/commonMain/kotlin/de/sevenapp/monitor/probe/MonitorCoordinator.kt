@@ -111,14 +111,21 @@ class MonitorCoordinator(
         period: ReportPeriod,
         nowEpochMs: Long,
         lastDeliveredEpochMs: Long?,
+        weekAnchorDay: Int = 1,
+        monthAnchorDay: Int = 1,
     ): Report? {
-        val due = ReportSchedule.nextDelivery(period, lastDeliveredEpochMs ?: 0L, timeZone)
+        val due = ReportSchedule.nextDelivery(period, lastDeliveredEpochMs ?: 0L, timeZone, weekAnchorDay, monthAnchorDay)
         if (nowEpochMs < due) return null
-        return buildReport(period, nowEpochMs)
+        return buildReport(period, nowEpochMs, weekAnchorDay, monthAnchorDay)
     }
 
-    suspend fun buildReport(period: ReportPeriod, atEpochMs: Long): Report {
-        val window = ReportSchedule.windowFor(period, atEpochMs, timeZone)
+    suspend fun buildReport(
+        period: ReportPeriod,
+        atEpochMs: Long,
+        weekAnchorDay: Int = 1,
+        monthAnchorDay: Int = 1,
+    ): Report {
+        val window = ReportSchedule.windowFor(period, atEpochMs, timeZone, weekAnchorDay, monthAnchorDay)
         val config = store.loadConfig()
 
         return ReportBuilder.build(

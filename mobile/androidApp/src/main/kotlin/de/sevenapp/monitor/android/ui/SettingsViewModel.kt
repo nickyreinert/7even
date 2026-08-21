@@ -15,6 +15,7 @@ import de.sevenapp.monitor.entitlement.FeatureGate
 import de.sevenapp.monitor.entitlement.Tier
 import de.sevenapp.monitor.probe.DataBudget
 import de.sevenapp.monitor.probe.LiveTestConfig
+import de.sevenapp.monitor.probe.SweepFrequency
 import de.sevenapp.monitor.probe.SweepPlan
 import de.sevenapp.monitor.probe.SweepStep
 import de.sevenapp.monitor.report.ReportPeriod
@@ -35,6 +36,7 @@ data class SettingsState(
     val automaticStreamEnabled: Boolean = false,
     val automaticSweepEnabled: Boolean = false,
     val automaticRequiresCharging: Boolean = false,
+    val sweepFrequency: SweepFrequency = SweepFrequency.ALWAYS,
     val manualStreamDurationMs: Long = 60_000L,
     val traceUrl: String = "",
     val downUrlTemplate: String = "",
@@ -51,6 +53,8 @@ data class SettingsState(
     val wifiMeasurementSizes: Set<Int> = emptySet(),
     val cellularMeasurementSizes: Set<Int> = emptySet(),
     val reportPeriod: ReportPeriod = ReportPeriod.WEEKLY,
+    val reportDayOfWeek: Int = 1,
+    val reportDayOfMonth: Int = 1,
     val projectedMeteredBytesPerMonth: Long = 0,
     /** True when the projection is a ceiling rather than an estimate. */
     val projectionIsMaximum: Boolean = false,
@@ -87,6 +91,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             automaticStreamEnabled = config.automaticStreamEnabled,
             automaticSweepEnabled = config.automaticSweepEnabled,
             automaticRequiresCharging = config.automaticRequiresCharging,
+            sweepFrequency = config.sweepFrequency,
             manualStreamDurationMs = config.liveTestPhaseDurationMs,
             traceUrl = config.traceUrl,
             downUrlTemplate = config.downUrlTemplate,
@@ -103,6 +108,8 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             wifiMeasurementSizes = config.wifiMeasurementSizes,
             cellularMeasurementSizes = config.cellularMeasurementSizes,
             reportPeriod = RoomMonitorStore.reportPeriod(app),
+            reportDayOfWeek = RoomMonitorStore.reportDayOfWeek(app),
+            reportDayOfMonth = RoomMonitorStore.reportDayOfMonth(app),
             projectedMeteredBytesPerMonth = DataBudget.project(config).meteredBytesPerMonth,
             projectionIsMaximum = DataBudget.project(config).isMaximum,
             meteredBytesThisMonth = store.bytesUsedSince(monthStart, metered = true),
@@ -214,6 +221,11 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         refresh()
     }
 
+    fun setSweepFrequency(frequency: SweepFrequency) = viewModelScope.launch {
+        store.saveConfig(store.loadConfig().copy(sweepFrequency = frequency))
+        refresh()
+    }
+
     fun setManualStreamDuration(durationMs: Long) = viewModelScope.launch {
         store.saveConfig(store.loadConfig().copy(liveTestPhaseDurationMs = durationMs))
         refresh()
@@ -309,6 +321,16 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setReportPeriod(period: ReportPeriod) = viewModelScope.launch {
         RoomMonitorStore.setReportPeriod(getApplication(), period)
+        refresh()
+    }
+
+    fun setReportDayOfWeek(isoDayOfWeek: Int) = viewModelScope.launch {
+        RoomMonitorStore.setReportDayOfWeek(getApplication(), isoDayOfWeek)
+        refresh()
+    }
+
+    fun setReportDayOfMonth(dayOfMonth: Int) = viewModelScope.launch {
+        RoomMonitorStore.setReportDayOfMonth(getApplication(), dayOfMonth)
         refresh()
     }
 
