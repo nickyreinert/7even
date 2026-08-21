@@ -68,6 +68,19 @@ data class LatestSweeps(
 )
 
 /**
+ * How one size has done across every recorded rung, in one direction —
+ * the History screen's overview, as opposed to [LatestSweeps]' single most
+ * recent snapshot.
+ */
+data class SweepSizeStats(
+    val direction: SweepRunner.Direction,
+    val bytes: Int,
+    /** Individual trials that passed, not rungs — a 2-of-3 rung contributes 2 here, not 0 or 1. */
+    val trialsPassed: Int,
+    val trialsTotal: Int,
+)
+
+/**
  * The chunk-size sweep asks a different question from the throughput test:
  * not "how fast" but "does behaviour change with transfer size".
  *

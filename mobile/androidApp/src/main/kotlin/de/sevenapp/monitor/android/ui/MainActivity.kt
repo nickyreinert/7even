@@ -27,6 +27,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -124,7 +125,7 @@ class MainActivity : ComponentActivity() {
                     when (screen) {
                         Screen.MAIN -> DashboardScreen(
                             contentModifier,
-                            onMonitoringEnabled = requestNotificationPermission,
+                            requestNotificationPermission = requestNotificationPermission,
                         )
                         Screen.HISTORY -> HistoryScreen(contentModifier, onRequestSsidPermission = {
                             ssidPermission.launch(Manifest.permission.ACCESS_FINE_LOCATION)
@@ -160,19 +161,43 @@ private fun NavItem(label: String, selected: Boolean, modifier: Modifier, onClic
 @Composable
 fun DashboardScreen(
     modifier: Modifier = Modifier,
-    /** Invoked when the user switches monitoring on, to ask for notifications. */
-    onMonitoringEnabled: () -> Unit = {},
+    /**
+     * Requests POST_NOTIFICATIONS if it is not already granted.
+     *
+     * Every kind of run that shows a notification calls this before starting —
+     * not just the background-monitoring switch. A manual test raises
+     * [de.sevenapp.monitor.android.work.LiveTestForegroundService]'s
+     * notification too, and without ever asking for the permission first, the
+     * OS silently drops that notification with no error: the run still works,
+     * it is just invisible once the app is minimized.
+     */
+    requestNotificationPermission: () -> Unit = {},
     viewModel: DashboardViewModel = androidx.lifecycle.viewmodel.compose.viewModel(),
 ) {
     val state by viewModel.state.collectAsState()
     var logOpen by rememberSaveable { mutableStateOf(false) }
+    // The Dashboard and Settings screens each hold their own ViewModel
+    // instance over the same persisted config — switching to Settings and
+    // flipping "automatic measurement" there left this screen's copy of
+    // monitoringEnabled stale until something else happened to call
+    // refresh(). Composables are torn down and rebuilt on every screen
+    // switch here (there's no shared nav back-stack), so re-running this on
+    // each entry is what actually re-syncs it.
+    androidx.compose.runtime.LaunchedEffect(Unit) { viewModel.refresh() }
 
     LazyColumn(modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Button(
-                        onClick = if (state.manualTestRunning) viewModel::stopManualTest else viewModel::runManualTest,
+                        onClick = {
+                            if (state.manualTestRunning) {
+                                viewModel.stopManualTest()
+                            } else {
+                                requestNotificationPermission()
+                                viewModel.runManualTest()
+                            }
+                        },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(manualTestButtonLabel(state))
@@ -183,14 +208,32 @@ fun DashboardScreen(
                             Text("Battery-aware background checks", style = MaterialTheme.typography.bodySmall)
                         }
                         Switch(state.monitoringEnabled, onCheckedChange = { enabled ->
-                            if (enabled) onMonitoringEnabled()
+                            if (enabled) requestNotificationPermission()
                             viewModel.setMonitoring(enabled)
                         })
                     }
                     Text("Use connection", style = MaterialTheme.typography.labelMedium)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilterChip(state.manualNetwork == de.sevenapp.monitor.core.NetworkPreference.WIFI, { viewModel.setManualNetwork(de.sevenapp.monitor.core.NetworkPreference.WIFI) }, label = { Text("Wi-Fi") })
+                        FilterChip(
+                            selected = state.manualNetwork == de.sevenapp.monitor.core.NetworkPreference.WIFI,
+                            onClick = { viewModel.setManualNetwork(de.sevenapp.monitor.core.NetworkPreference.WIFI) },
+                            enabled = state.wifiAvailable,
+                            label = { Text("Wi-Fi") },
+                        )
                         FilterChip(state.manualNetwork == de.sevenapp.monitor.core.NetworkPreference.CELLULAR, { viewModel.setManualNetwork(de.sevenapp.monitor.core.NetworkPreference.CELLULAR) }, label = { Text("Mobile") })
+                    }
+                    // Carrier-side throttling — the whole reason this probe
+                    // exists — is a cellular/mobile-plan thing. Wi-Fi has no
+                    // "Taktung" burst allowance to drain, so offering this
+                    // choice there would just be a confusing no-op.
+                    if (state.manualNetwork == de.sevenapp.monitor.core.NetworkPreference.CELLULAR) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Sustained speed check", style = MaterialTheme.typography.titleMedium)
+                                Text("Adds ~4 MB to reveal the real throttled speed — see Help", style = MaterialTheme.typography.bodySmall)
+                            }
+                            Switch(state.sustainedProbeEnabled, onCheckedChange = viewModel::setSustainedProbe)
+                        }
                     }
                     state.manualTestError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 }
@@ -224,10 +267,27 @@ fun DashboardScreen(
                         )
                         Text("Ping (ms)", style = MaterialTheme.typography.labelMedium)
                         LatencyChart(state.livePings, heightDp = 90)
-                        Text("Download rate", style = MaterialTheme.typography.labelMedium)
+                        Text(if (state.ranSustainedProbe) "Download rate (sustained probe)" else "Download rate", style = MaterialTheme.typography.labelMedium)
                         MetricLineChart(state.liveDownloadMbps.map { it }, suffix = " Mbps", heightDp = 90)
-                        Text("Upload rate", style = MaterialTheme.typography.labelMedium)
+                        Text(if (state.ranSustainedProbe) "Upload rate (sustained probe)" else "Upload rate", style = MaterialTheme.typography.labelMedium)
                         MetricLineChart(state.liveUploadMbps.map { it }, color = androidx.compose.ui.graphics.Color(0xFFF59E0B), suffix = " Mbps", heightDp = 90)
+                        if (state.ranSustainedProbe) {
+                            // The whole point of the sustained probe: an early
+                            // sample is burst-credit-dominated, a late one
+                            // (once enough data has crossed) is not — see
+                            // "Why a 64 kbit/s plan can show 4 Mbit/s" in Help.
+                            // "Steady" here IS the estimated refill rate: the
+                            // speed the connection settles to once any burst
+                            // allowance is spent.
+                            Text(
+                                "Estimated refill rate — down: ${formatMbps(steadyStateMbps(state.liveDownloadMbps))} " +
+                                    "(burst was ${formatMbps(peakMbps(state.liveDownloadMbps))}) · " +
+                                    "up: ${formatMbps(steadyStateMbps(state.liveUploadMbps))} " +
+                                    "(burst was ${formatMbps(peakMbps(state.liveUploadMbps))})",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.secondary,
+                            )
+                        }
                     }
                 }
             }
@@ -238,11 +298,25 @@ fun DashboardScreen(
                 Column(Modifier.padding(12.dp)) {
                     val showManualResult = state.manualTestRunning || state.livePings.isNotEmpty() ||
                         state.liveDownloadMbps.isNotEmpty() || state.liveUploadMbps.isNotEmpty()
-                    val pings = if (showManualResult) state.livePings else state.recentPings
-                    pings.takeLast(20).reversed().forEach { sample ->
-                        Text("${java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(sample.atEpochMs))}  " + (sample.rttMs?.let { "${it.toInt()} ms" } ?: "no reply") + "  ${sample.networkType.name.lowercase()}", style = MaterialTheme.typography.bodySmall)
+                    if (showManualResult) {
+                        // Every phase of the current/last manual run — ping,
+                        // download/upload stream, and each sweep rung as it
+                        // finishes — not just ping. A stream or a multi-minute
+                        // cellular sweep used to leave this list showing
+                        // nothing while it ran, indistinguishable from a hang.
+                        state.liveLog.takeLast(60).reversed().forEach { entry ->
+                            Text(
+                                "${java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(entry.atEpochMs))}  ${entry.text}",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        if (state.liveLog.isEmpty()) Text("No events yet.", style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        state.recentPings.takeLast(20).reversed().forEach { sample ->
+                            Text("${java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(sample.atEpochMs))}  " + (sample.rttMs?.let { "${it.toInt()} ms" } ?: "no reply") + "  ${sample.networkType.name.lowercase()}", style = MaterialTheme.typography.bodySmall)
+                        }
+                        if (state.recentPings.isEmpty()) Text("No probes yet.", style = MaterialTheme.typography.bodySmall)
                     }
-                    if (pings.isEmpty()) Text("No probes yet.", style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
@@ -272,6 +346,29 @@ fun DashboardScreen(
     }
 }
 
+/**
+ * Title and body for the Help entry explaining why a throttled plan can
+ * briefly show a much higher speed than its stated cap — the "Taktung 10 kB"
+ * behavior a user reading their own tariff spotted and asked about directly.
+ * Help-only: it's background for interpreting a result, not a result itself,
+ * so it doesn't compete with the charts on the Monitor screen.
+ */
+private const val BURST_THROTTLE_TITLE = "Why a \"64 kbit/s\" plan can show 4 Mbit/s"
+
+private val burstThrottleBody =
+    "Not a measuring mistake — throttled plans often work like a phone battery: " +
+        "\"full-speed time\" quietly recharges while you're not downloading, up to some " +
+        "limit. Your next download spends that recharge FIRST, at your phone's real " +
+        "speed (often several Mbit/s), before dropping to the guaranteed 64 kbit/s once " +
+        "it runs out. A short test can finish entirely on recharged time and never show " +
+        "the real, throttled speed.\n\n" +
+        "Example (numbers made up): a 3 MB \"tank\", phone speed 8 Mbit/s. A 1 MB photo " +
+        "fits inside the tank, so it flies down at 8 Mbit/s in about a second. A 20 MB " +
+        "video doesn't: 3 MB burns through the tank in 3 seconds, then the remaining " +
+        "17 MB crawl in at 64 kbit/s — over 35 minutes. Same connection, wildly " +
+        "different results, because file size decided how much of the tank got used.\n\n" +
+        "\"Sustained speed check\" in Settings runs long enough to drain the tank and " +
+        "show the speed that's actually left."
 
 @Composable
 private fun SummaryCards(state: DashboardState) {
@@ -347,7 +444,16 @@ private fun SummaryCards(state: DashboardState) {
     }
 }
 
-private fun formatMbps(value: Double?): String = value?.let {
+/** The highest cumulative-average rate seen — on a decaying burst-then-throttle curve, that's near the start. */
+private fun peakMbps(samples: List<Double>): Double? = samples.maxOrNull()
+
+/** The last fifth of samples, averaged — where a long-enough transfer has settled after spending any burst credit. */
+private fun steadyStateMbps(samples: List<Double>): Double? {
+    if (samples.isEmpty()) return null
+    return samples.takeLast((samples.size / 5).coerceAtLeast(1)).average()
+}
+
+internal fun formatMbps(value: Double?): String = value?.let {
     when {
         it >= 1_000 -> "%.1f Gbit/s".format(it / 1_000)
         it >= 1 -> "%.1f Mbit/s".format(it)
@@ -365,16 +471,7 @@ private fun formatMbps(value: Double?): String = value?.let {
  */
 private fun manualTestButtonLabel(state: DashboardState): String {
     if (!state.manualTestRunning) return "Start monitoring"
-    val phaseMs = state.manualTestPhaseDurationMs
-    val displayedMs = if (phaseMs == null || phaseMs == Long.MAX_VALUE) {
-        state.manualTestElapsedMs
-    } else {
-        (phaseMs - state.manualTestElapsedMs).coerceAtLeast(0L)
-    }
-    val seconds = displayedMs / 1_000
-    val timer = " · %02d:%02d".format(seconds / 60, seconds % 60)
-    val step = if (state.manualTestStep <= 0) "" else "${state.manualTestStep}/${state.manualTestTotalSteps} · "
-    return "Stop · $step${state.manualTestStepLabel}$timer"
+    return "Stop · ${phaseProgressLabel(state)}"
 }
 
 /**
@@ -541,9 +638,54 @@ private fun HistoryScreen(
                 }
             }
         }
+        item { SweepOverviewCard(state.sweepSizeStats) }
         if (state.samples.isEmpty()) item { Text("No measurements yet. Start monitoring to build your history.") }
     }
 }
+
+/**
+ * Every recorded sweep rung, totalled per size across every run — as opposed
+ * to the Monitor screen's pass/fail bars, which only ever show the latest
+ * sweep. Both directions side by side per size, since that comparison (does
+ * this size behave differently downloading vs. uploading) is usually the
+ * interesting one.
+ */
+@Composable
+private fun SweepOverviewCard(stats: List<de.sevenapp.monitor.probe.SweepSizeStats>) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Size sweep overview", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Every completed rung, added up across every run — not just the latest sweep. " +
+                    "Counts are trials, not rungs: a 2-of-3 rung counts as 2 passed, 1 failed.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            if (stats.isEmpty()) {
+                Text("No sweep checks recorded yet.", style = MaterialTheme.typography.bodySmall)
+            } else {
+                val bySize = stats.groupBy { it.bytes }.toSortedMap()
+                Row(Modifier.fillMaxWidth()) {
+                    Text("Size", style = MaterialTheme.typography.labelSmall, modifier = Modifier.weight(1f))
+                    Text("Download", style = MaterialTheme.typography.labelSmall, modifier = Modifier.weight(1f))
+                    Text("Upload", style = MaterialTheme.typography.labelSmall, modifier = Modifier.weight(1f))
+                }
+                HorizontalDivider()
+                bySize.forEach { (bytes, rows) ->
+                    val down = rows.firstOrNull { it.direction == de.sevenapp.monitor.probe.SweepRunner.Direction.DOWN }
+                    val up = rows.firstOrNull { it.direction == de.sevenapp.monitor.probe.SweepRunner.Direction.UP }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(formatBytesShort(bytes), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                        Text(sweepCountLabel(down), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                        Text(sweepCountLabel(up), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun sweepCountLabel(stats: de.sevenapp.monitor.probe.SweepSizeStats?): String =
+    if (stats == null || stats.trialsTotal == 0) "—" else "${stats.trialsPassed}/${stats.trialsTotal} passed"
 
 @Composable
 private fun HistorySummaryCards(summary: HistorySummary) {
@@ -604,6 +746,7 @@ private fun HelpScreen(modifier: Modifier, onBack: () -> Unit) {
         item { HelpBlock("Battery and data", "Background monitoring uses lightweight probes. Speed tests are less frequent, and their size is configurable from the Monitor screen.") }
         item { HelpBlock("Protocol", "Latency uses an HTTP request to Cloudflare's trace endpoint. Throughput uses download and upload requests to the speed-test service. A timeout means no reply was received in time; it does not prove the whole connection was down.") }
         item { HelpBlock("Background timing", "Android runs scheduled work approximately, not exactly. It may defer a check to protect battery life, especially in Doze mode.") }
+        item { HelpBlock(BURST_THROTTLE_TITLE, burstThrottleBody) }
         item { TextButton(onClick = onBack) { Text("Back to monitor") } }
     }
 }

@@ -78,15 +78,79 @@ data class ProbeConfig(
      * different things on each. A rate-limited mobile line at 64 kbit/s needs
      * roughly 125 seconds to move 1MB; a 10-second cap called that a failure,
      * when the honest answer is "it works, it is just slow" — precisely the
-     * finding this app exists to document. The mobile default is generous
-     * enough for that to come out as a pass rather than a red block.
+     * finding this app exists to document. The mobile default has to clear
+     * that ~125s bar with real margin to spare, not sit right under it: a
+     * measured run on a genuine ~64 kbit/s line moved the full 1MB rung but
+     * was still cut off and reported as TIMEOUT at 120,006ms — the round's
+     * own budget expired a few seconds before the transfer it was sized for
+     * could finish, on a link that was otherwise working exactly as
+     * advertised. 180s leaves headroom for protocol overhead and a link
+     * running a little under nominal, instead of failing its own worst case
+     * by design.
      */
     val wifiSweepTimeoutMs: Long = 30_000,
-    val mobileSweepTimeoutMs: Long = 120_000,
+    val mobileSweepTimeoutMs: Long = 180_000,
     /** Packet sizes and repeats for the foreground send/receive reliability sweep. */
     val liveTestSweepSteps: List<SweepStep> = SweepPlan.DEFAULT,
     val wifiLiveTestSweepSteps: List<SweepStep> = SweepPlan.DEFAULT,
     val mobileLiveTestSweepSteps: List<SweepStep> = SweepPlan.MOBILE_DEFAULT,
+
+    /**
+     * Bytes moved per back-to-back round of the continuous download/upload
+     * *stream* phases (as opposed to the size sweep, which already had its own
+     * per-network ladder and timeout).
+     *
+     * These used to be a single Wi-Fi-sized default no matter which network the
+     * test ran on. A 500,000-byte round needs about 61 seconds on a 64 kbit/s
+     * line — longer than [wifiStreamRoundTimeoutMs] — so on real cellular a
+     * round almost never finished within its own timeout: the upload episode
+     * (250,000 bytes, ~31s at 64 kbit/s) failed its very first round before a
+     * single `up_ack` came back, leaving the live upload chart empty, and the
+     * download episode's reported rate was dominated by whatever one huge,
+     * still-in-flight round happened to have buffered when the phase deadline
+     * cut it off — not a rate averaged over many completed rounds. Sizing
+     * cellular rounds like the mobile sweep ladder (tens of KB, not hundreds)
+     * lets several rounds complete inside one phase so the cumulative average
+     * actually means something.
+     */
+    val wifiDownRoundBytes: Int = 500_000,
+    val wifiUpRoundBytes: Int = 250_000,
+    val wifiStreamRoundTimeoutMs: Long = 30_000,
+    val mobileDownRoundBytes: Int = 32_000,
+    val mobileUpRoundBytes: Int = 16_000,
+    val mobileStreamRoundTimeoutMs: Long = 30_000,
+
+    /**
+     * User-editable total (both directions) for [de.sevenapp.monitor.android.livetest.LiveTestRunner.runSustainedProbe] —
+     * one uninterrupted transfer per direction, run only when the user asks
+     * for it, specifically to exhaust a token-bucket burst allowance ("stuck"
+     * or banked-up volume a throttled plan lets you spend at full speed) and
+     * reveal the throttled rate underneath it.
+     *
+     * Split 3:1 download:upload via [sustainedProbeMaxDownBytes]/[sustainedProbeMaxUpBytes]
+     * below, matching the asymmetry every measurement on this project has
+     * actually shown (upload's burst allowance drains almost immediately;
+     * download's takes much more to exhaust). Exposed as one number in
+     * Settings because the person setting it is reasoning about "how big a
+     * download proves this," not about the split.
+     *
+     * Both a byte ceiling and a time ceiling apply per direction, and
+     * whichever is hit first ends that direction — see
+     * [sustainedProbeMaxDurationMs]. The byte ceiling is what bounds the
+     * worst-case cost if the link turns out not to be throttled at all right
+     * now; the time ceiling is what bounds how long the user waits if the
+     * link is genuinely slow.
+     */
+    val sustainedProbeTotalBytes: Long = 4_000_000,
+    val sustainedProbeMaxDurationMs: Long = 60_000,
+    /**
+     * Whether a manual test's stream phase is followed by the sustained probe.
+     *
+     * Off by default and manual-only — never read by automatic/background
+     * monitoring, which has its own strict, pre-reserved data budget (see
+     * [AutomaticTransfers]) that a silent extra few MB per cycle would break.
+     */
+    val sustainedProbeEnabled: Boolean = false,
     /** Expensive tests explicitly selected for an automatic WorkManager cycle. */
     val automaticStreamEnabled: Boolean = false,
     val automaticSweepEnabled: Boolean = false,
@@ -108,12 +172,25 @@ data class ProbeConfig(
 
     val preferredTestNetwork: NetworkPreference = NetworkPreference.AUTO,
 ) {
+    /** 3:1 split of [sustainedProbeTotalBytes] — see its doc comment for why. */
+    val sustainedProbeMaxDownBytes: Long get() = sustainedProbeTotalBytes * 3 / 4
+    val sustainedProbeMaxUpBytes: Long get() = sustainedProbeTotalBytes - sustainedProbeMaxDownBytes
+
     fun downUrl(bytes: Int): String = downUrlTemplate.replace("{bytes}", bytes.toString())
 
     fun cyclesPerDay(): Int = if (cycleIntervalMinutes <= 0) 0 else (24 * 60) / cycleIntervalMinutes
 
     fun sweepTimeoutMs(network: NetworkType): Long =
         if (network == NetworkType.CELLULAR) mobileSweepTimeoutMs else wifiSweepTimeoutMs
+
+    fun downRoundBytes(network: NetworkType): Int =
+        if (network == NetworkType.CELLULAR) mobileDownRoundBytes else wifiDownRoundBytes
+
+    fun upRoundBytes(network: NetworkType): Int =
+        if (network == NetworkType.CELLULAR) mobileUpRoundBytes else wifiUpRoundBytes
+
+    fun streamRoundTimeoutMs(network: NetworkType): Long =
+        if (network == NetworkType.CELLULAR) mobileStreamRoundTimeoutMs else wifiStreamRoundTimeoutMs
 
     fun measurementSizes(network: NetworkType): List<Int> = when (network) {
         NetworkType.WIFI -> wifiMeasurementSizes

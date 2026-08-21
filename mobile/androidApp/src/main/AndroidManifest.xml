@@ -19,14 +19,17 @@
     <!-- Report delivery. Runtime-requested on Android 13+. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- Phase 2 (intensive mode) only. Declared here for reference but the
-         service itself is not registered yet: Android 14+ requires both the
-         type declaration AND a Play Console declaration form, and Android 15
-         caps dataSync at 6h per 24h. Shipping it demands the timeout handling
-         described in app.md §7.1, so it is deliberately not half-enabled.
+    <!-- Keeps a manual live test visible and running while the app is
+         minimized. Android 14+ additionally requires a Play Console
+         declaration form for the dataSync type before this can ship to the
+         Play Store; that is a store-listing requirement, not a runtime gate,
+         so it does not block a sideloaded/debug build. Android 15 caps
+         dataSync at 6h of cumulative foreground time per 24h — an
+         "Unlimited"-duration manual test can in principle hit that, at which
+         point the OS itself throws and the run ends; a bounded per-phase
+         duration never gets close. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    -->
 
     <application
         android:name=".MonitorApplication"
@@ -71,6 +74,11 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+
+        <service
+            android:name=".work.LiveTestForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
     </application>
 </manifest>

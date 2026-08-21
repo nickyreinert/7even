@@ -7,6 +7,7 @@ import de.sevenapp.monitor.probe.ProbeConfig
 import de.sevenapp.monitor.probe.LatestSweeps
 import de.sevenapp.monitor.probe.SweepResult
 import de.sevenapp.monitor.probe.SweepRunner
+import de.sevenapp.monitor.probe.SweepSizeStats
 
 /**
  * Everything the engine needs to persist, expressed as an interface in
@@ -25,6 +26,17 @@ interface MonitorStore {
     /** Foreground size-sweep results are retained separately from history charts. */
     suspend fun loadLatestSweeps(): LatestSweeps = LatestSweeps()
     suspend fun saveLatestSweep(direction: SweepRunner.Direction, results: List<SweepResult>) {}
+
+    /**
+     * One completed rung, for the size-sweep history overview — every rung of
+     * every run, not just the latest sweep's snapshot. [loadLatestSweeps]
+     * answers "what did the most recent sweep find"; this answers "how has
+     * each size actually done over time."
+     */
+    suspend fun recordSweepRung(direction: SweepRunner.Direction, bytes: Int, trials: Int, passCount: Int) {}
+
+    /** Cumulative pass/fail totals per (direction, size), across every recorded rung. */
+    suspend fun sweepRungTotals(): List<SweepSizeStats> = emptyList()
 
     /** Monotonic counter driving tier selection; must survive process death. */
     suspend fun nextCycleIndex(): Long

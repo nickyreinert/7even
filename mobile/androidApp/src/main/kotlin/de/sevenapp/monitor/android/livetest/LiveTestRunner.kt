@@ -1,6 +1,7 @@
 package de.sevenapp.monitor.android.livetest
 
 import android.content.Context
+import android.util.Log
 import de.sevenapp.monitor.android.net.KtorTransport
 import de.sevenapp.monitor.android.net.NativeAuth
 import de.sevenapp.monitor.android.net.NetworkBinder
@@ -108,6 +109,14 @@ class LiveTestRunner(
         // no successful probes on it at all.
         pingTimeoutMs = probeConfig.pingTimeoutMs,
         sweepTimeoutMs = probeConfig.sweepTimeoutMs(effectiveNetworkType),
+        // Also used to be hardcoded to the Wi-Fi-sized default regardless of
+        // network — see the doc comment on these fields in ProbeConfig for why
+        // that broke both the upload chart and the download rate's accuracy on
+        // a slow cellular link.
+        downRoundBytes = probeConfig.downRoundBytes(effectiveNetworkType),
+        upRoundBytes = probeConfig.upRoundBytes(effectiveNetworkType),
+        streamRoundTimeoutMs = probeConfig.streamRoundTimeoutMs(effectiveNetworkType),
+        sustainedProbeEnabled = probeConfig.sustainedProbeEnabled,
     )
 
     private val ssidForSamples: String?
@@ -115,6 +124,12 @@ class LiveTestRunner(
 
     /** @return the total bytes this run moved, for the caller's data accounting. */
     suspend fun runSession(onSample: (LiveSample) -> Unit): Long {
+        Log.d(
+            TAG,
+            "session start: network=$effectiveNetworkType preference=$networkPreference " +
+                "downRoundBytes=${liveConfig.downRoundBytes} upRoundBytes=${liveConfig.upRoundBytes} " +
+                "streamRoundTimeoutMs=${liveConfig.streamRoundTimeoutMs} sweepTimeoutMs=${liveConfig.sweepTimeoutMs}",
+        )
         emitPhase(onSample, LivePhase.CONNECTING, step = 0, durationMs = null)
         NetworkBinder.withNetwork(context, networkPreference) { network ->
             val httpTransport = KtorTransport(KtorTransport.defaultClient(network))
@@ -138,6 +153,7 @@ class LiveTestRunner(
 
                     if (ws != null && runStream) runStreamPhases(ws, onSample)
                     if (ws != null && runSweep) runWebSocketSweep(ws, onSample)
+                    if (ws != null && liveConfig.sustainedProbeEnabled) runSustainedProbePhases(ws, onSample)
                     // "Unlimited" has no per-phase deadline to divide up, so it
                     // cycles the same phases until the user stops it.
                 } while (liveConfig.isUnlimited && !budgetExhausted)
@@ -147,6 +163,83 @@ class LiveTestRunner(
             }
         }
         return bytesMovedTotal
+    }
+
+    /**
+     * One uninterrupted download, then one uninterrupted upload, each bounded
+     * by [ProbeConfig.sustainedProbeMaxDownBytes]/[ProbeConfig.sustainedProbeMaxUpBytes]
+     * and [ProbeConfig.sustainedProbeMaxDurationMs] rather than by the user's
+     * chosen phase duration — appended after [runStreamPhases]/[runWebSocketSweep]
+     * only when [LiveTestConfig.sustainedProbeEnabled] is on (a Settings
+     * toggle, off by default). Automatic/background monitoring never sets it:
+     * that path has its own strict, pre-reserved data budget that a silent
+     * extra few MB per cycle would break.
+     *
+     * The regular stream phase is deliberately short and moves only a few
+     * hundred KB, which cannot tell a carrier's *burst* allowance apart from
+     * its *sustained* throttle on a plan that rate-limits with a token bucket
+     * (a "Taktung 10 kB" mobile plan grants bandwidth credit in quanta, not an
+     * instant hard per-packet cap — a fresh transfer can spend banked-up credit
+     * at full radio speed before settling to the enforced rate). This probe
+     * exists purely to move enough data, uninterrupted, to spend that credit
+     * and show what the connection actually sustains once it is gone — which
+     * is why [LiveSample.Rate]'s cumulative-average samples are exactly what
+     * this needs: an early sample is burst-dominated, a late one (once several
+     * hundred KB to a few MB have crossed) is not.
+     */
+    private suspend fun runSustainedProbePhases(ws: WsLiveTestClient, onSample: (LiveSample) -> Unit) {
+        ws.ensureConnected()
+        // Follows however many steps the regular phases already claimed, so
+        // numbering stays correct whether the sweep ran or not.
+        val stepBase = LiveTestConfig.PHASE_COUNT + if (liveConfig.sweepEnabled) 2 else 0
+
+        emitPhase(onSample, LivePhase.SUSTAINED_DOWNLOAD, step = stepBase + 1, durationMs = null)
+        val down = ws.runDownEpisode(
+            roundBytes = liveConfig.downRoundBytes,
+            episodeDurationMs = probeConfig.sustainedProbeMaxDurationMs,
+            roundTimeoutMs = liveConfig.streamRoundTimeoutMs,
+            progressThrottleMs = liveConfig.progressThrottleMs,
+            maxBytes = probeConfig.sustainedProbeMaxDownBytes,
+        ) { bytes, elapsedMs ->
+            // Cumulative, not instantaneous — same reasoning as everywhere
+            // else this shape of callback is used. Logged at every throttled
+            // step (not just the final number) specifically so the curve is
+            // reconstructable afterwards: where a token-bucket-throttled
+            // connection's cumulative average *stops decaying and flattens*
+            // is, by construction, its refill rate — the number the "burst
+            // vs steady" summary can only approximate from one aggregate.
+            Log.d(TAG, "sustained download progress: bytes=$bytes elapsedMs=$elapsedMs rate=${mbpsOf(bytes, elapsedMs)}Mbps")
+            mbpsOf(bytes, elapsedMs)?.let {
+                onSample(LiveSample.Rate(clock.nowEpochMs(), SweepRunner.Direction.DOWN, it))
+            }
+        }
+        Log.d(TAG, "sustained download: $down rate=${mbpsOf(down.bytes, down.elapsedMs)}Mbps")
+
+        emitPhase(onSample, LivePhase.SUSTAINED_UPLOAD, step = stepBase + 2, durationMs = null)
+        // The download episode's last round very often drops the socket on
+        // its way out — see runDownEpisode's own comment: a round timeout
+        // that coincides with the episode's time ceiling leaves the server
+        // mid-protocol, so the client deliberately closes rather than reusing
+        // it. Without reconnecting here, that shows up as the upload
+        // instantly failing with NO_NETWORK — a null session, not an actual
+        // network problem. runStreamPhases avoids this the same way, once per
+        // phase; this only did it once for the whole probe.
+        ws.ensureConnected()
+        val up = ws.runUpEpisode(
+            roundBytes = liveConfig.upRoundBytes,
+            episodeDurationMs = probeConfig.sustainedProbeMaxDurationMs,
+            roundTimeoutMs = liveConfig.streamRoundTimeoutMs,
+            progressThrottleMs = liveConfig.progressThrottleMs,
+            maxBytes = probeConfig.sustainedProbeMaxUpBytes,
+        ) { bytes, elapsedMs ->
+            Log.d(TAG, "sustained upload progress: bytes=$bytes elapsedMs=$elapsedMs rate=${mbpsOf(bytes, elapsedMs)}Mbps")
+            mbpsOf(bytes, elapsedMs)?.let {
+                onSample(LiveSample.Rate(clock.nowEpochMs(), SweepRunner.Direction.UP, it))
+            }
+        }
+        Log.d(TAG, "sustained upload: $up rate=${mbpsOf(up.bytes, up.elapsedMs)}Mbps")
+
+        persistEpisode(down, up)
     }
 
     /**
@@ -251,18 +344,20 @@ class LiveTestRunner(
             }
         }
 
+        Log.d(TAG, "download episode: $down rate=${mbpsOf(down.bytes, down.elapsedMs)}Mbps")
+        Log.d(TAG, "upload episode: $up rate=${mbpsOf(up.bytes, up.elapsedMs)}Mbps")
         persistEpisode(down, up)
     }
 
     private suspend fun runWebSocketSweep(ws: WsLiveTestClient, onSample: (LiveSample) -> Unit) {
         ws.ensureConnected()
         emitPhase(onSample, LivePhase.DOWNLOAD_SWEEP, step = 4, durationMs = null)
-        val down = runWebSocketSweepDirection(ws, SweepRunner.Direction.DOWN)
+        val down = runWebSocketSweepDirection(ws, SweepRunner.Direction.DOWN, onSample)
         store.saveLatestSweep(SweepRunner.Direction.DOWN, down)
         onSample(LiveSample.Sweep(clock.nowEpochMs(), SweepRunner.Direction.DOWN, down))
 
         emitPhase(onSample, LivePhase.UPLOAD_SWEEP, step = 5, durationMs = null)
-        val up = runWebSocketSweepDirection(ws, SweepRunner.Direction.UP)
+        val up = runWebSocketSweepDirection(ws, SweepRunner.Direction.UP, onSample)
         store.saveLatestSweep(SweepRunner.Direction.UP, up)
         onSample(LiveSample.Sweep(clock.nowEpochMs(), SweepRunner.Direction.UP, up))
 
@@ -285,11 +380,31 @@ class LiveTestRunner(
     private suspend fun runWebSocketSweepDirection(
         ws: WsLiveTestClient,
         direction: SweepRunner.Direction,
+        onSample: (LiveSample) -> Unit,
     ): List<SweepResult> {
         val results = mutableListOf<SweepResult>()
-        for (step in liveConfig.sweepSteps) {
-            val result = runSweepStep(ws, direction, step)
+        val steps = liveConfig.sweepSteps
+        for (index in steps.indices) {
+            val result = runSweepStep(ws, direction, steps[index])
             results += result
+            Log.d(
+                TAG,
+                "sweep $direction ${index + 1}/${steps.size}: bytes=${result.bytes} passed=${result.passCount}/${result.attempted} " +
+                    "moved=${result.bytesTransferred} elapsedMs=${result.totalElapsedMs} rate=${result.observedMbps}Mbps lastError=${result.lastError}",
+            )
+            // Attempted, not the configured trial count: a cancelled rung
+            // recorded as if every trial had run would inflate the failure
+            // count for a size that was never actually finished testing.
+            store.recordSweepRung(direction, result.bytes, result.attempted, result.passCount)
+            onSample(
+                LiveSample.SweepStepResult(
+                    atEpochMs = clock.nowEpochMs(),
+                    direction = direction,
+                    stepIndex = index + 1,
+                    stepCount = steps.size,
+                    result = result,
+                ),
+            )
             val linkIsDead = result.passCount == 0 &&
                 result.attempted > 0 &&
                 result.bytesTransferred == 0L
@@ -415,5 +530,7 @@ class LiveTestRunner(
          * fire at the same instant and throw away the episode's numbers.
          */
         private const val STREAM_PHASE_GRACE_MS = 2_000L
+
+        private const val TAG = "SevenLiveTest"
     }
 }

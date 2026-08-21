@@ -2,7 +2,9 @@ package de.sevenapp.monitor.android.ui
 
 import android.app.Application
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.SystemClock
@@ -14,6 +16,7 @@ import de.sevenapp.monitor.android.livetest.LiveTestRunner
 import de.sevenapp.monitor.android.net.NetworkBinder
 import de.sevenapp.monitor.android.work.ProbeWorker
 import de.sevenapp.monitor.android.work.ReportWorker
+import de.sevenapp.monitor.android.work.LiveTestForegroundService
 import de.sevenapp.monitor.android.work.MonitoringNotification
 import de.sevenapp.monitor.core.NetworkType
 import de.sevenapp.monitor.core.NetworkPreference
@@ -25,6 +28,7 @@ import de.sevenapp.monitor.entitlement.FeatureGate
 import de.sevenapp.monitor.entitlement.Tier
 import de.sevenapp.monitor.probe.DataBudget
 import de.sevenapp.monitor.probe.DeviceState
+import de.sevenapp.monitor.probe.LivePhase
 import de.sevenapp.monitor.probe.LiveSample
 import de.sevenapp.monitor.probe.LiveTestConfig
 import de.sevenapp.monitor.probe.SweepRunner
@@ -39,6 +43,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 
+/** One human-readable line in the probe log — a phase change, a ping, a stream rate summary, or a sweep rung. */
+data class LiveLogEntry(val atEpochMs: Long, val text: String)
+
 data class DashboardState(
     val tier: Tier = Tier.FREE,
     val monitoringEnabled: Boolean = false,
@@ -47,9 +54,15 @@ data class DashboardState(
     val liveTestDurationMs: Long = LiveTestConfig.DEFAULT_PHASE_DURATION_MS,
     val monitoringNetworks: Set<NetworkType> = setOf(NetworkType.WIFI, NetworkType.CELLULAR),
     val manualNetwork: NetworkPreference = NetworkPreference.WIFI,
+    /** Whether any Wi-Fi network is currently reachable — hides "Wi-Fi" as a manual-test choice when it plainly isn't. */
+    val wifiAvailable: Boolean = true,
     val lightDownBytes: Int = 256 * 1024,
     val lightUpBytes: Int = 128 * 1024,
     val manualTestRunning: Boolean = false,
+    /** Whether Settings has the sustained probe toggle on — shown as a heads-up next to the test button. */
+    val sustainedProbeEnabled: Boolean = false,
+    /** True once the current/most recent run reached its sustained-probe phase, so the chart/summary below know whose data they're showing. */
+    val ranSustainedProbe: Boolean = false,
     /** Elapsed time within the *current phase*, which is what the countdown counts. */
     val manualTestElapsedMs: Long = 0L,
     val manualTestStep: Int = 0,
@@ -69,6 +82,8 @@ data class DashboardState(
     val liveUploadMbps: List<Double> = emptyList(),
     val latestDownloadSweep: List<SweepResult> = emptyList(),
     val latestUploadSweep: List<SweepResult> = emptyList(),
+    /** Every phase/ping/rate/sweep-rung event from the current or most recent manual run, oldest-first. */
+    val liveLog: List<LiveLogEntry> = emptyList(),
     val latencyMedianMs: Double? = null,
     val jitterMs: Double? = null,
     val lossPct: Double? = null,
@@ -81,6 +96,23 @@ data class DashboardState(
     val stability: StabilityScore.Result? = null,
 )
 
+/**
+ * "2/5 · Download stream · 00:07" — shared by the manual-test button label and
+ * the foreground-service notification so the two surfaces can't drift apart.
+ */
+internal fun phaseProgressLabel(state: DashboardState): String {
+    val phaseMs = state.manualTestPhaseDurationMs
+    val displayedMs = if (phaseMs == null || phaseMs == Long.MAX_VALUE) {
+        state.manualTestElapsedMs
+    } else {
+        (phaseMs - state.manualTestElapsedMs).coerceAtLeast(0L)
+    }
+    val seconds = displayedMs / 1_000
+    val timer = "%02d:%02d".format(seconds / 60, seconds % 60)
+    val step = if (state.manualTestStep <= 0) "" else "${state.manualTestStep}/${state.manualTestTotalSteps} · "
+    return "$step${state.manualTestStepLabel} · $timer"
+}
+
 class DashboardViewModel(app: Application) : AndroidViewModel(app) {
 
     private val store = RoomMonitorStore.get(app)
@@ -92,7 +124,64 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
     private var manualTimerJob: Job? = null
     private var manualRunGeneration = 0L
 
-    init { refresh() }
+    /**
+     * Tracks whether any Wi-Fi network is currently reachable, live — not just
+     * at the moment [refresh] happened to run. A one-shot check at screen-open
+     * wouldn't notice the user turning Wi-Fi off while already looking at this
+     * screen, which is exactly when offering "test on Wi-Fi" as a live choice
+     * is most misleading: it would just fail with "unavailable" instead of
+     * never being offered.
+     */
+    private val wifiAvailabilityCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) = applyWifiAvailability(true)
+
+        override fun onLost(network: Network) {
+            // Re-checked rather than assumed false: onLost fires per-network,
+            // and another Wi-Fi network could still be up.
+            applyWifiAvailability(currentlyHasWifi())
+        }
+    }
+
+    private fun applyWifiAvailability(available: Boolean) {
+        _state.update {
+            it.copy(
+                wifiAvailable = available,
+                // Otherwise the manual-network choice is left selected on a
+                // now-disabled chip, and "Start monitoring" would just fail
+                // with "Wi-Fi is unavailable" instead of the chip having
+                // stopped offering it.
+                manualNetwork = if (!available && it.manualNetwork == NetworkPreference.WIFI) {
+                    NetworkPreference.CELLULAR
+                } else {
+                    it.manualNetwork
+                },
+            )
+        }
+    }
+
+    init {
+        refresh()
+        val cm = getApplication<Application>().getSystemService(ConnectivityManager::class.java)
+        val wifiRequest = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+        runCatching { cm?.registerNetworkCallback(wifiRequest, wifiAvailabilityCallback) }
+    }
+
+    override fun onCleared() {
+        val cm = getApplication<Application>().getSystemService(ConnectivityManager::class.java)
+        runCatching { cm?.unregisterNetworkCallback(wifiAvailabilityCallback) }
+    }
+
+    private fun currentlyHasWifi(): Boolean {
+        val cm = getApplication<Application>().getSystemService(ConnectivityManager::class.java) ?: return true
+        return cm.allNetworks.any { network ->
+            val caps = cm.getNetworkCapabilities(network)
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        }
+    }
 
     fun refresh() = viewModelScope.launch {
         val app = getApplication<Application>()
@@ -108,15 +197,27 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
 
         val drops = store.dropsOverlapping(dayAgo, now)
         val lossPct = if (pings.isEmpty()) null else (failures.toDouble() / pings.size) * 100.0
+        // Computed here, not left to the separately-registered NetworkCallback,
+        // so app startup has one authoritative place setting the initial
+        // manualNetwork/wifiAvailable pair instead of two async writers racing
+        // to set it (the callback is only for live changes after this point).
+        val wifiAvailable = currentlyHasWifi()
+        val resolvedManualNetwork = config.preferredTestNetwork.let { if (it == NetworkPreference.AUTO) NetworkPreference.WIFI else it }
         _state.value = _state.value.copy(
             tier = entitlements.effectiveTier(now),
             monitoringEnabled = RoomMonitorStore.isMonitoringEnabled(app),
             intervalMinutes = config.cycleIntervalMinutes,
             liveTestDurationMs = config.liveTestPhaseDurationMs,
             monitoringNetworks = config.monitoringNetworks,
-            manualNetwork = config.preferredTestNetwork.let { if (it == NetworkPreference.AUTO) NetworkPreference.WIFI else it },
+            manualNetwork = if (!wifiAvailable && resolvedManualNetwork == NetworkPreference.WIFI) {
+                NetworkPreference.CELLULAR
+            } else {
+                resolvedManualNetwork
+            },
+            wifiAvailable = wifiAvailable,
             lightDownBytes = config.lightDownBytes,
             lightUpBytes = config.lightUpBytes,
+            sustainedProbeEnabled = config.sustainedProbeEnabled,
             recentPings = store.recentPings(120).reversed(), // oldest-first for the chart
             recentThroughput = store.throughputBetween(dayAgo, now).takeLast(8),
             latestDownloadSweep = latestSweeps.download,
@@ -154,6 +255,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             _state.update {
                 it.copy(
                     manualTestRunning = true,
+                    ranSustainedProbe = false,
                     manualTestError = null,
                     manualTestStep = 0,
                     manualTestStepLabel = "Connecting to ${if (it.manualNetwork == NetworkPreference.CELLULAR) "mobile data" else "Wi-Fi"}",
@@ -164,12 +266,23 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
                     liveUploadMbps = emptyList(),
                     latestDownloadSweep = emptyList(),
                     latestUploadSweep = emptyList(),
+                    liveLog = emptyList(),
                 )
             }
 
             val app = getApplication<Application>()
+            // Raises the process's importance and gives the run a lock-screen/
+            // notification-shade surface, so a minimized app does not silently
+            // lose or hide a multi-minute mobile test. See
+            // LiveTestForegroundService's doc comment.
+            LiveTestForegroundService.start(app, phaseProgressLabel(_state.value))
             val config = store.loadConfig()
             val deviceState = readDeviceState()
+            // Throttled independently per direction so a 200ms-cadence Rate
+            // stream does not flood the log with a line per sample; once a
+            // second is enough to show the number is moving.
+            var lastDownRateLogAt = 0L
+            var lastUpRateLogAt = 0L
             try {
                 LiveTestRunner(
                     context = app,
@@ -188,35 +301,95 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
                     // resetting the visible step to "Ping".
                     if (sample is LiveSample.Phase) startPhaseTimer(runGeneration, sample)
 
+                    // One log line per event, covering every phase — not just
+                    // ping. This is what used to make a running stream or a
+                    // multi-minute cellular sweep indistinguishable from a
+                    // hang: the probe log only ever rendered ping samples, so
+                    // nothing visibly happened once the ping phase ended.
+                    val logLine: String? = when (sample) {
+                        is LiveSample.Phase -> "▶ ${sample.phase.label}"
+                        is LiveSample.Ping -> "Ping " + (sample.rttMs?.let { "${it.toInt()} ms" } ?: "no reply")
+                        is LiveSample.Rate -> {
+                            val last = if (sample.direction == SweepRunner.Direction.DOWN) lastDownRateLogAt else lastUpRateLogAt
+                            if (sample.atEpochMs - last >= 1_000L) {
+                                if (sample.direction == SweepRunner.Direction.DOWN) {
+                                    lastDownRateLogAt = sample.atEpochMs
+                                } else {
+                                    lastUpRateLogAt = sample.atEpochMs
+                                }
+                                val dir = if (sample.direction == SweepRunner.Direction.DOWN) "Down" else "Up"
+                                "$dir ${formatMbps(sample.mbps)}"
+                            } else {
+                                null
+                            }
+                        }
+                        is LiveSample.Sweep -> {
+                            val dir = if (sample.direction == SweepRunner.Direction.DOWN) "Download" else "Upload"
+                            val passed = sample.results.count { it.outcome == SweepResult.Outcome.ALL_PASSED }
+                            "$dir sweep finished · $passed/${sample.results.size} sizes fully passed"
+                        }
+                        is LiveSample.SweepStepResult -> {
+                            val dir = if (sample.direction == SweepRunner.Direction.DOWN) "Down" else "Up"
+                            val verdict = when (sample.result.outcome) {
+                                SweepResult.Outcome.ALL_PASSED -> "passed"
+                                SweepResult.Outcome.ALL_FAILED -> "failed"
+                                SweepResult.Outcome.MIXED -> "${sample.result.passCount}/${sample.result.attempted} passed"
+                                SweepResult.Outcome.INCOMPLETE -> "incomplete"
+                            }
+                            val rate = sample.result.observedMbps?.let { " · ${formatMbps(it)}" } ?: ""
+                            "$dir sweep ${sample.stepIndex}/${sample.stepCount} · ${formatBytesShort(sample.result.bytes)} $verdict$rate"
+                        }
+                    }
+
                     _state.update { current ->
+                        val withLog = if (logLine != null) {
+                            current.copy(liveLog = (current.liveLog + LiveLogEntry(sample.atEpochMs, logLine)).takeLast(200))
+                        } else {
+                            current
+                        }
                         when (sample) {
-                            is LiveSample.Phase -> current.copy(
-                                manualTestStep = sample.step,
-                                manualTestTotalSteps = sample.totalSteps,
-                                manualTestStepLabel = sample.phase.label,
-                                manualTestPhaseDurationMs = sample.durationMs,
-                            )
-                            is LiveSample.Rate -> when (sample.direction) {
-                                SweepRunner.Direction.DOWN -> current.copy(
-                                    liveDownloadMbps = (current.liveDownloadMbps + sample.mbps).takeLast(120),
-                                )
-                                SweepRunner.Direction.UP -> current.copy(
-                                    liveUploadMbps = (current.liveUploadMbps + sample.mbps).takeLast(120),
+                            is LiveSample.Phase -> {
+                                val enteringSustained = sample.phase == LivePhase.SUSTAINED_DOWNLOAD ||
+                                    sample.phase == LivePhase.SUSTAINED_UPLOAD
+                                withLog.copy(
+                                    manualTestStep = sample.step,
+                                    manualTestTotalSteps = sample.totalSteps,
+                                    manualTestStepLabel = sample.phase.label,
+                                    manualTestPhaseDurationMs = sample.durationMs,
+                                    // The sustained probe's decay curve needs a
+                                    // clean chart: mixing in the short regular
+                                    // stream's samples would corrupt both the
+                                    // visual and the peak/steady-state summary
+                                    // below it.
+                                    liveDownloadMbps = if (sample.phase == LivePhase.SUSTAINED_DOWNLOAD) emptyList() else withLog.liveDownloadMbps,
+                                    liveUploadMbps = if (sample.phase == LivePhase.SUSTAINED_UPLOAD) emptyList() else withLog.liveUploadMbps,
+                                    ranSustainedProbe = withLog.ranSustainedProbe || enteringSustained,
                                 )
                             }
-                            is LiveSample.Ping -> current.copy(
-                                livePings = (current.livePings + PingSample(
+                            is LiveSample.Rate -> when (sample.direction) {
+                                SweepRunner.Direction.DOWN -> withLog.copy(
+                                    liveDownloadMbps = (withLog.liveDownloadMbps + sample.mbps).takeLast(120),
+                                )
+                                SweepRunner.Direction.UP -> withLog.copy(
+                                    liveUploadMbps = (withLog.liveUploadMbps + sample.mbps).takeLast(120),
+                                )
+                            }
+                            is LiveSample.Ping -> withLog.copy(
+                                livePings = (withLog.livePings + PingSample(
                                     atEpochMs = sample.atEpochMs,
                                     rttMs = sample.rttMs,
                                     networkType = deviceState.networkType,
                                 )).takeLast(120),
                             )
                             is LiveSample.Sweep -> when (sample.direction) {
-                                SweepRunner.Direction.DOWN -> current.copy(latestDownloadSweep = sample.results)
-                                SweepRunner.Direction.UP -> current.copy(latestUploadSweep = sample.results)
+                                SweepRunner.Direction.DOWN -> withLog.copy(latestDownloadSweep = sample.results)
+                                SweepRunner.Direction.UP -> withLog.copy(latestUploadSweep = sample.results)
                             }
+                            is LiveSample.SweepStepResult -> withLog
                         }
                     }
+
+                    if (sample is LiveSample.Phase) LiveTestForegroundService.update(phaseProgressLabel(_state.value))
                 }
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
@@ -236,6 +409,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
                 if (runGeneration == manualRunGeneration) {
                     manualTimerJob?.cancel()
                     manualTimerJob = null
+                    LiveTestForegroundService.stop(app)
                     _state.update {
                         it.copy(
                             manualTestRunning = false,
@@ -256,6 +430,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
         manualTestJob = null
         manualTimerJob?.cancel()
         manualTimerJob = null
+        LiveTestForegroundService.stop(getApplication())
         _state.update {
             it.copy(manualTestRunning = false, manualTestElapsedMs = 0L, manualTestPhaseDurationMs = null)
         }
@@ -281,6 +456,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update {
                     it.copy(manualTestElapsedMs = (SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(0L))
                 }
+                LiveTestForegroundService.update(phaseProgressLabel(_state.value))
                 delay(1_000)
             }
         }
@@ -357,6 +533,16 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
         refresh()
     }
 
+    /**
+     * Same persisted field, same effect, as [de.sevenapp.monitor.android.ui.SettingsViewModel.setSustainedProbe] —
+     * mirrored here so the switch on this screen and the one in Settings
+     * agree without one of them needing to own the setting.
+     */
+    fun setSustainedProbe(enabled: Boolean) = viewModelScope.launch {
+        store.saveConfig(store.loadConfig().copy(sustainedProbeEnabled = enabled))
+        refresh()
+    }
+
     fun setMeasurementSize(bytes: Int) = viewModelScope.launch {
         // Mobile's light test intentionally uses the same size in both
         // directions. That makes its battery/data cost easy to understand.
@@ -386,4 +572,11 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
         } else null
         return DeviceState(networkType = type, isCharging = charging, isMetered = metered, ssid = ssid)
     }
+}
+
+/** "16KB", "1MB" — compact enough for one probe-log line. */
+internal fun formatBytesShort(bytes: Int): String = when {
+    bytes % 1_000_000 == 0 -> "${bytes / 1_000_000}MB"
+    bytes % 1_000 == 0 -> "${bytes / 1_000}KB"
+    else -> "${bytes}B"
 }

@@ -59,6 +59,11 @@ fun SettingsScreen(
     val state by viewModel.state.collectAsState()
     var recurrenceMenuOpen by remember { mutableStateOf(false) }
     var clearHistoryDialogOpen by remember { mutableStateOf(false) }
+    // Mirrors the same fix on DashboardScreen: this screen's own ViewModel
+    // instance doesn't otherwise notice a setting (like "automatic
+    // measurement" or "sustained speed check") changed from the Monitor
+    // screen's switches for the same persisted config.
+    androidx.compose.runtime.LaunchedEffect(Unit) { viewModel.refresh() }
 
     LazyColumn(
         modifier = modifier.fillMaxSize().padding(16.dp),
@@ -181,6 +186,38 @@ fun SettingsScreen(
                         "sweep runs once at the end. A 10 sec choice therefore takes about 30 seconds " +
                         "plus the sweep. Automatic background tests cap each phase at 30 seconds " +
                         "regardless of this setting.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CheckRow(
+                        label = "Sustained speed check",
+                        checked = state.sustainedProbeEnabled,
+                        enabled = true,
+                        onCheckedChange = viewModel::setSustainedProbe,
+                        modifier = Modifier.weight(1f),
+                    )
+                    var sizeMbText by remember(state.sustainedProbeTotalMb) { mutableStateOf(state.sustainedProbeTotalMb.toString()) }
+                    OutlinedTextField(
+                        value = sizeMbText,
+                        onValueChange = { value ->
+                            sizeMbText = value
+                            value.toIntOrNull()?.let { viewModel.setSustainedProbeSizeMb(it) }
+                        },
+                        label = { Text("MB") },
+                        modifier = Modifier.width(88.dp),
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    )
+                }
+                Text(
+                    "Adds one uninterrupted download then upload after the regular test, specifically " +
+                        "to \"use up\" any banked-up burst allowance a throttled mobile plan quietly " +
+                        "built up while idle, so the number left over is the real, sustained speed. " +
+                        "Bigger drains a deeper allowance but takes longer and costs more data; too " +
+                        "small and it may finish before the allowance actually runs out. See the Help " +
+                        "screen for the full explanation. Manual tests only — never part of automatic " +
+                        "background monitoring.",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -557,9 +594,10 @@ private fun CheckRow(
     label: String,
     checked: Boolean,
     enabled: Boolean,
+    modifier: Modifier = Modifier,
     onCheckedChange: (Boolean) -> Unit,
 ) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+    Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Checkbox(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
         Text(
             label,

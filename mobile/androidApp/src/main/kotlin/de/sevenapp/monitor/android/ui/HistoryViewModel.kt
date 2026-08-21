@@ -11,6 +11,7 @@ import de.sevenapp.monitor.core.DropEvent
 import de.sevenapp.monitor.core.NetworkType
 import de.sevenapp.monitor.core.Stats
 import de.sevenapp.monitor.core.StabilityScore
+import de.sevenapp.monitor.probe.SweepSizeStats
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -37,6 +38,8 @@ data class HistoryState(
     val chartLossPct: List<Double?> = emptyList(),
     val chartJitterMs: List<Double?> = emptyList(),
     val summary: HistorySummary = HistorySummary(),
+    /** Every recorded rung, totalled per size — not filtered by [connectionFilter], since the two sweep ladders barely share sizes anyway. */
+    val sweepSizeStats: List<SweepSizeStats> = emptyList(),
 )
 
 /**
@@ -130,6 +133,7 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
             chartThroughput = aggregated.throughput,
             chartLossPct = aggregated.lossPct,
             chartJitterMs = aggregated.jitterMs,
+            sweepSizeStats = store.sweepRungTotals(),
             summary = HistorySummary(
                 averageDownloadMbps = down.takeIf { it.isNotEmpty() }?.average(),
                 averageUploadMbps = up.takeIf { it.isNotEmpty() }?.average(),

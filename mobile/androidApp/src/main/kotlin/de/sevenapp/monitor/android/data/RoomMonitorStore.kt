@@ -25,6 +25,7 @@ import de.sevenapp.monitor.probe.FailureReason
 import de.sevenapp.monitor.probe.LatestSweeps
 import de.sevenapp.monitor.probe.SweepResult
 import de.sevenapp.monitor.probe.SweepRunner
+import de.sevenapp.monitor.probe.SweepSizeStats
 import de.sevenapp.monitor.report.ReportPeriod
 import kotlinx.coroutines.flow.first
 
@@ -61,8 +62,17 @@ class RoomMonitorStore(
             fullSweepsPerDay = prefs[KEY_FULL_PER_DAY] ?: defaults.fullSweepsPerDay,
             liveTestPhaseDurationMs = prefs[KEY_LIVE_DURATION] ?: defaults.liveTestPhaseDurationMs,
             liveTestSweepEnabled = prefs[KEY_LIVE_SWEEP] ?: defaults.liveTestSweepEnabled,
+            sustainedProbeEnabled = prefs[KEY_SUSTAINED_PROBE] ?: defaults.sustainedProbeEnabled,
+            sustainedProbeTotalBytes = prefs[KEY_SUSTAINED_PROBE_BYTES] ?: defaults.sustainedProbeTotalBytes,
             wifiSweepTimeoutMs = prefs[KEY_WIFI_SWEEP_TIMEOUT] ?: defaults.wifiSweepTimeoutMs,
-            mobileSweepTimeoutMs = prefs[KEY_MOBILE_SWEEP_TIMEOUT] ?: defaults.mobileSweepTimeoutMs,
+            // A persisted value equal to the old default is indistinguishable
+            // from "never customized" — see LEGACY_MOBILE_SWEEP_TIMEOUT_MS —
+            // so it is treated as such and upgraded, rather than silently
+            // shadowing the new, safe default for every install that predates
+            // this change.
+            mobileSweepTimeoutMs = prefs[KEY_MOBILE_SWEEP_TIMEOUT]
+                ?.takeUnless { it == LEGACY_MOBILE_SWEEP_TIMEOUT_MS }
+                ?: defaults.mobileSweepTimeoutMs,
             liveTestSweepSteps = prefs[KEY_LIVE_SWEEP_PLAN]?.let(SweepPlan::parse) ?: defaults.liveTestSweepSteps,
             wifiLiveTestSweepSteps = prefs[KEY_WIFI_LIVE_SWEEP_PLAN]?.let(SweepPlan::parse) ?: defaults.wifiLiveTestSweepSteps,
             mobileLiveTestSweepSteps = prefs[KEY_MOBILE_LIVE_SWEEP_PLAN]?.let(SweepPlan::parse) ?: defaults.mobileLiveTestSweepSteps,
@@ -97,6 +107,8 @@ class RoomMonitorStore(
             p[KEY_FULL_PER_DAY] = config.fullSweepsPerDay
             p[KEY_LIVE_DURATION] = config.liveTestPhaseDurationMs
             p[KEY_LIVE_SWEEP] = config.liveTestSweepEnabled
+            p[KEY_SUSTAINED_PROBE] = config.sustainedProbeEnabled
+            p[KEY_SUSTAINED_PROBE_BYTES] = config.sustainedProbeTotalBytes
             p[KEY_WIFI_SWEEP_TIMEOUT] = config.wifiSweepTimeoutMs
             p[KEY_MOBILE_SWEEP_TIMEOUT] = config.mobileSweepTimeoutMs
             p[KEY_LIVE_SWEEP_PLAN] = SweepPlan.format(config.liveTestSweepSteps)
@@ -134,6 +146,24 @@ class RoomMonitorStore(
             }
         }
     }
+
+    override suspend fun recordSweepRung(direction: SweepRunner.Direction, bytes: Int, trials: Int, passCount: Int) {
+        dao.insertSweepRung(
+            SweepRungEntity(
+                atEpochMs = System.currentTimeMillis(),
+                direction = direction.name,
+                bytes = bytes,
+                trials = trials,
+                passCount = passCount,
+            ),
+        )
+    }
+
+    override suspend fun sweepRungTotals(): List<SweepSizeStats> =
+        dao.sweepRungTotals().mapNotNull { row ->
+            val direction = runCatching { SweepRunner.Direction.valueOf(row.direction) }.getOrNull() ?: return@mapNotNull null
+            SweepSizeStats(direction = direction, bytes = row.bytes, trialsPassed = row.trialsPassed, trialsTotal = row.trialsTotal)
+        }
 
     override suspend fun nextCycleIndex(): Long {
         var next = 0L
@@ -251,6 +281,7 @@ class RoomMonitorStore(
         dao.pruneFullSweeps(epochMs)
         dao.pruneDataUsage(epochMs)
         dao.pruneDrops(epochMs)
+        dao.pruneSweepRungs(epochMs)
     }
 
     suspend fun clearHistory() {
@@ -259,6 +290,7 @@ class RoomMonitorStore(
         dao.clearFullSweeps()
         dao.clearDataUsage()
         dao.clearDrops()
+        dao.clearSweepRungs()
         context.settings.edit {
             it.remove(KEY_LATEST_DOWN_SWEEP)
             it.remove(KEY_LATEST_UP_SWEEP)
@@ -335,8 +367,25 @@ class RoomMonitorStore(
         private val KEY_FULL_PER_DAY = intPreferencesKey("full_sweeps_per_day")
         private val KEY_LIVE_DURATION = longPreferencesKey("live_test_min_duration_ms")
         private val KEY_LIVE_SWEEP = booleanPreferencesKey("live_test_sweep_enabled")
+        private val KEY_SUSTAINED_PROBE = booleanPreferencesKey("sustained_probe_enabled")
+        private val KEY_SUSTAINED_PROBE_BYTES = longPreferencesKey("sustained_probe_total_bytes")
         private val KEY_WIFI_SWEEP_TIMEOUT = longPreferencesKey("wifi_sweep_timeout_ms")
         private val KEY_MOBILE_SWEEP_TIMEOUT = longPreferencesKey("mobile_sweep_timeout_ms")
+
+        /**
+         * The old hardcoded [ProbeConfig.mobileSweepTimeoutMs] default, before it
+         * was raised to clear the ladder's own documented ~125s worst case (a
+         * 1MB rung at 64 kbit/s) with real margin. DataStore persists whatever
+         * value was in memory the first time *any* setting was saved — which for
+         * an install that predates this change is this exact number — so simply
+         * raising the compiled-in default does nothing for an existing install:
+         * [loadConfig] would keep reading 120,000 back from disk forever. A
+         * device that measured a real ~64 kbit/s connection can independently
+         * prove this: the 1MB rung times out at exactly 120,006ms, having moved
+         * every requested byte, because the round's own budget ran out a few
+         * seconds before the transfer it was sized for could finish.
+         */
+        private const val LEGACY_MOBILE_SWEEP_TIMEOUT_MS = 120_000L
         private val KEY_LIVE_SWEEP_PLAN = stringPreferencesKey("live_test_sweep_plan")
         private val KEY_WIFI_LIVE_SWEEP_PLAN = stringPreferencesKey("wifi_live_test_sweep_plan")
         private val KEY_MOBILE_LIVE_SWEEP_PLAN = stringPreferencesKey("mobile_live_test_sweep_plan")
@@ -380,7 +429,7 @@ class RoomMonitorStore(
                     context.applicationContext,
                     MonitorDatabase::class.java,
                     "seven-monitor.db",
-                ).addMigrations(MIGRATION_1_2).build(),
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build(),
             ).also { instance = it }
         }
 
@@ -388,6 +437,25 @@ class RoomMonitorStore(
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE ping_samples ADD COLUMN ssid TEXT")
                 db.execSQL("ALTER TABLE throughput_samples ADD COLUMN ssid TEXT")
+            }
+        }
+
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS sweep_rungs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        atEpochMs INTEGER NOT NULL,
+                        direction TEXT NOT NULL,
+                        bytes INTEGER NOT NULL,
+                        trials INTEGER NOT NULL,
+                        passCount INTEGER NOT NULL
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_sweep_rungs_bytes ON sweep_rungs(bytes)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_sweep_rungs_direction ON sweep_rungs(direction)")
             }
         }
 

@@ -59,6 +59,24 @@ sealed interface LiveSample {
         val direction: SweepRunner.Direction,
         val results: List<SweepResult>,
     ) : LiveSample
+
+    /**
+     * One rung of the size sweep finishing, emitted as it happens rather than
+     * only once at the end via [Sweep].
+     *
+     * A sweep ladder can legitimately take minutes on a slow cellular line —
+     * that is the honest cost of proving the link works at 64 kbit/s instead of
+     * calling it broken. Without a per-rung event, nothing observable happens
+     * between "Download size sweep" appearing and the whole ladder finishing,
+     * which is indistinguishable from a hang.
+     */
+    data class SweepStepResult(
+        override val atEpochMs: Long,
+        val direction: SweepRunner.Direction,
+        val stepIndex: Int,
+        val stepCount: Int,
+        val result: SweepResult,
+    ) : LiveSample
 }
 
 /**
@@ -76,6 +94,22 @@ enum class LivePhase(val label: String) {
     UPLOAD_STREAM("Upload stream"),
     DOWNLOAD_SWEEP("Download size sweep"),
     UPLOAD_SWEEP("Upload size sweep"),
+
+    /**
+     * One uninterrupted transfer, run only on request by
+     * [de.sevenapp.monitor.android.livetest.LiveTestRunner.runSustainedProbe] —
+     * not part of the regular ping/stream/sweep run.
+     *
+     * The regular download/upload stream phases are deliberately short (a few
+     * seconds to tens of seconds) and move only a few hundred KB, which is not
+     * enough to distinguish a carrier's *burst* allowance from its *sustained*
+     * throttle on a connection that rate-limits with a token bucket rather than
+     * an instant hard cap — exactly what a "Taktung 10 kB" mobile plan does.
+     * This phase exists to run long/large enough to spend that banked credit
+     * and show the rate it decays to.
+     */
+    SUSTAINED_DOWNLOAD("Sustained download probe"),
+    SUSTAINED_UPLOAD("Sustained upload probe"),
 }
 
 /**
@@ -108,6 +142,19 @@ data class LiveTestConfig(
     val streamRoundTimeoutMs: Long = 30_000,
     /** Per-connection; see [ProbeConfig.sweepTimeoutMs]. */
     val sweepTimeoutMs: Long = 30_000,
+    /**
+     * Whether [de.sevenapp.monitor.android.livetest.LiveTestRunner.runSession]
+     * appends a [LivePhase.SUSTAINED_DOWNLOAD]/[LivePhase.SUSTAINED_UPLOAD]
+     * pair after the regular stream and sweep phases.
+     *
+     * Opt-in and off by default: it moves a bounded but real amount of extra
+     * data (see [ProbeConfig.sustainedProbeMaxDownBytes]) specifically to
+     * settle whether a throttled connection's burst allowance, not its
+     * sustained rate, is what a short test measured. It only makes sense for
+     * throughput — ping has nothing to warm up, and the size sweep already
+     * asks a different question (does this size get through at all).
+     */
+    val sustainedProbeEnabled: Boolean = false,
 ) {
     /** True when the user picked "Unlimited": phases run until they are stopped. */
     val isUnlimited: Boolean get() = phaseDurationMs == Long.MAX_VALUE
@@ -121,12 +168,17 @@ data class LiveTestConfig(
     val effectivePhaseDurationMs: Long
         get() = if (isUnlimited) UNLIMITED_PHASE_MS else phaseDurationMs
 
-    /** Steps the UI counts through: three phases, plus two sweep directions. */
-    val totalSteps: Int get() = PHASE_COUNT + if (sweepEnabled) 2 else 0
+    /** Steps the UI counts through: three phases, plus two for the sweep, plus two for the sustained probe. */
+    val totalSteps: Int get() = PHASE_COUNT + (if (sweepEnabled) 2 else 0) + (if (sustainedProbeEnabled) 2 else 0)
 
-    fun totalDurationMs(sweepEstimateMs: Long = SWEEP_ESTIMATE_MS): Long =
-        if (isUnlimited) Long.MAX_VALUE
-        else phaseDurationMs * PHASE_COUNT + (if (sweepEnabled) sweepEstimateMs else 0L)
+    fun totalDurationMs(sweepEstimateMs: Long = SWEEP_ESTIMATE_MS, sustainedProbeEstimateMs: Long = SUSTAINED_PROBE_ESTIMATE_MS): Long =
+        if (isUnlimited) {
+            Long.MAX_VALUE
+        } else {
+            phaseDurationMs * PHASE_COUNT +
+                (if (sweepEnabled) sweepEstimateMs else 0L) +
+                (if (sustainedProbeEnabled) sustainedProbeEstimateMs else 0L)
+        }
 
     companion object {
         const val DEFAULT_PHASE_DURATION_MS = 60_000L
@@ -145,6 +197,9 @@ data class LiveTestConfig(
 
         /** Rough allowance for the size sweep when estimating a whole run. */
         const val SWEEP_ESTIMATE_MS = 20_000L
+
+        /** Rough allowance for the sustained probe (both directions) when estimating a whole run. */
+        const val SUSTAINED_PROBE_ESTIMATE_MS = 120_000L
 
         /** Offered in Settings; the floor matches the web app's shortest option. */
         val DURATION_OPTIONS_MINUTES = listOf(1, 2, 5, 10)

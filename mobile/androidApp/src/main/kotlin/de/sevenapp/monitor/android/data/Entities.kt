@@ -52,6 +52,30 @@ data class FullSweepEntity(
     val atEpochMs: Long,
 )
 
+/**
+ * One completed sweep rung — every trial's outcome for one size, in one
+ * direction, from one run. Recorded per rung (not just at the end of a
+ * sweep) so the History overview can total pass/fail across every run a size
+ * has ever appeared in, not just the most recent one.
+ */
+@Entity(tableName = "sweep_rungs", indices = [androidx.room.Index("bytes"), androidx.room.Index("direction")])
+data class SweepRungEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val atEpochMs: Long,
+    val direction: String,
+    val bytes: Int,
+    val trials: Int,
+    val passCount: Int,
+)
+
+/** One row of [MonitorDao.sweepRungTotals]'s aggregate query. */
+data class SweepRungTotal(
+    val direction: String,
+    val bytes: Int,
+    val trialsPassed: Int,
+    val trialsTotal: Int,
+)
+
 @Entity(tableName = "data_usage")
 data class DataUsageEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -66,6 +90,7 @@ interface MonitorDao {
     @Insert suspend fun insertPings(rows: List<PingEntity>)
     @Insert suspend fun insertThroughput(row: ThroughputEntity)
     @Insert suspend fun insertFullSweep(row: FullSweepEntity)
+    @Insert suspend fun insertSweepRung(row: SweepRungEntity)
     @Insert suspend fun insertDataUsage(row: DataUsageEntity)
 
     @Query("SELECT * FROM ping_samples WHERE atEpochMs BETWEEN :start AND :end ORDER BY atEpochMs")
@@ -112,6 +137,16 @@ interface MonitorDao {
     @Query("SELECT COUNT(*) FROM full_sweeps WHERE atEpochMs >= :since")
     suspend fun fullSweepCountSince(since: Long): Int
 
+    @Query(
+        """
+        SELECT direction, bytes, SUM(passCount) AS trialsPassed, SUM(trials) AS trialsTotal
+        FROM sweep_rungs
+        GROUP BY direction, bytes
+        ORDER BY bytes
+        """,
+    )
+    suspend fun sweepRungTotals(): List<SweepRungTotal>
+
     @Query("SELECT COALESCE(SUM(bytes), 0) FROM data_usage WHERE atEpochMs >= :since AND metered = :metered")
     suspend fun bytesUsedSince(since: Long, metered: Boolean): Long
 
@@ -129,6 +164,11 @@ interface MonitorDao {
     suspend fun pruneFullSweeps(before: Long)
 
     @Query("DELETE FROM full_sweeps") suspend fun clearFullSweeps()
+
+    @Query("DELETE FROM sweep_rungs WHERE atEpochMs < :before")
+    suspend fun pruneSweepRungs(before: Long)
+
+    @Query("DELETE FROM sweep_rungs") suspend fun clearSweepRungs()
 
     @Query("DELETE FROM data_usage WHERE atEpochMs < :before")
     suspend fun pruneDataUsage(before: Long)
@@ -149,8 +189,9 @@ interface MonitorDao {
         DropEntity::class,
         FullSweepEntity::class,
         DataUsageEntity::class,
+        SweepRungEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 abstract class MonitorDatabase : RoomDatabase() {

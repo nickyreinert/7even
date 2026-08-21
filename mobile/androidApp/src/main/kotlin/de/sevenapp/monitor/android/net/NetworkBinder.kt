@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.util.Log
 import de.sevenapp.monitor.core.NetworkPreference
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -43,7 +44,9 @@ object NetworkBinder {
     ): T {
         if (preference == NetworkPreference.AUTO) {
             val cm = context.getSystemService(ConnectivityManager::class.java)
-            return block(cm?.activeNetwork ?: throw RequestedNetworkUnavailable(preference))
+            val network = cm?.activeNetwork ?: throw RequestedNetworkUnavailable(preference)
+            logBoundNetwork(cm, preference, network)
+            return block(network)
         }
 
         val cm = context.getSystemService(ConnectivityManager::class.java) ?: throw RequestedNetworkUnavailable(preference)
@@ -76,9 +79,35 @@ object NetworkBinder {
                     if (cont.isActive) cont.resumeWithException(RequestedNetworkUnavailable(preference))
                 }
             }
+            logBoundNetwork(cm, preference, network)
             return block(network)
         } finally {
             callback?.let { runCatching { cm.unregisterNetworkCallback(it) } }
         }
+    }
+
+    /**
+     * One line proving which physical transport a run actually bound to, and
+     * what the OS itself estimates that link's bandwidth at.
+     *
+     * [NetworkCapabilities.getLinkDownstreamBandwidthKbps]/[NetworkCapabilities.getLinkUpstreamBandwidthKbps]
+     * are the platform's own estimate for the *bound* network, independent of
+     * anything this app measures — the fastest way to tell "the app is
+     * measuring the wrong network" apart from "the network is faster than
+     * expected" when a cellular reading looks implausibly high.
+     */
+    private fun logBoundNetwork(cm: ConnectivityManager, preference: NetworkPreference, network: Network) {
+        val caps = cm.getNetworkCapabilities(network)
+        val transports = buildList {
+            if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) add("WIFI")
+            if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true) add("CELLULAR")
+            if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true) add("ETHERNET")
+        }
+        Log.d(
+            "SevenNetworkBinder",
+            "preference=$preference network=$network transports=$transports " +
+                "osDownKbps=${caps?.linkDownstreamBandwidthKbps} osUpKbps=${caps?.linkUpstreamBandwidthKbps} " +
+                "metered=${caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) != true}",
+        )
     }
 }

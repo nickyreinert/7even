@@ -66,12 +66,19 @@ class SweepEvidenceTest {
     @Test
     fun theMobileTimeoutDefaultIsLongEnoughToProveAThrottledLineWorks() {
         // 1 MB at 64 kbit/s takes ~125s. A default below that can only ever
-        // report a working-but-throttled connection as a failure.
+        // report a working-but-throttled connection as a failure — and a
+        // *0.9 margin here previously let a 120,000ms default (90,000ms of
+        // 90% x 125s coverage... 120,000 >= 112,500) pass this assertion
+        // while still failing on a real device: a measured run moved the
+        // full 1MB but was cut off and reported TIMEOUT at exactly
+        // 120,006ms, a few seconds short of the transfer it was sized for.
+        // The margin now has to clear the whole theoretical requirement, not
+        // fall just under it.
         val config = ProbeConfig()
         val secondsForOneMegabyteAt64Kbit = (1_000_000L * 8) / 64_000.0
         assertTrue(
-            config.mobileSweepTimeoutMs / 1000.0 >= secondsForOneMegabyteAt64Kbit * 0.9,
-            "mobile sweep timeout of ${config.mobileSweepTimeoutMs}ms cannot complete 1MB at 64 kbit/s",
+            config.mobileSweepTimeoutMs / 1000.0 >= secondsForOneMegabyteAt64Kbit * 1.2,
+            "mobile sweep timeout of ${config.mobileSweepTimeoutMs}ms cannot complete 1MB at 64 kbit/s with real-world margin",
         )
         assertTrue(config.mobileSweepTimeoutMs > config.wifiSweepTimeoutMs)
     }

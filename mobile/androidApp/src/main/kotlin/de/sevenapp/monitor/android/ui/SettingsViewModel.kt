@@ -42,6 +42,8 @@ data class SettingsState(
     val streamUrl: String = "",
     val useWebSocketStream: Boolean = false,
     val liveTestSweepEnabled: Boolean = true,
+    val sustainedProbeEnabled: Boolean = false,
+    val sustainedProbeTotalMb: Int = 4,
     val wifiSweepTimeoutMs: Long = 30_000,
     val mobileSweepTimeoutMs: Long = 120_000,
     val wifiSweepSteps: List<SweepStep> = SweepPlan.DEFAULT,
@@ -92,6 +94,8 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             streamUrl = config.streamUrl,
             useWebSocketStream = config.useWebSocketStream,
             liveTestSweepEnabled = config.liveTestSweepEnabled,
+            sustainedProbeEnabled = config.sustainedProbeEnabled,
+            sustainedProbeTotalMb = (config.sustainedProbeTotalBytes / 1_000_000).toInt(),
             wifiSweepTimeoutMs = config.wifiSweepTimeoutMs,
             mobileSweepTimeoutMs = config.mobileSweepTimeoutMs,
             wifiSweepSteps = config.wifiLiveTestSweepSteps,
@@ -222,6 +226,29 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setLiveSweep(enabled: Boolean) = viewModelScope.launch {
         store.saveConfig(store.loadConfig().copy(liveTestSweepEnabled = enabled))
+        refresh()
+    }
+
+    /**
+     * Manual-only, by construction: this writes [de.sevenapp.monitor.probe.ProbeConfig.sustainedProbeEnabled],
+     * which [de.sevenapp.monitor.android.work.ProbeWorker]'s automatic path
+     * never reads — only [de.sevenapp.monitor.android.livetest.LiveTestRunner.runSession]
+     * does, driven by the user pressing the one manual-test button.
+     */
+    fun setSustainedProbe(enabled: Boolean) = viewModelScope.launch {
+        store.saveConfig(store.loadConfig().copy(sustainedProbeEnabled = enabled))
+        refresh()
+    }
+
+    /**
+     * Clamped to a range that stays a "check," not an accidental data bill:
+     * below 1 MB the probe can't outrun most plans' burst allowance at all,
+     * and above 50 MB this stops being something to run without thinking
+     * about it.
+     */
+    fun setSustainedProbeSizeMb(mb: Int) = viewModelScope.launch {
+        val clamped = mb.coerceIn(1, 50)
+        store.saveConfig(store.loadConfig().copy(sustainedProbeTotalBytes = clamped * 1_000_000L))
         refresh()
     }
 
